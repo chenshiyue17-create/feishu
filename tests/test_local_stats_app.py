@@ -1,0 +1,971 @@
+from __future__ import annotations
+
+import tempfile
+import time
+import unittest
+from datetime import datetime
+from unittest.mock import patch
+
+from xhs_feishu_monitor.chrome_cookies import DEFAULT_CHROME_PROFILE_ROOT
+from xhs_feishu_monitor.config import Settings
+from xhs_feishu_monitor.local_stats_app.data_service import (
+    build_account_cards,
+    build_account_series_map,
+    build_alerts,
+    build_dashboard_payload_from_tables,
+    build_daily_series,
+    build_portal_card,
+    build_rankings,
+)
+from xhs_feishu_monitor.local_stats_app.server import (
+    DEFAULT_PROJECT_NAME,
+    DashboardStore,
+    LoginStateStore,
+    MonitoringSyncStore,
+    build_dashboard_account_index,
+    build_dashboard_payload_with_reports,
+    build_login_state_payload,
+    classify_monitored_fetch_state,
+    build_sync_progress,
+    build_profile_name_index,
+    load_monitored_metadata,
+    enrich_monitored_entries,
+    extract_profile_user_id,
+    login_state_requires_interactive_login,
+    load_monitored_urls,
+    merge_monitored_entries,
+    merge_monitored_urls,
+    open_xiaohongshu_login_window,
+    parse_monitored_entries,
+    run_login_state_self_check,
+    update_monitored_metadata,
+    wait_for_xiaohongshu_login,
+    write_monitored_entries,
+    write_monitored_urls,
+)
+
+
+class LocalStatsAppTest(unittest.TestCase):
+    def test_build_daily_series(self) -> None:
+        rows = [
+            {"日期文本": "2026-03-17", "账号ID": "u1", "粉丝数": 100, "首页总点赞": 20, "首页总评论": 5, "首页可见作品数": 2},
+            {"日期文本": "2026-03-17", "账号ID": "u2", "粉丝数": 200, "首页总点赞": 30, "首页总评论": 8, "首页可见作品数": 3},
+        ]
+        series = build_daily_series(rows)
+        self.assertEqual(series[0]["fans"], 300)
+        self.assertEqual(series[0]["likes"], 50)
+        self.assertEqual(series[0]["comments"], 13)
+
+    def test_build_account_series_map(self) -> None:
+        rows = [
+            {"日期文本": "2026-03-17", "账号ID": "u1", "粉丝数": 100, "获赞收藏数": 200, "首页总点赞": 20, "首页总评论": 5, "首页可见作品数": 2},
+            {"日期文本": "2026-03-18", "账号ID": "u1", "粉丝数": 120, "获赞收藏数": 230, "首页总点赞": 25, "首页总评论": 7, "首页可见作品数": 3},
+        ]
+        series_map = build_account_series_map(rows)
+        self.assertEqual(series_map["u1"][0]["fans"], 100)
+        self.assertEqual(series_map["u1"][1]["comments"], 7)
+
+    def test_build_account_cards(self) -> None:
+        rows = [
+            {"日期文本": "2026-03-16", "账号ID": "u1", "账号": "旧账号", "粉丝数": 50},
+            {
+                "日期文本": "2026-03-17",
+                "账号ID": "u1",
+                "账号": "账号A",
+                "粉丝数": 100,
+                "获赞收藏数": 200,
+                "账号总作品数": 12,
+                "作品数展示": "12+",
+                "首页总点赞": 20,
+                "首页总评论": 5,
+                "首页可见作品数": 2,
+                "周对比摘要": "周增",
+                "主页链接": {"link": "https://a"},
+                "头部作品链接": {"link": "https://note-a"},
+            },
+        ]
+        cards = build_account_cards(rows)
+        self.assertEqual(len(cards), 1)
+        self.assertEqual(cards[0]["account"], "账号A")
+        self.assertEqual(cards[0]["fans"], 100)
+        self.assertEqual(cards[0]["profile_url"], "https://a")
+        self.assertEqual(cards[0]["top_url"], "https://note-a")
+        self.assertEqual(cards[0]["works"], 12)
+        self.assertEqual(cards[0]["works_display"], "12+")
+        self.assertFalse(cards[0]["works_exact"])
+
+    def test_build_account_cards_keeps_latest_per_account(self) -> None:
+        rows = [
+            {"日期文本": "2026-03-17", "账号ID": "u1", "账号": "账号A", "粉丝数": 100},
+            {"日期文本": "2026-03-18", "账号ID": "u2", "账号": "账号B", "粉丝数": 120},
+        ]
+        cards = build_account_cards(rows)
+        self.assertEqual({item["account_id"] for item in cards}, {"u1", "u2"})
+
+    def test_build_account_cards_clamps_legacy_visible_works_to_first_30(self) -> None:
+        rows = [
+            {
+                "日期文本": "2026-03-18",
+                "账号ID": "u1",
+                "账号": "账号A",
+                "粉丝数": 100,
+                "获赞收藏数": 200,
+                "首页总点赞": 20,
+                "首页总评论": 5,
+                "首页可见作品数": 32,
+            }
+        ]
+        cards = build_account_cards(rows)
+        self.assertEqual(cards[0]["works"], 30)
+        self.assertEqual(cards[0]["works_display"], "30+")
+        self.assertFalse(cards[0]["works_exact"])
+
+    def test_build_rankings(self) -> None:
+        rows = [
+            {"榜单类型": "单条点赞排行", "排名": 2, "标题文案": "作品B", "账号": "账号B", "排序值": 50},
+            {
+                "榜单类型": "单条点赞排行",
+                "排名": 1,
+                "账号ID": "u1",
+                "标题文案": "作品A",
+                "账号": "账号A",
+                "排序值": 90,
+                "主页链接": {"link": "https://profile-a"},
+                "封面图": {"link": "https://img.example.com/a.jpg"},
+            },
+        ]
+        rankings = build_rankings(rows)
+        self.assertEqual(rankings["单条点赞排行"][0]["title"], "作品A")
+        self.assertEqual(rankings["单条点赞排行"][0]["account_id"], "u1")
+        self.assertEqual(rankings["单条点赞排行"][0]["profile_url"], "https://profile-a")
+        self.assertEqual(rankings["单条点赞排行"][0]["cover_url"], "https://img.example.com/a.jpg")
+
+    def test_build_alerts_sorts_by_numeric_rate(self) -> None:
+        alerts = build_alerts(
+            [
+                {"预警日期": "2026-03-18", "标题文案": "作品A", "评论增长率": "9.8", "评论增量": 20},
+                {"预警日期": "2026-03-18", "账号ID": "u2", "标题文案": "作品B", "评论增长率": "12.5%", "评论增量": 10, "主页链接": {"link": "https://profile-b"}},
+            ]
+        )
+        self.assertEqual(alerts[0]["title"], "作品B")
+        self.assertEqual(alerts[0]["account_id"], "u2")
+        self.assertEqual(alerts[0]["rate"], 12.5)
+        self.assertEqual(alerts[0]["profile_url"], "https://profile-b")
+
+    def test_build_portal_card_uses_latest_update(self) -> None:
+        portal = build_portal_card(
+            [
+                {"监控账号数": 2, "总粉丝数": 100, "数据更新时间": 1000},
+                {"监控账号数": 5, "总粉丝数": 300, "数据更新时间": 2000},
+            ]
+        )
+        self.assertEqual(portal["accounts"], 5)
+        self.assertEqual(portal["fans"], 300)
+
+    def test_build_dashboard_payload_from_tables(self) -> None:
+        payload = build_dashboard_payload_from_tables(
+            portal_rows=[{"监控账号数": 5, "总粉丝数": 1000, "总评论数": 300}],
+            calendar_rows=[{"日期文本": "2026-03-17", "账号ID": "u1", "账号": "账号A", "粉丝数": 100, "首页总点赞": 20, "首页总评论": 5, "首页可见作品数": 2}],
+            ranking_rows=[{"榜单类型": "单条点赞排行", "排名": 1, "标题文案": "作品A", "账号": "账号A", "排序值": 20}],
+            alert_rows=[],
+        )
+        self.assertEqual(payload["portal"]["accounts"], 5)
+        self.assertEqual(payload["accounts"][0]["account"], "账号A")
+        self.assertIn("u1", payload["account_series"])
+        self.assertEqual(payload["series_meta"]["mode"], "daily")
+        self.assertEqual(payload["series_meta"]["update_time"], "14:00")
+        self.assertEqual(payload["rankings"]["单条点赞排行"][0]["title"], "作品A")
+
+    def test_extract_profile_user_id(self) -> None:
+        self.assertEqual(
+            extract_profile_user_id("https://www.xiaohongshu.com/user/profile/66c8e177000000001d0331c0?xsec_token=abc"),
+            "66c8e177000000001d0331c0",
+        )
+
+    def test_enrich_monitored_entries_uses_account_name(self) -> None:
+        enriched = enrich_monitored_entries(
+            [{"url": "https://www.xiaohongshu.com/user/profile/u1", "active": True, "project": "项目A"}],
+            [
+                {
+                    "账号ID": "u1",
+                    "账号": "账号A",
+                    "内容链接": {"link": "https://www.xiaohongshu.com/user/profile/u1?from=feishu"},
+                    "粉丝数": 123,
+                    "获赞收藏文本": "456",
+                    "作品数展示": "32+",
+                    "首页可见作品数": 7,
+                }
+            ],
+        )
+        self.assertEqual(enriched[0]["account"], "账号A")
+        self.assertEqual(enriched[0]["display_name"], "账号A")
+        self.assertEqual(enriched[0]["project"], "项目A")
+        self.assertEqual(enriched[0]["profile_url"], "https://www.xiaohongshu.com/user/profile/u1?from=feishu")
+        self.assertEqual(enriched[0]["summary_text"], "粉丝 123 · 获赞 456 · 作品 32+")
+
+    def test_enrich_monitored_entries_uses_local_metadata_fallback(self) -> None:
+        enriched = enrich_monitored_entries(
+            [{"url": "https://www.xiaohongshu.com/user/profile/u1", "active": True, "project": "项目A"}],
+            [],
+            {
+                "https://www.xiaohongshu.com/user/profile/u1": {
+                    "account": "缓存账号",
+                    "profile_url": "https://www.xiaohongshu.com/user/profile/u1?from=cache",
+                    "fans_text": "88",
+                    "interaction_text": "666",
+                    "works_text": "9",
+                    "fetch_state": "ok",
+                    "fetch_message": "已获取账号快照",
+                }
+            },
+        )
+        self.assertEqual(enriched[0]["account"], "缓存账号")
+        self.assertEqual(enriched[0]["display_name"], "缓存账号")
+        self.assertEqual(enriched[0]["summary_text"], "粉丝 88 · 获赞 666 · 作品 9")
+        self.assertEqual(enriched[0]["fetch_state"], "ok")
+
+    def test_enrich_monitored_entries_uses_dashboard_fallback(self) -> None:
+        enriched = enrich_monitored_entries(
+            [{"url": "https://www.xiaohongshu.com/user/profile/u1", "active": True, "project": "项目A"}],
+            [],
+            {},
+            dashboard_account_index=build_dashboard_account_index(
+                [
+                    {
+                        "account_id": "u1",
+                        "account": "看板账号",
+                        "profile_url": "https://www.xiaohongshu.com/user/profile/u1?from=dashboard",
+                        "fans": 321,
+                        "interaction": 654,
+                        "works": 12,
+                    }
+                ]
+            ),
+        )
+        self.assertEqual(enriched[0]["account"], "看板账号")
+        self.assertEqual(enriched[0]["summary_text"], "粉丝 321 · 获赞 654 · 作品 12")
+
+    def test_enrich_monitored_entries_shows_pending_summary_when_missing(self) -> None:
+        enriched = enrich_monitored_entries(
+            [{"url": "https://www.xiaohongshu.com/user/profile/u1", "active": True, "project": "项目A"}],
+            [],
+        )
+        self.assertEqual(enriched[0]["summary_text"], "等待首次同步")
+
+    def test_enrich_monitored_entries_ignores_login_redirect_profile_url(self) -> None:
+        enriched = enrich_monitored_entries(
+            [{"url": "https://www.xiaohongshu.com/user/profile/u1", "active": True, "project": "项目A"}],
+            [],
+            {
+                "https://www.xiaohongshu.com/user/profile/u1": {
+                    "profile_url": "https://www.xiaohongshu.com/login?redirectPath=abc",
+                }
+            },
+        )
+        self.assertEqual(enriched[0]["profile_url"], "https://www.xiaohongshu.com/user/profile/u1")
+
+    def test_update_monitored_metadata_persists_account_name(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            urls_file = f"{temp_dir}/urls.txt"
+            write_monitored_entries(
+                urls_file,
+                [{"url": "https://www.xiaohongshu.com/user/profile/u1", "active": True, "project": "项目A"}],
+            )
+            update_monitored_metadata(
+                urls_file,
+                [
+                    {
+                        "url": "https://www.xiaohongshu.com/user/profile/u1",
+                        "account": "账号A",
+                        "account_id": "u1",
+                        "profile_url": "https://www.xiaohongshu.com/user/profile/u1?from=cache",
+                        "fetch_state": "error",
+                        "fetch_message": "命中登录页，当前登录态不可用",
+                    }
+                ],
+            )
+            metadata = load_monitored_metadata(urls_file)
+        self.assertEqual(metadata["https://www.xiaohongshu.com/user/profile/u1"]["account"], "账号A")
+        self.assertEqual(metadata["https://www.xiaohongshu.com/user/profile/u1"]["fetch_state"], "error")
+
+    def test_classify_monitored_fetch_state_login_redirect(self) -> None:
+        state, message = classify_monitored_fetch_state(error_text="账号页返回空结果或登录跳转: /login", has_snapshot=False)
+        self.assertEqual(state, "error")
+        self.assertIn("登录态", message)
+
+    def test_login_state_requires_interactive_login(self) -> None:
+        self.assertTrue(
+            login_state_requires_interactive_login(
+                {"state": "error", "message": "样本账号返回了空结果，登录态可能已过期"}
+            )
+        )
+        self.assertTrue(
+            login_state_requires_interactive_login(
+                {
+                    "state": "warning",
+                    "cookie_source": "chrome_profile",
+                    "detail_ready": False,
+                    "message": "样本账号只拿到公开页摘要，未拿到 note_id，作品详情与评论数据已退化。",
+                }
+            )
+        )
+        self.assertFalse(
+            login_state_requires_interactive_login(
+                {"state": "warning", "message": "样本账号只拿到公开页摘要"}
+            )
+        )
+
+    def test_merge_monitored_urls_adds_and_dedupes(self) -> None:
+        merged, added = merge_monitored_urls(
+            ["https://www.xiaohongshu.com/user/profile/u1"],
+            raw_text="https://www.xiaohongshu.com/user/profile/u1 https://www.xiaohongshu.com/user/profile/u2",
+        )
+        self.assertEqual(
+            merged,
+            [
+                "https://www.xiaohongshu.com/user/profile/u1",
+                "https://www.xiaohongshu.com/user/profile/u2",
+            ],
+        )
+        self.assertEqual(added, ["https://www.xiaohongshu.com/user/profile/u2"])
+
+    def test_merge_monitored_entries_reactivates_paused(self) -> None:
+        merged, added, reactivated = merge_monitored_entries(
+            [{"url": "https://www.xiaohongshu.com/user/profile/u1", "active": False, "project": "项目A"}],
+            raw_text="https://www.xiaohongshu.com/user/profile/u1 https://www.xiaohongshu.com/user/profile/u2",
+            project="项目B",
+        )
+        self.assertEqual(added, ["https://www.xiaohongshu.com/user/profile/u2"])
+        self.assertEqual(reactivated, ["https://www.xiaohongshu.com/user/profile/u1"])
+        self.assertTrue(all(item["active"] for item in merged))
+        self.assertEqual(merged[0]["project"], "项目A")
+        self.assertEqual(merged[1]["project"], "项目B")
+
+    def test_write_and_load_monitored_urls(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = write_monitored_urls(
+                f"{temp_dir}/urls.txt",
+                [
+                    "https://www.xiaohongshu.com/user/profile/u1",
+                    "xiaohongshu.com/user/profile/u2",
+                ],
+            )
+            urls = load_monitored_urls(str(path))
+        self.assertEqual(
+            urls,
+            [
+                "https://www.xiaohongshu.com/user/profile/u1",
+                "https://www.xiaohongshu.com/user/profile/u2",
+            ],
+        )
+
+    def test_write_and_parse_monitored_entries_with_paused(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = write_monitored_entries(
+                f"{temp_dir}/urls.txt",
+                [
+                    {"url": "https://www.xiaohongshu.com/user/profile/u1", "active": True},
+                    {"url": "https://www.xiaohongshu.com/user/profile/u2", "active": False},
+                ],
+            )
+            entries = parse_monitored_entries(str(path))
+            urls = load_monitored_urls(str(path))
+        self.assertEqual(
+            entries,
+            [
+                {"url": "https://www.xiaohongshu.com/user/profile/u1", "active": True, "project": DEFAULT_PROJECT_NAME},
+                {"url": "https://www.xiaohongshu.com/user/profile/u2", "active": False, "project": DEFAULT_PROJECT_NAME},
+            ],
+        )
+        self.assertEqual(urls, ["https://www.xiaohongshu.com/user/profile/u1"])
+
+    def test_write_and_parse_monitored_entries_with_project(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = write_monitored_entries(
+                f"{temp_dir}/urls.txt",
+                [
+                    {"url": "https://www.xiaohongshu.com/user/profile/u1", "active": True, "project": "项目A"},
+                    {"url": "https://www.xiaohongshu.com/user/profile/u2", "active": False, "project": "项目B"},
+                ],
+            )
+            entries = parse_monitored_entries(str(path))
+        self.assertEqual(
+            entries,
+            [
+                {"url": "https://www.xiaohongshu.com/user/profile/u1", "active": True, "project": "项目A"},
+                {"url": "https://www.xiaohongshu.com/user/profile/u2", "active": False, "project": "项目B"},
+            ],
+        )
+
+    def test_bulk_update_account_state_updates_multiple_entries(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = write_monitored_entries(
+                f"{temp_dir}/urls.txt",
+                [
+                    {"url": "https://www.xiaohongshu.com/user/profile/u1", "active": True},
+                    {"url": "https://www.xiaohongshu.com/user/profile/u2", "active": True},
+                    {"url": "https://www.xiaohongshu.com/user/profile/u3", "active": False},
+                ],
+            )
+            store = MonitoringSyncStore(
+                env_file=f"{temp_dir}/.env",
+                urls_file=str(path),
+                dashboard_store=DashboardStore(env_file=f"{temp_dir}/.env"),
+            )
+            with patch.object(store, "_request_sync_locked", return_value=True):
+                result = store.bulk_update_account_state(
+                    urls=[
+                        "https://www.xiaohongshu.com/user/profile/u1",
+                        "https://www.xiaohongshu.com/user/profile/u2",
+                    ],
+                    active=False,
+                )
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["changed_count"], 2)
+            self.assertEqual(
+                parse_monitored_entries(str(path)),
+                [
+                    {"url": "https://www.xiaohongshu.com/user/profile/u1", "active": False, "project": DEFAULT_PROJECT_NAME},
+                    {"url": "https://www.xiaohongshu.com/user/profile/u2", "active": False, "project": DEFAULT_PROJECT_NAME},
+                    {"url": "https://www.xiaohongshu.com/user/profile/u3", "active": False, "project": DEFAULT_PROJECT_NAME},
+                ],
+            )
+
+    def test_assign_project_updates_multiple_entries(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = write_monitored_entries(
+                f"{temp_dir}/urls.txt",
+                [
+                    {"url": "https://www.xiaohongshu.com/user/profile/u1", "active": True, "project": "项目A"},
+                    {"url": "https://www.xiaohongshu.com/user/profile/u2", "active": True, "project": "项目A"},
+                ],
+            )
+            store = MonitoringSyncStore(
+                env_file=f"{temp_dir}/.env",
+                urls_file=str(path),
+                dashboard_store=DashboardStore(env_file=f"{temp_dir}/.env"),
+            )
+            with patch.object(store, "_request_sync_locked", return_value=True):
+                result = store.assign_project(
+                    urls=["https://www.xiaohongshu.com/user/profile/u1", "https://www.xiaohongshu.com/user/profile/u2"],
+                    project="项目B",
+                )
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["changed_count"], 2)
+            self.assertEqual(
+                parse_monitored_entries(str(path)),
+                [
+                    {"url": "https://www.xiaohongshu.com/user/profile/u1", "active": True, "project": "项目B"},
+                    {"url": "https://www.xiaohongshu.com/user/profile/u2", "active": True, "project": "项目B"},
+                ],
+            )
+
+    def test_request_sync_can_scope_to_project(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = write_monitored_entries(
+                f"{temp_dir}/urls.txt",
+                [
+                    {"url": "https://www.xiaohongshu.com/user/profile/u1", "active": True, "project": "项目A"},
+                    {"url": "https://www.xiaohongshu.com/user/profile/u2", "active": True, "project": "项目B"},
+                ],
+            )
+            store = MonitoringSyncStore(
+                env_file=f"{temp_dir}/.env",
+                urls_file=str(path),
+                dashboard_store=DashboardStore(env_file=f"{temp_dir}/.env"),
+            )
+            captured = {}
+
+            def fake_request_sync_locked(*, reason, urls=None):
+                captured["reason"] = reason
+                captured["urls"] = urls or []
+                return True
+
+            with patch.object(store, "_request_sync_locked", side_effect=fake_request_sync_locked):
+                result = store.request_sync(project="项目A")
+            self.assertTrue(result["ok"])
+            self.assertEqual(captured["urls"], ["https://www.xiaohongshu.com/user/profile/u1"])
+            self.assertIn("项目「项目A」", captured["reason"])
+
+    def test_retry_account_triggers_single_account_sync(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = write_monitored_entries(
+                f"{temp_dir}/urls.txt",
+                [{"url": "https://www.xiaohongshu.com/user/profile/u1", "active": True, "project": "项目A"}],
+            )
+            store = MonitoringSyncStore(
+                env_file=f"{temp_dir}/.env",
+                urls_file=str(path),
+                dashboard_store=DashboardStore(env_file=f"{temp_dir}/.env"),
+            )
+            captured = {}
+
+            def fake_request_sync_locked(*, reason, urls=None):
+                captured["reason"] = reason
+                captured["urls"] = urls or []
+                return True
+
+            with patch.object(store, "_request_sync_locked", side_effect=fake_request_sync_locked):
+                result = store.retry_account(url="https://www.xiaohongshu.com/user/profile/u1?xsec_token=abc")
+
+            metadata = load_monitored_metadata(str(path))
+            self.assertTrue(result["ok"])
+            self.assertEqual(captured["urls"], ["https://www.xiaohongshu.com/user/profile/u1"])
+            self.assertEqual(metadata["https://www.xiaohongshu.com/user/profile/u1"]["fetch_state"], "checking")
+            self.assertIn("重试", metadata["https://www.xiaohongshu.com/user/profile/u1"]["fetch_message"])
+
+    def test_request_sync_blocks_manual_cooldown(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = write_monitored_entries(
+                f"{temp_dir}/urls.txt",
+                [{"url": "https://www.xiaohongshu.com/user/profile/u1", "active": True, "project": "项目A"}],
+            )
+            store = MonitoringSyncStore(
+                env_file=f"{temp_dir}/.env",
+                urls_file=str(path),
+                dashboard_store=DashboardStore(env_file=f"{temp_dir}/.env"),
+                manual_sync_cooldown_seconds=600,
+            )
+            store._manual_last_requested_at = time.time()
+            result = store.request_sync(project="项目A")
+        self.assertFalse(result["ok"])
+        self.assertIn("手动更新过于频繁", result["message"])
+        self.assertTrue(result["sync_status"]["manual_sync_locked"])
+
+    def test_dashboard_store_uses_stale_cache_when_refresh_fails(self) -> None:
+        store = DashboardStore(env_file="/tmp/test.env", cache_seconds=0)
+        with patch(
+            "xhs_feishu_monitor.local_stats_app.server.load_dashboard_payload",
+            side_effect=[
+                {"generated_at": "2026-03-18T13:00:00+08:00", "latest_date": "2026-03-18"},
+                RuntimeError("boom"),
+            ],
+        ):
+            first = store.get_payload(force=True)
+            second = store.get_payload(force=True)
+        self.assertFalse(first["stale"])
+        self.assertTrue(second["stale"])
+        self.assertEqual(second["load_error"], "boom")
+        self.assertEqual(second["latest_date"], "2026-03-18")
+
+    def test_dashboard_store_prefers_local_override_even_on_force_refresh(self) -> None:
+        store = DashboardStore(env_file="/tmp/test.env", cache_seconds=0)
+        store.set_local_override({"generated_at": "2026-03-18T14:00:00+08:00", "latest_date": "2026-03-18"})
+        with patch("xhs_feishu_monitor.local_stats_app.server.load_dashboard_payload", side_effect=AssertionError("unexpected refresh")):
+            payload = store.get_payload(force=True)
+        self.assertTrue(payload["local_override"])
+        self.assertEqual(payload["latest_date"], "2026-03-18")
+
+    def test_build_dashboard_payload_with_reports_updates_frontend_first(self) -> None:
+        base_payload = {
+            "generated_at": "2026-03-17T14:00:00+08:00",
+            "latest_date": "2026-03-17",
+            "updated_at": "2026-03-17T14:00:00+08:00",
+            "series_meta": {"mode": "daily", "update_time": "14:00"},
+            "portal": {"accounts": 1},
+            "series": [{"date": "2026-03-17", "fans": 80, "likes": 10, "comments": 2, "works": 1, "accounts": 1}],
+            "account_series": {
+                "u2": [{"date": "2026-03-17", "fans": 80, "interaction": 120, "likes": 10, "comments": 2, "works": 1}]
+            },
+            "accounts": [
+                {
+                    "account_id": "u2",
+                    "account": "旧账号",
+                    "date": "2026-03-17",
+                    "fans": 80,
+                    "interaction": 120,
+                    "works": 1,
+                    "likes": 10,
+                    "comments": 2,
+                    "weekly_summary": "旧周对比",
+                    "profile_url": "https://profile-u2",
+                    "top_title": "旧作品",
+                    "top_like": 10,
+                    "top_url": "https://note-u2",
+                }
+            ],
+            "rankings": {
+                "单条点赞排行": [
+                    {
+                        "rank": 1,
+                        "account_id": "u2",
+                        "account": "旧账号",
+                        "title": "旧作品",
+                        "metric": 10,
+                        "summary": "点赞 10",
+                        "profile_url": "https://profile-u2",
+                        "note_url": "https://note-u2",
+                        "cover_url": "https://img-u2",
+                    }
+                ],
+                "单条评论排行": [],
+                "单条第二天增长排行": [
+                    {
+                        "rank": 1,
+                        "account_id": "u2",
+                        "account": "旧账号",
+                        "title": "旧作品",
+                        "metric": 3,
+                        "summary": "次日互动 +3",
+                        "profile_url": "https://profile-u2",
+                        "note_url": "https://note-u2",
+                        "cover_url": "https://img-u2",
+                    }
+                ],
+            },
+            "alerts": [{"account_id": "u2", "title": "旧预警"}],
+        }
+        reports = [
+            {
+                "captured_at": "2026-03-18T14:00:00+08:00",
+                "profile": {
+                    "profile_user_id": "u1",
+                    "nickname": "账号A",
+                    "profile_url": "https://profile-u1",
+                    "fans_count_text": "100",
+                    "interaction_count_text": "200",
+                },
+                "works": [
+                    {
+                        "title_copy": "作品A",
+                        "note_type": "image",
+                        "like_count": 20,
+                        "comment_count": 5,
+                        "cover_url": "https://img-u1",
+                        "note_url": "https://note-u1",
+                    }
+                ],
+            }
+        ]
+
+        payload = build_dashboard_payload_with_reports(base_payload=base_payload, reports=reports)
+
+        self.assertEqual(payload["latest_date"], "2026-03-18")
+        self.assertEqual(payload["updated_at"], "2026-03-18T14:00:00+08:00")
+        self.assertIn("u1", payload["account_series"])
+        self.assertEqual(payload["account_series"]["u1"][-1]["fans"], 100)
+        self.assertEqual(payload["accounts"][0]["account_id"], "u1")
+        self.assertEqual(payload["rankings"]["单条点赞排行"][0]["account_id"], "u1")
+        self.assertEqual(payload["rankings"]["单条评论排行"][0]["account_id"], "u1")
+        self.assertEqual(payload["rankings"]["单条第二天增长排行"][0]["account_id"], "u2")
+        self.assertEqual(payload["alerts"][0]["title"], "旧预警")
+
+    def test_build_dashboard_payload_with_reports_preserves_existing_detail_when_report_degrades(self) -> None:
+        base_payload = {
+            "generated_at": "2026-03-17T14:00:00+08:00",
+            "latest_date": "2026-03-17",
+            "updated_at": "2026-03-17T14:00:00+08:00",
+            "series_meta": {"mode": "daily", "update_time": "14:00"},
+            "portal": {"accounts": 1},
+            "series": [{"date": "2026-03-17", "fans": 80, "likes": 10, "comments": 12, "works": 1, "accounts": 1}],
+            "account_series": {
+                "u1": [{"date": "2026-03-17", "fans": 80, "interaction": 120, "likes": 10, "comments": 12, "works": 1}]
+            },
+            "accounts": [
+                {
+                    "account_id": "u1",
+                    "account": "旧账号",
+                    "date": "2026-03-17",
+                    "fans": 80,
+                    "interaction": 120,
+                    "works": 1,
+                    "likes": 10,
+                    "comments": 12,
+                    "weekly_summary": "旧周对比",
+                    "profile_url": "https://profile-u1",
+                    "top_title": "旧作品",
+                    "top_like": 10,
+                    "top_url": "https://note-u1",
+                }
+            ],
+            "rankings": {
+                "单条点赞排行": [
+                    {
+                        "rank": 1,
+                        "account_id": "u1",
+                        "account": "旧账号",
+                        "title": "作品A",
+                        "metric": 10,
+                        "summary": "点赞 10",
+                        "profile_url": "https://profile-u1",
+                        "note_url": "https://note-u1",
+                        "cover_url": "https://img-u1",
+                    }
+                ],
+                "单条评论排行": [
+                    {
+                        "rank": 1,
+                        "account_id": "u1",
+                        "account": "旧账号",
+                        "title": "作品A",
+                        "metric": 12,
+                        "summary": "评论 12",
+                        "profile_url": "https://profile-u1",
+                        "note_url": "https://note-u1",
+                        "cover_url": "https://img-u1",
+                    }
+                ],
+                "单条第二天增长排行": [],
+            },
+            "alerts": [],
+        }
+        reports = [
+            {
+                "captured_at": "2026-03-18T14:00:00+08:00",
+                "profile": {
+                    "profile_user_id": "u1",
+                    "nickname": "账号A",
+                    "profile_url": "https://profile-u1",
+                    "fans_count_text": "100",
+                    "interaction_count_text": "200",
+                },
+                "works": [
+                    {
+                        "title_copy": "作品A",
+                        "note_type": "image",
+                        "like_count": 20,
+                        "comment_count": None,
+                        "cover_url": "https://img-u1",
+                        "note_url": "",
+                        "note_id": "",
+                    }
+                ],
+            }
+        ]
+
+        payload = build_dashboard_payload_with_reports(base_payload=base_payload, reports=reports)
+
+        self.assertEqual(payload["accounts"][0]["comments"], 12)
+        self.assertEqual(payload["accounts"][0]["top_url"], "https://note-u1")
+        self.assertEqual(payload["rankings"]["单条点赞排行"][0]["note_url"], "https://note-u1")
+        self.assertEqual(payload["rankings"]["单条评论排行"][0]["account_id"], "u1")
+
+    def test_monitoring_payload_falls_back_when_profile_lookup_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = write_monitored_entries(
+                f"{temp_dir}/urls.txt",
+                [{"url": "https://www.xiaohongshu.com/user/profile/u1", "active": True, "project": "项目A"}],
+            )
+            store = MonitoringSyncStore(
+                env_file=f"{temp_dir}/.env",
+                urls_file=str(path),
+                dashboard_store=DashboardStore(env_file=f"{temp_dir}/.env"),
+            )
+            with patch("xhs_feishu_monitor.local_stats_app.server.load_profile_table_rows", side_effect=RuntimeError("lookup failed")):
+                payload = store.get_payload()
+        self.assertEqual(payload["profile_lookup_error"], "lookup failed")
+        self.assertEqual(payload["entries"][0]["project"], "项目A")
+        self.assertEqual(payload["entries"][0]["display_name"], "u1")
+
+    def test_monitoring_payload_uses_dashboard_override_for_new_account(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = write_monitored_entries(
+                f"{temp_dir}/urls.txt",
+                [{"url": "https://www.xiaohongshu.com/user/profile/u1", "active": True, "project": "项目A"}],
+            )
+            dashboard_store = DashboardStore(env_file=f"{temp_dir}/.env")
+            dashboard_store.set_local_override(
+                {
+                    "accounts": [
+                        {
+                            "account_id": "u1",
+                            "account": "本地新账号",
+                            "profile_url": "https://profile-u1",
+                            "fans": 100,
+                            "interaction": 200,
+                            "works": 9,
+                        }
+                    ]
+                }
+            )
+            store = MonitoringSyncStore(
+                env_file=f"{temp_dir}/.env",
+                urls_file=str(path),
+                dashboard_store=dashboard_store,
+            )
+            with patch("xhs_feishu_monitor.local_stats_app.server.load_profile_table_rows", return_value=[]):
+                payload = store.get_payload()
+        self.assertEqual(payload["entries"][0]["display_name"], "本地新账号")
+        self.assertEqual(payload["entries"][0]["summary_text"], "粉丝 100 · 获赞 200 · 作品 9")
+
+    def test_run_login_state_self_check_errors_when_chrome_cookie_export_fails(self) -> None:
+        settings = Settings(xhs_fetch_mode="requests", xhs_chrome_cookie_profile="/tmp/profile")
+        with patch("xhs_feishu_monitor.local_stats_app.server.load_settings", return_value=settings):
+            with patch(
+                "xhs_feishu_monitor.local_stats_app.server.export_xiaohongshu_cookie_header",
+                side_effect=RuntimeError("未找到 Chrome Cookies 数据库"),
+            ):
+                payload = run_login_state_self_check(
+                    env_file="/tmp/test.env",
+                    sample_url="https://www.xiaohongshu.com/user/profile/u1",
+                )
+        self.assertEqual(payload["state"], "error")
+        self.assertEqual(payload["cookie_source"], "chrome_profile")
+        self.assertIn("Chrome 登录态读取失败", payload["message"])
+
+    def test_run_login_state_self_check_warns_when_note_ids_missing(self) -> None:
+        settings = Settings(xhs_fetch_mode="requests", xhs_chrome_cookie_profile="/tmp/profile")
+        with patch("xhs_feishu_monitor.local_stats_app.server.load_settings", return_value=settings):
+            with patch("xhs_feishu_monitor.local_stats_app.server.export_xiaohongshu_cookie_header", return_value="a=b"):
+                with patch(
+                    "xhs_feishu_monitor.local_stats_app.server.load_profile_report_payload",
+                    return_value={"initial_state": {}, "final_url": "https://www.xiaohongshu.com/user/profile/u1"},
+                ):
+                    with patch(
+                        "xhs_feishu_monitor.local_stats_app.server.build_profile_report",
+                        return_value={
+                            "profile": {"nickname": "账号A", "profile_user_id": "u1", "fans_count_text": "123"},
+                            "works": [{"note_id": ""}, {"note_id": ""}],
+                        },
+                    ):
+                        payload = run_login_state_self_check(
+                            env_file="/tmp/test.env",
+                            sample_url="https://www.xiaohongshu.com/user/profile/u1",
+                        )
+        self.assertEqual(payload["state"], "warning")
+        self.assertFalse(payload["detail_ready"])
+        self.assertEqual(payload["work_count"], 2)
+        self.assertEqual(payload["note_id_count"], 0)
+        self.assertEqual(payload["sample_account"], "账号A")
+
+    def test_run_login_state_self_check_ok_when_note_ids_exist(self) -> None:
+        settings = Settings(xhs_fetch_mode="requests", xhs_chrome_cookie_profile="/tmp/profile")
+        with patch("xhs_feishu_monitor.local_stats_app.server.load_settings", return_value=settings):
+            with patch("xhs_feishu_monitor.local_stats_app.server.export_xiaohongshu_cookie_header", return_value="a=b"):
+                with patch(
+                    "xhs_feishu_monitor.local_stats_app.server.load_profile_report_payload",
+                    return_value={"initial_state": {}, "final_url": "https://www.xiaohongshu.com/user/profile/u1"},
+                ):
+                    with patch(
+                        "xhs_feishu_monitor.local_stats_app.server.build_profile_report",
+                        return_value={
+                            "profile": {"nickname": "账号A", "profile_user_id": "u1", "fans_count_text": "123"},
+                            "works": [{"note_id": "n1"}, {"note_id": "n2"}],
+                        },
+                    ):
+                        payload = run_login_state_self_check(
+                            env_file="/tmp/test.env",
+                            sample_url="https://www.xiaohongshu.com/user/profile/u1",
+                        )
+        self.assertEqual(payload["state"], "ok")
+        self.assertTrue(payload["detail_ready"])
+        self.assertEqual(payload["note_id_count"], 2)
+
+    def test_wait_for_xiaohongshu_login_opens_window_and_returns_after_success(self) -> None:
+        settings = Settings(xhs_fetch_mode="requests", xhs_chrome_cookie_profile="/tmp/profile")
+        wait_events = []
+        check_results = [
+            build_login_state_payload(state="error", message="样本账号返回了空结果，登录态可能已过期"),
+            build_login_state_payload(state="error", message="样本账号返回了空结果，登录态可能已过期"),
+            build_login_state_payload(state="ok", message="登录态正常，样本账号已拿到作品明细能力。"),
+        ]
+        with patch(
+            "xhs_feishu_monitor.local_stats_app.server.run_login_state_self_check",
+            side_effect=check_results,
+        ):
+            with patch(
+                "xhs_feishu_monitor.local_stats_app.server.open_xiaohongshu_login_window",
+                return_value=True,
+            ) as open_mock:
+                with patch("xhs_feishu_monitor.local_stats_app.server.time.sleep", return_value=None):
+                    payload = wait_for_xiaohongshu_login(
+                        env_file="/tmp/test.env",
+                        settings=settings,
+                        sample_url="https://www.xiaohongshu.com/user/profile/u1",
+                        on_wait=lambda item: wait_events.append(dict(item)),
+                        timeout_seconds=10,
+                        poll_seconds=1,
+                    )
+        self.assertEqual(payload["state"], "ok")
+        self.assertTrue(open_mock.called)
+        self.assertGreaterEqual(len(wait_events), 1)
+        self.assertIn("网页登录窗口", wait_events[0]["message"])
+        self.assertTrue(wait_events[0]["login_window_opened"])
+
+    def test_open_xiaohongshu_login_window_uses_default_chrome(self) -> None:
+        settings = Settings(
+            xhs_fetch_mode="requests",
+            xhs_chrome_cookie_profile=DEFAULT_CHROME_PROFILE_ROOT,
+        )
+        with patch("xhs_feishu_monitor.local_stats_app.server.subprocess.Popen") as popen_mock:
+            opened = open_xiaohongshu_login_window(
+                settings=settings,
+                target_url="https://www.xiaohongshu.com/user/profile/u1",
+            )
+        self.assertTrue(opened)
+        self.assertEqual(
+            popen_mock.call_args.args[0],
+            ["open", "-a", "Google Chrome", "https://www.xiaohongshu.com/user/profile/u1"],
+        )
+
+    def test_monitoring_payload_includes_login_state(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = write_monitored_entries(
+                f"{temp_dir}/urls.txt",
+                [{"url": "https://www.xiaohongshu.com/user/profile/u1", "active": True, "project": "项目A"}],
+            )
+            login_state_store = LoginStateStore(env_file=f"{temp_dir}/.env", urls_file=str(path), cache_seconds=999)
+            store = MonitoringSyncStore(
+                env_file=f"{temp_dir}/.env",
+                urls_file=str(path),
+                dashboard_store=DashboardStore(env_file=f"{temp_dir}/.env"),
+                login_state_store=login_state_store,
+            )
+            with patch.object(
+                login_state_store,
+                "get_payload",
+                return_value={"state": "ok", "message": "登录态正常", "checking": False},
+            ):
+                payload = store.get_payload()
+        self.assertEqual(payload["login_state"]["state"], "ok")
+        self.assertEqual(payload["login_state"]["message"], "登录态正常")
+
+    def test_build_sync_progress_calculates_phase_and_overall_percent(self) -> None:
+        collect_progress = build_sync_progress(
+            phase="collect",
+            current=2,
+            total=4,
+            account="账号A",
+            works=3,
+            status="success",
+            success_count=2,
+            failed_count=0,
+            started_at="2026-03-18T14:00:00+08:00",
+            now=datetime.fromisoformat("2026-03-18T14:01:00+08:00"),
+        )
+        sync_progress = build_sync_progress(
+            phase="sync",
+            current=3,
+            total=4,
+            account="账号A",
+            works=3,
+            success_count=3,
+            failed_count=1,
+            started_at="2026-03-18T14:00:00+08:00",
+            now=datetime.fromisoformat("2026-03-18T14:01:00+08:00"),
+        )
+        self.assertEqual(collect_progress["overall_percent"], 25)
+        self.assertEqual(sync_progress["overall_percent"], 88)
+        self.assertIn("账号A", sync_progress["detail_text"])
+        self.assertEqual(sync_progress["elapsed_text"], "1分")
+        self.assertTrue(sync_progress["eta_seconds"] > 0)
+        self.assertEqual(sync_progress["success_count"], 3)
+        self.assertEqual(sync_progress["failed_count"], 1)
+
+    def test_build_sync_progress_supports_login_phase(self) -> None:
+        progress = build_sync_progress(
+            phase="login",
+            current=0,
+            total=1,
+            status="检测到小红书未登录，已弹出网页登录窗口，完成登录后会自动继续采集。",
+            started_at="2026-03-18T14:00:00+08:00",
+            now=datetime.fromisoformat("2026-03-18T14:01:00+08:00"),
+        )
+        self.assertEqual(progress["phase_label"], "等待网页登录")
+        self.assertEqual(progress["overall_percent"], 0)
+        self.assertEqual(progress["detail_text"], "检测到小红书未登录，已弹出网页登录窗口，完成登录后会自动继续采集。")
+        self.assertEqual(progress["elapsed_text"], "1分")
+
+
+if __name__ == "__main__":
+    unittest.main()

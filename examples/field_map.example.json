@@ -1,0 +1,23 @@
+{
+  "note_id": "笔记ID",
+  "note_title": "标题",
+  "note_url": "链接",
+  "description": "正文摘要",
+  "author_name": "作者",
+  "author_id": "作者ID",
+  "published_at": "发布时间",
+  "captured_at": "抓取时间",
+  "like_count": "点赞数",
+  "collect_count": "收藏数",
+  "comment_count": "评论数",
+  "share_count": "分享数",
+  "like_delta": "点赞增量",
+  "collect_delta": "收藏增量",
+  "comment_delta": "评论增量",
+  "share_delta": "分享增量",
+  "source_name": "监控名称",
+  "tags": "标签",
+  "remark": "备注",
+  "snapshot_key": "快照键",
+  "raw_json": "原始数据"
+}

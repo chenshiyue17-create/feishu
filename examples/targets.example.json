@@ -1,0 +1,8 @@
+[
+  {
+    "name": "示例笔记-JSON输入",
+    "json_file": "note_payload.example.json",
+    "tags": ["演示", "老板电器"],
+    "remark": "先用本地 JSON 验证链路"
+  }
+]

@@ -1,0 +1,16 @@
+.env
+.state.json
+__pycache__/
+tests/__pycache__/
+output/
+.DS_Store
+.interactive_login_profile/
+.local_chrome_profile/
+local_stats_app/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.log
+*.pid
+input/robam_multi_profile_urls.txt
+input/robam_multi_profile_urls.txt.meta.json

@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>XHS Local Stats App</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="backdrop"></div>
+    <main class="app-shell">
+      <header class="hero">
+        <div>
+          <p class="eyebrow">Local Stats App</p>
+          <h1>小红书数据本地统计台</h1>
+          <p class="hero-copy">本地浏览器直接看账号总控、日历走势、单条排行和评论预警，不用每次切飞书。</p>
+        </div>
+        <div class="hero-actions">
+          <div class="hero-action-row">
+            <button id="manualUpdateButton" class="primary-button">立即更新数据</button>
+            <button id="refreshButton" class="primary-button secondary-button">刷新看板</button>
+          </div>
+          <div class="meta">
+            <span id="updatedAt">等待加载</span>
+            <span id="latestDate">-</span>
+          </div>
+        </div>
+      </header>
+
+      <section class="panel monitor-panel">
+        <div class="panel-header">
+          <div>
+            <p class="panel-label">监测账号</p>
+            <h2>即时添加与同步</h2>
+          </div>
+          <div class="monitor-status">
+            <span id="monitorCount" class="monitor-count">0</span>
+            <span id="syncBadge" class="sync-badge">待命</span>
+          </div>
+        </div>
+        <div class="monitor-layout">
+          <div class="monitor-side">
+            <p id="syncStatusText" class="summary-text monitor-summary">当前未开始同步</p>
+            <p id="urlsFileText" class="subtle"></p>
+            <div id="syncProgressCard" class="sync-progress-card"></div>
+            <div id="loginStateCard" class="login-state-card"></div>
+            <div id="proxyPoolCard" class="proxy-pool-card"></div>
+            <div class="action-row">
+              <button id="syncNowButton" class="primary-button secondary-button">立即更新数据</button>
+              <button id="checkLoginStateButton" class="monitor-inline-button" type="button">立即自检</button>
+            </div>
+            <p id="syncCooldownText" class="subtle"></p>
+          </div>
+          <div class="monitor-form-shell">
+            <label class="form-label" for="accountInput">粘贴小红书主页链接，支持一行一个或整段文本自动提取</label>
+            <label class="monitor-project-shell" for="projectInput">
+              <span class="form-label">归属项目</span>
+              <input id="projectInput" class="monitor-search-input" type="text" placeholder="例如：上海内购 / 团购 / 竞品" />
+            </label>
+            <textarea id="accountInput" class="monitor-input" placeholder="https://www.xiaohongshu.com/user/profile/......"></textarea>
+            <div class="form-actions">
+              <button id="addAccountButton" class="primary-button">即时添加并同步</button>
+              <span id="addResult" class="subtle"></span>
+            </div>
+          </div>
+        </div>
+        <div class="monitor-toolbar">
+          <div class="monitor-toolbar-left">
+            <label class="monitor-page-size-shell" for="monitorProjectFilter">
+              <span class="form-label">项目</span>
+              <select id="monitorProjectFilter" class="monitor-page-size-select">
+                <option value="all">全部项目</option>
+              </select>
+            </label>
+            <label class="monitor-search-shell" for="monitorSearchInput">
+              <span class="form-label">查找账号</span>
+              <input id="monitorSearchInput" class="monitor-search-input" type="search" placeholder="搜索账号名、账号ID、主页链接" />
+            </label>
+            <div class="monitor-filter-tabs">
+              <button class="monitor-filter-button is-active" data-monitor-filter="all" type="button">全部</button>
+              <button class="monitor-filter-button" data-monitor-filter="active" type="button">监测中</button>
+              <button class="monitor-filter-button" data-monitor-filter="paused" type="button">已暂停</button>
+            </div>
+          </div>
+          <div class="monitor-toolbar-right">
+            <label class="monitor-page-size-shell" for="monitorPageSize">
+              <span class="form-label">每页</span>
+              <select id="monitorPageSize" class="monitor-page-size-select">
+                <option value="15">15</option>
+                <option value="30" selected>30</option>
+                <option value="60">60</option>
+                <option value="120">120</option>
+              </select>
+            </label>
+            <div class="monitor-bulk-actions">
+              <input id="monitorAssignProjectInput" class="monitor-assign-input" type="text" placeholder="把筛选结果移到项目" />
+              <button id="assignProjectButton" class="monitor-inline-button" type="button">移动项目</button>
+              <button id="pauseFilteredButton" class="monitor-inline-button" type="button">暂停筛选结果</button>
+              <button id="resumeFilteredButton" class="monitor-inline-button" type="button">恢复筛选结果</button>
+            </div>
+          </div>
+        </div>
+        <div id="projectOverview" class="project-overview-grid"></div>
+        <div id="monitorStatsBar" class="monitor-stats-bar"></div>
+        <div id="monitorList" class="monitor-list"></div>
+        <div class="monitor-pagination">
+          <span id="monitorPageInfo" class="subtle">第 1 / 1 页</span>
+          <div class="monitor-page-actions">
+            <button id="monitorPrevPage" class="monitor-inline-button" type="button">上一页</button>
+            <button id="monitorNextPage" class="monitor-inline-button" type="button">下一页</button>
+          </div>
+        </div>
+      </section>
+
+      <section id="portalCards" class="portal-grid"></section>
+
+      <section class="panel account-focus-panel">
+        <div class="panel-header">
+          <div>
+            <p class="panel-label">账号视角</p>
+            <h2 id="activeAccountTitle">当前账号</h2>
+          </div>
+          <p id="activeAccountSummary" class="summary-text"></p>
+        </div>
+        <div id="accountFilterBar" class="account-filter-bar"></div>
+      </section>
+
+      <section class="panel trend-panel">
+        <div class="panel-header">
+          <div>
+            <p class="panel-label">近阶段走势</p>
+            <h2 id="trendTitle">账号趋势</h2>
+          </div>
+          <div class="trend-summary-block">
+            <div class="trend-window-tabs">
+              <button class="trend-window-button" data-trend-window="1">1天</button>
+              <button class="trend-window-button is-active" data-trend-window="7">7天</button>
+            </div>
+            <span id="trendModeChip" class="trend-mode-chip">日更</span>
+            <p id="weeklySummary" class="summary-text"></p>
+          </div>
+        </div>
+        <div id="trendChart" class="chart-shell"></div>
+      </section>
+
+      <section class="ranking-layout">
+        <section class="panel ranking-panel">
+          <div class="panel-header">
+            <div>
+              <p class="panel-label">单条内容</p>
+              <h2 id="rankingTitle">榜单中心</h2>
+            </div>
+            <div class="ranking-controls">
+              <div class="scope-tabs">
+                <button class="scope-button is-active" data-ranking-scope="account">当前账号</button>
+                <button class="scope-button" data-ranking-scope="all">所有账号</button>
+              </div>
+            </div>
+          </div>
+          <div id="rankingList" class="ranking-board"></div>
+        </section>
+
+        <section class="panel accounts-panel">
+          <div class="panel-header">
+            <div>
+              <p class="panel-label">最新快照</p>
+              <h2>账号表现</h2>
+            </div>
+          </div>
+          <div id="accountCards" class="account-grid"></div>
+        </section>
+      </section>
+
+      <section class="panel alerts-panel">
+        <div class="panel-header">
+          <div>
+            <p class="panel-label">评论预警</p>
+            <h2>最近提醒</h2>
+          </div>
+        </div>
+        <div id="alertsList" class="alerts-list"></div>
+      </section>
+    </main>
+    <script src="/app.js"></script>
+  </body>
+</html>
