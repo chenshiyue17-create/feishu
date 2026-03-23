@@ -106,6 +106,55 @@ XHS_PROXY_COOLDOWN_SECONDS=300
 
 `proxies.txt` 一行一个代理，支持 `host:port` 或完整 URL。程序会在 `requests` 抓取时按轮换顺序取代理，失败的代理会进入冷却期，过了 `XHS_PROXY_COOLDOWN_SECONDS` 后再参与轮换。浏览器抓取模式也会复用同一套代理配置；`local_browser` 如果复用默认 Chrome，会受浏览器自身会话和代理行为影响，稳定性不如 `requests/playwright`。
 
+如果你要避免批量采集时瞬时并发过高，建议保留默认的低突发策略：
+
+```env
+XHS_BATCH_CONCURRENCY=2
+XHS_BATCH_REQUEST_INTERVAL_SECONDS=2
+XHS_BATCH_CHUNK_SIZE=8
+XHS_BATCH_CHUNK_COOLDOWN_SECONDS=12
+XHS_BATCH_RETRY_FAILED_ONCE=true
+XHS_BATCH_RETRY_DELAY_SECONDS=20
+XHS_BATCH_PROJECT_COOLDOWN_SECONDS=45
+```
+
+说明：
+
+- 默认无代理池时，程序会把 `requests` 并发自动收敛到最多 `2`
+- 如果配置了代理池，并发上限会随代理数量小幅放开，但仍会控制在低突发范围
+- `XHS_BATCH_REQUEST_INTERVAL_SECONDS` 是全局起步间隔，不是单账号重试延迟
+- `XHS_BATCH_CHUNK_SIZE / XHS_BATCH_CHUNK_COOLDOWN_SECONDS` 用于每跑完一小段后主动降速，降低连续打点过密的风险
+- `XHS_BATCH_RETRY_FAILED_ONCE` 会把首轮超时、429、风控类失败放到尾部慢速补抓一次
+- `XHS_BATCH_RETRY_DELAY_SECONDS` 是进入尾部重试前的等待时间，避免刚失败就立即再次命中风控
+- `XHS_BATCH_PROJECT_COOLDOWN_SECONDS` 会在全量 `urls_file` 任务里按项目分组后，给项目与项目之间留出冷却时间，适合 30 到 300 个账号的项目制监控
+
+如果你要让账号主页拿到更准确的“总作品数”，当前版本会优先走 `xhshow` 签名请求访问 `user_posted` 分页接口：
+
+```env
+XHS_ENABLE_SIGNED_PROFILE_PAGES=true
+XHS_SIGNED_PROFILE_MAX_PAGES=40
+```
+
+说明：
+
+- 这个通道只用于账号主页翻页和精确总作品数，不影响普通笔记详情抓取
+- 作品详情仍然只保留前 `30` 条，避免飞书和本地前端过重
+- 额外翻页抓到的作品只用于补全 `账号总作品数`
+- 如果 `xhshow` 没装好、签名失败、登录态无效，程序会自动退回现有下限口径，不会中断主流程
+
+如果你还想在作品表里同步一段“最新评论摘要”，可以开启：
+
+```env
+XHS_FETCH_WORK_COMMENT_PREVIEW=true
+XHS_WORK_COMMENT_PREVIEW_LIMIT=3
+```
+
+说明：
+
+- 这里只抓第一页最新评论做摘要，不做整帖全量评论采集
+- 默认最多保留前 `3` 条，适合预警和人工复核
+- 这个摘要会尽量复用签名评论接口；拿不到时不会影响主流程
+
 如果你要采集作品评论数并做日增预警，在 `.env` 里补这些值：
 
 ```env
@@ -373,6 +422,40 @@ python3 -m xhs_feishu_monitor.profile_live_sync \
 ```bash
 python3 -m xhs_feishu_monitor.profile_live_sync \
   --url 'https://www.xiaohongshu.com/user/profile/你的用户ID?...' \
+  --env-file xhs_feishu_monitor/.env \
+  --ensure-fields \
+  --sync-dashboard \
+  --install-launchd \
+  --daily-at 14:00 \
+  --load-launchd
+```
+
+如果你现在用的是“项目制监控”，并且 `urls_file` 已经按 `项目名<TAB>主页链接` 维护，批量飞书同步任务支持直接按项目错峰安装：
+
+```bash
+python3 -m xhs_feishu_monitor.profile_batch_to_feishu \
+  --urls-file xhs_feishu_monitor/input/robam_multi_profile_urls.txt \
+  --env-file xhs_feishu_monitor/.env \
+  --ensure-fields \
+  --sync-dashboard \
+  --install-launchd \
+  --daily-at 14:00 \
+  --project-slot-minutes 20 \
+  --load-launchd
+```
+
+这样会按项目顺序自动拆成多条任务，例如：
+
+- `默认项目`：`14:00`
+- `项目B`：`14:20`
+- `项目C`：`14:40`
+
+如果你只想给单个项目装定时任务，也可以直接指定：
+
+```bash
+python3 -m xhs_feishu_monitor.profile_batch_to_feishu \
+  --urls-file xhs_feishu_monitor/input/robam_multi_profile_urls.txt \
+  --project 默认项目 \
   --env-file xhs_feishu_monitor/.env \
   --ensure-fields \
   --sync-dashboard \

@@ -1,1 +1,2 @@
 requests>=2.31.0
+xhshow @ git+https://github.com/Cloxl/xhshow.git@11a0a08

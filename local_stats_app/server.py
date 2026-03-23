@@ -4,9 +4,7 @@ import argparse
 import copy
 import json
 import os
-import re
 import subprocess
-import tempfile
 import threading
 import time
 import urllib.parse
@@ -27,7 +25,7 @@ from ..chrome_cookies import (
 )
 from ..config import load_settings
 from ..feishu import FeishuBitableClient
-from ..profile_batch_report import normalize_profile_url, normalize_profile_urls
+from ..profile_batch_report import normalize_profile_url
 from ..profile_batch_to_feishu import load_reports_for_sync, sync_reports_to_feishu
 from ..profile_dashboard_to_feishu import (
     build_single_work_ranking_fields,
@@ -37,11 +35,46 @@ from ..profile_dashboard_to_feishu import (
     parse_exact_number,
     rank_profile_works,
 )
+from ..project_sync_status import attach_project_sync_statuses, update_project_sync_status
 from ..profile_report import build_profile_report, load_profile_report_payload
 from ..profile_to_feishu import PROFILE_TABLE_NAME
 from ..profile_works_to_feishu import WORKS_TABLE_NAME
 from ..xhs import build_proxy_pool_status
 from .data_service import build_dashboard_payload_from_tables
+from . import login_state as login_state_module
+from .login_state import (
+    LOGIN_STATE_IDLE_PAYLOAD,
+    LOGIN_WAIT_POLL_SECONDS,
+    LOGIN_WAIT_TIMEOUT_SECONDS,
+    build_login_state_payload,
+    login_state_requires_interactive_login,
+    open_xiaohongshu_login_window,
+    run_login_state_self_check,
+    wait_for_xiaohongshu_login,
+)
+from .monitored_accounts import (
+    DEFAULT_PROJECT_NAME,
+    build_dashboard_account_index,
+    build_metric_text,
+    build_profile_name_index,
+    build_project_summaries,
+    classify_monitored_fetch_state,
+    enrich_monitored_entries,
+    extract_link,
+    extract_profile_user_id,
+    is_login_redirect_url,
+    load_monitored_metadata,
+    load_monitored_urls,
+    merge_monitored_entries,
+    merge_monitored_urls,
+    normalize_project_name,
+    parse_monitored_entries,
+    pick_profile_url,
+    resolve_text_path,
+    update_monitored_metadata,
+    write_monitored_entries,
+    write_monitored_urls,
+)
 
 
 PORTAL_TABLE_NAME = "小红书仪表盘总控"
@@ -50,32 +83,6 @@ RANKING_TABLE_NAME = "小红书单条作品排行"
 ALERT_TABLE_NAME = "小红书评论预警"
 WEB_DIR = Path(__file__).resolve().parent / "web"
 DEFAULT_URLS_FILE = "xhs_feishu_monitor/input/robam_multi_profile_urls.txt"
-MONITORED_PAUSED_PREFIX = "# PAUSED "
-DEFAULT_PROJECT_NAME = "默认项目"
-PROFILE_USER_ID_PATTERN = re.compile(r"/user/profile/([0-9a-z]+)", re.IGNORECASE)
-LOGIN_STATE_IDLE_PAYLOAD = {
-    "state": "idle",
-    "message": "等待自动自检",
-    "checked_at": "",
-    "cache_age_seconds": 0,
-    "checking": False,
-    "fetch_mode": "",
-    "cookie_source": "none",
-    "cookie_source_label": "未配置登录态",
-    "cookie_ready": False,
-    "detail_ready": False,
-    "degraded": False,
-    "sample_url": "",
-    "sample_account": "",
-    "sample_user_id": "",
-    "work_count": 0,
-    "note_id_count": 0,
-    "comment_count_ready": 0,
-    "hints": [],
-}
-
-LOGIN_WAIT_TIMEOUT_SECONDS = 180
-LOGIN_WAIT_POLL_SECONDS = 5
 
 DASHBOARD_SERIES_META = {
     "mode": "daily",
@@ -89,191 +96,48 @@ def iso_now() -> str:
     return datetime.now().astimezone().isoformat(timespec="seconds")
 
 
-def extract_link(value: Any) -> str:
-    if isinstance(value, dict):
-        return str(value.get("link") or "").strip()
-    if isinstance(value, list):
-        for item in value:
-            link = extract_link(item)
-            if link:
-                return link
-    return ""
+def _sync_login_state_module_dependencies() -> None:
+    login_state_module.load_settings = load_settings
+    login_state_module.export_xiaohongshu_cookie_header = export_xiaohongshu_cookie_header
+    login_state_module.is_default_chrome_profile_root = is_default_chrome_profile_root
+    login_state_module.resolve_chrome_profile_directory = resolve_chrome_profile_directory
+    login_state_module.resolve_chrome_profile_root = resolve_chrome_profile_root
+    login_state_module.build_profile_report = build_profile_report
+    login_state_module.load_profile_report_payload = load_profile_report_payload
+    login_state_module.subprocess = subprocess
+    login_state_module.webbrowser = webbrowser
 
 
-def extract_profile_user_id(url: str) -> str:
-    match = PROFILE_USER_ID_PATTERN.search(str(url or ""))
-    if not match:
-        return ""
-    return str(match.group(1) or "").strip()
+def run_login_state_self_check(*, env_file: str, sample_url: str = "") -> Dict[str, Any]:
+    _sync_login_state_module_dependencies()
+    return login_state_module.run_login_state_self_check(env_file=env_file, sample_url=sample_url)
 
 
-def build_metric_text(*, fans: Any = "", interaction: Any = "", works: Any = "") -> str:
-    parts: List[str] = []
-    fans_text = str(fans or "").strip()
-    interaction_text = str(interaction or "").strip()
-    works_text = str(works or "").strip()
-    if fans_text:
-        parts.append(f"粉丝 {fans_text}")
-    if interaction_text:
-        parts.append(f"获赞 {interaction_text}")
-    if works_text:
-        parts.append(f"作品 {works_text}")
-    return " · ".join(parts)
+def open_xiaohongshu_login_window(*, settings, target_url: str = "") -> bool:
+    _sync_login_state_module_dependencies()
+    return login_state_module.open_xiaohongshu_login_window(settings=settings, target_url=target_url)
 
 
-def normalize_project_name(value: Any) -> str:
-    text = str(value or "").strip()
-    return text or DEFAULT_PROJECT_NAME
-
-
-def classify_monitored_fetch_state(*, error_text: Any = "", has_snapshot: bool = False) -> tuple[str, str]:
-    if has_snapshot:
-        return "ok", "已获取账号快照"
-    text = str(error_text or "").strip()
-    lowered = text.lower()
-    if not text:
-        return "checking", "等待首次同步"
-    if "/login" in lowered or "登录跳转" in text or "登录页" in text:
-        return "error", "命中登录页，当前登录态不可用"
-    if "空结果" in text:
-        return "error", "账号页返回空结果"
-    if "timeout" in lowered or "超时" in text:
-        return "error", "请求超时，稍后重试"
-    if "429" in lowered or "403" in lowered or "反爬" in text or "风控" in text:
-        return "error", "可能触发风控，建议稍后重试"
-    return "error", text[:42]
-
-
-def is_login_redirect_url(url: Any) -> bool:
-    text = str(url or "").strip().lower()
-    return "/login" in text and "xiaohongshu.com" in text
-
-
-def pick_profile_url(default_url: str, *candidates: Any) -> str:
-    for candidate in candidates:
-        text = str(candidate or "").strip()
-        if text and not is_login_redirect_url(text):
-            return text
-    return str(default_url or "").strip()
-
-
-def build_profile_name_index(rows: List[Dict[str, Any]]) -> Dict[str, Dict[str, str]]:
-    index: Dict[str, Dict[str, str]] = {}
-    for row in rows:
-        account_id = str(row.get("账号ID") or "").strip()
-        if not account_id:
-            continue
-        works_text = str(row.get("作品数展示") or row.get("账号总作品数") or "").strip()
-        if not works_text:
-            visible_works = str(row.get("首页可见作品数") or "").strip()
-            if visible_works.isdigit() and int(visible_works) >= 30:
-                works_text = "30+"
-            else:
-                works_text = visible_works
-        index[account_id] = {
-            "account": str(row.get("账号") or "").strip(),
-            "profile_url": extract_link(row.get("内容链接")),
-            "fans_text": str(row.get("粉丝数") or row.get("粉丝数文本") or "").strip(),
-            "interaction_text": str(row.get("获赞收藏文本") or "").strip(),
-            "works_text": works_text,
-        }
-    return index
-
-
-def build_dashboard_account_index(accounts: List[Dict[str, Any]]) -> Dict[str, Dict[str, str]]:
-    index: Dict[str, Dict[str, str]] = {}
-    for item in accounts:
-        account_id = str(item.get("account_id") or "").strip()
-        if not account_id:
-            continue
-        fans_value = item.get("fans")
-        interaction_value = item.get("interaction")
-        works_value = item.get("works")
-        works_display = str(item.get("works_display") or works_value or "").strip()
-        if works_display.isdigit() and int(works_display) >= 30 and not str(item.get("works_display") or "").strip():
-            works_display = "30+"
-        index[account_id] = {
-            "account": str(item.get("account") or "").strip(),
-            "profile_url": str(item.get("profile_url") or "").strip(),
-            "fans_text": "" if fans_value in ("", None) else str(fans_value),
-            "interaction_text": "" if interaction_value in ("", None) else str(interaction_value),
-            "works_text": works_display,
-        }
-    return index
-
-
-def enrich_monitored_entries(
-    entries: List[Dict[str, Any]],
-    profile_rows: List[Dict[str, Any]],
-    metadata_index: Optional[Dict[str, Dict[str, str]]] = None,
-    dashboard_account_index: Optional[Dict[str, Dict[str, str]]] = None,
-) -> List[Dict[str, Any]]:
-    profile_index = build_profile_name_index(profile_rows)
-    metadata_index = metadata_index or {}
-    dashboard_account_index = dashboard_account_index or {}
-    enriched: List[Dict[str, Any]] = []
-    for entry in entries:
-        url = str(entry.get("url") or "").strip()
-        account_id = extract_profile_user_id(url)
-        profile_meta = profile_index.get(account_id) or {}
-        cached_meta = metadata_index.get(url) or {}
-        dashboard_meta = dashboard_account_index.get(account_id) or {}
-        account_name = (
-            profile_meta.get("account")
-            or cached_meta.get("account")
-            or dashboard_meta.get("account")
-            or account_id
-            or ""
-        )
-        fans_text = profile_meta.get("fans_text") or cached_meta.get("fans_text") or dashboard_meta.get("fans_text") or ""
-        interaction_text = (
-            profile_meta.get("interaction_text")
-            or cached_meta.get("interaction_text")
-            or dashboard_meta.get("interaction_text")
-            or ""
-        )
-        works_text = profile_meta.get("works_text") or cached_meta.get("works_text") or dashboard_meta.get("works_text") or ""
-        fetch_state, fetch_message = classify_monitored_fetch_state(
-            error_text=cached_meta.get("fetch_message") or "",
-            has_snapshot=bool(account_name and (fans_text or interaction_text or works_text or dashboard_meta)),
-        )
-        if cached_meta.get("fetch_state") == "checking" and fetch_state == "ok":
-            fetch_state = "ok"
-            fetch_message = "已获取账号快照"
-        elif cached_meta.get("fetch_state") in {"checking", "error", "warning"} and not (fans_text or interaction_text or works_text or dashboard_meta):
-            fetch_state = str(cached_meta.get("fetch_state") or fetch_state)
-            fetch_message = str(cached_meta.get("fetch_message") or fetch_message)
-        summary_text = build_metric_text(
-            fans=fans_text,
-            interaction=interaction_text,
-            works=works_text,
-        )
-        if not summary_text:
-            summary_text = "等待首次同步"
-        enriched.append(
-            {
-                "url": url,
-                "active": bool(entry.get("active", True)),
-                "project": normalize_project_name(entry.get("project")),
-                "account_id": account_id,
-                "account": account_name,
-                "display_name": account_name or url,
-                "profile_url": pick_profile_url(
-                    url,
-                    profile_meta.get("profile_url"),
-                    cached_meta.get("profile_url"),
-                    dashboard_meta.get("profile_url"),
-                ),
-                "fans_text": fans_text,
-                "interaction_text": interaction_text,
-                "works_text": works_text,
-                "summary_text": summary_text,
-                "fetch_state": fetch_state,
-                "fetch_message": fetch_message or "等待首次同步",
-                "fetch_checked_at": str(cached_meta.get("fetch_checked_at") or "").strip(),
-            }
-        )
-    return enriched
+def wait_for_xiaohongshu_login(
+    *,
+    env_file: str,
+    settings,
+    sample_url: str,
+    on_wait: Optional[Callable[[Dict[str, Any]], None]] = None,
+    timeout_seconds: int = LOGIN_WAIT_TIMEOUT_SECONDS,
+    poll_seconds: int = LOGIN_WAIT_POLL_SECONDS,
+) -> Dict[str, Any]:
+    _sync_login_state_module_dependencies()
+    login_state_module.run_login_state_self_check = run_login_state_self_check
+    login_state_module.open_xiaohongshu_login_window = open_xiaohongshu_login_window
+    return login_state_module.wait_for_xiaohongshu_login(
+        env_file=env_file,
+        settings=settings,
+        sample_url=sample_url,
+        on_wait=on_wait,
+        timeout_seconds=timeout_seconds,
+        poll_seconds=poll_seconds,
+    )
 
 
 def build_dashboard_account_point(report: Dict[str, Any]) -> Dict[str, Any]:
@@ -692,280 +556,6 @@ class DashboardStore:
                 self._local_override_at = 0.0
 
 
-def detect_cookie_source(settings) -> tuple[str, str]:
-    if str(getattr(settings, "xhs_cookie", "") or "").strip():
-        return "manual_cookie", "手动 Cookie"
-    profile_root = str(getattr(settings, "xhs_chrome_cookie_profile", "") or "").strip()
-    if profile_root:
-        if is_default_chrome_profile_root(profile_root):
-            return "chrome_profile", "Chrome 默认资料"
-        profile_name = Path(profile_root).name or "Chrome"
-        return "chrome_profile", f"Chrome 登录态 · {profile_name}"
-    return "none", "未配置登录态"
-
-
-def build_login_state_payload(**overrides: Any) -> Dict[str, Any]:
-    payload = dict(LOGIN_STATE_IDLE_PAYLOAD)
-    payload.update(overrides)
-    hints = payload.get("hints") or []
-    payload["hints"] = [str(item) for item in hints if str(item).strip()]
-    return payload
-
-
-def login_state_requires_interactive_login(payload: Dict[str, Any]) -> bool:
-    state = str(payload.get("state") or "").strip()
-    message = str(payload.get("message") or "").strip().lower()
-    if state == "warning" and str(payload.get("cookie_source") or "").strip() == "chrome_profile":
-        if not bool(payload.get("detail_ready")) and any(
-            keyword in message
-            for keyword in (
-                "公开页摘要",
-                "note_id",
-                "详细数据",
-                "退化",
-            )
-        ):
-            return True
-    if state != "error":
-        return False
-    return any(
-        keyword in message
-        for keyword in (
-            "登录态",
-            "登录页",
-            "/login",
-            "空结果",
-            "未解析到任何作品",
-            "反爬页",
-        )
-    )
-
-
-def run_login_state_self_check(*, env_file: str, sample_url: str = "") -> Dict[str, Any]:
-    settings = load_settings(env_file)
-    fetch_mode = str(getattr(settings, "xhs_fetch_mode", "") or "").strip().lower() or "requests"
-    cookie_source, cookie_source_label = detect_cookie_source(settings)
-    checked_at = iso_now()
-    hints: List[str] = []
-
-    if fetch_mode != "requests":
-        message = f"当前抓取模式为 {fetch_mode}，自动自检先只校验配置；样本抓取建议通过手动同步确认。"
-        if fetch_mode == "local_browser":
-            hints.append("local_browser 模式会直接调用本机浏览器，不适合频繁后台自检。")
-        return build_login_state_payload(
-            state="warning",
-            message=message,
-            checked_at=checked_at,
-            fetch_mode=fetch_mode,
-            cookie_source=cookie_source,
-            cookie_source_label=cookie_source_label,
-            cookie_ready=True,
-            sample_url=sample_url,
-            hints=hints,
-        )
-
-    cookie_ready = False
-    if cookie_source == "manual_cookie":
-        cookie_ready = True
-    elif cookie_source == "chrome_profile":
-        try:
-            cookie_ready = bool(
-                export_xiaohongshu_cookie_header(
-                    settings.xhs_chrome_cookie_profile,
-                    resolve_chrome_profile_directory(settings.playwright_profile_directory),
-                ).strip()
-            )
-        except Exception as exc:
-            return build_login_state_payload(
-                state="error",
-                message=f"Chrome 登录态读取失败：{exc}",
-                checked_at=checked_at,
-                fetch_mode=fetch_mode,
-                cookie_source=cookie_source,
-                cookie_source_label=cookie_source_label,
-                cookie_ready=False,
-                sample_url=sample_url,
-                hints=[
-                    "重新用本机 Chrome 登录小红书后，再点一次“立即自检”。",
-                    "确认 XHS_CHROME_COOKIE_PROFILE 仍指向可用的登录目录。",
-                ],
-            )
-    else:
-        hints.append("未配置 XHS_COOKIE 或 Chrome 登录态目录，当前只能依赖公开页能力。")
-
-    if not sample_url:
-        return build_login_state_payload(
-            state="warning" if cookie_source == "none" else "ok",
-            message="已完成登录态配置检查；待添加监测账号后会继续做样本抓取自检。",
-            checked_at=checked_at,
-            fetch_mode=fetch_mode,
-            cookie_source=cookie_source,
-            cookie_source_label=cookie_source_label,
-            cookie_ready=cookie_ready,
-            hints=hints,
-        )
-
-    try:
-        payload = load_profile_report_payload(settings=settings, profile_url=sample_url)
-        report = build_profile_report(initial_state=payload["initial_state"], profile_url=payload["final_url"])
-    except Exception as exc:
-        return build_login_state_payload(
-            state="error",
-            message=f"样本账号抓取失败：{exc}",
-            checked_at=checked_at,
-            fetch_mode=fetch_mode,
-            cookie_source=cookie_source,
-            cookie_source_label=cookie_source_label,
-            cookie_ready=cookie_ready,
-            sample_url=sample_url,
-            hints=[
-                "先在浏览器里打开小红书确认当前登录态仍有效。",
-                "如果刚重新登录，点一次“立即自检”刷新状态。",
-            ],
-        )
-
-    profile = report.get("profile") or {}
-    works = report.get("works") or []
-    sample_account = str(profile.get("nickname") or "").strip()
-    sample_user_id = str(profile.get("profile_user_id") or "").strip()
-    work_count = len(works)
-    note_id_count = sum(1 for item in works if str(item.get("note_id") or "").strip())
-    comment_count_ready = sum(1 for item in works if item.get("comment_count") is not None)
-    detail_ready = note_id_count > 0
-    has_profile_core = bool(sample_account or sample_user_id or profile.get("fans_count_text"))
-
-    if not has_profile_core and work_count == 0:
-        state = "error"
-        message = "样本账号返回了空结果，登录态可能已过期，或当前请求命中了反爬页。"
-        hints.extend(
-            [
-                "先在本机 Chrome 打开小红书主页，确认账号仍处于登录状态。",
-                "如果当前是 Chrome 登录态模式，建议重新登录后再点“立即自检”。",
-            ]
-        )
-    elif work_count == 0:
-        state = "error"
-        message = "样本账号未解析到任何作品，详细数据链路当前不可用。"
-        hints.extend(
-            [
-                "当前账号大概率退化成公开页或反爬结果，建议重新登录后复检。",
-                "如持续为空，优先检查 XHS_CHROME_COOKIE_PROFILE 对应的登录目录是否正确。",
-            ]
-        )
-    elif not detail_ready:
-        state = "warning"
-        message = "样本账号只拿到公开页摘要，未拿到 note_id，作品详情与评论数据已退化。"
-        hints.extend(
-            [
-                "当前还能看账号摘要，但详细作品数据能力不足。",
-                "重新登录本机 Chrome 后再点“立即自检”，通常能恢复 note_id 抓取。",
-            ]
-        )
-    elif cookie_source == "none":
-        state = "warning"
-        message = "样本账号抓取正常，但当前没有稳定登录态来源，详细数据能力可能随时退化。"
-        hints.append("建议改用本机 Chrome 登录态目录，长期稳定性会更高。")
-    else:
-        state = "ok"
-        message = "登录态正常，样本账号已拿到作品明细能力。"
-        hints.append("如果后面看见 note_id 或评论字段突然清空，直接点“立即自检”确认登录态。")
-
-    return build_login_state_payload(
-        state=state,
-        message=message,
-        checked_at=checked_at,
-        fetch_mode=fetch_mode,
-        cookie_source=cookie_source,
-        cookie_source_label=cookie_source_label,
-        cookie_ready=cookie_ready,
-        detail_ready=detail_ready,
-        degraded=state in {"warning", "error"},
-        sample_url=sample_url,
-        sample_account=sample_account,
-        sample_user_id=sample_user_id,
-        work_count=work_count,
-        note_id_count=note_id_count,
-        comment_count_ready=comment_count_ready,
-        hints=hints,
-    )
-
-
-def open_xiaohongshu_login_window(*, settings, target_url: str = "") -> bool:
-    url = str(target_url or "").strip() or "https://www.xiaohongshu.com/"
-    chrome_profile_root = str(getattr(settings, "xhs_chrome_cookie_profile", "") or "").strip()
-    profile_directory = resolve_chrome_profile_directory(getattr(settings, "playwright_profile_directory", "") or "Default")
-    if chrome_profile_root:
-        try:
-            if is_default_chrome_profile_root(chrome_profile_root):
-                subprocess.Popen(
-                    ["open", "-a", "Google Chrome", url],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
-                return True
-            subprocess.Popen(
-                [
-                    "open",
-                    "-na",
-                    "Google Chrome",
-                    "--args",
-                    f"--user-data-dir={resolve_chrome_profile_root(chrome_profile_root)}",
-                    f"--profile-directory={profile_directory}",
-                    url,
-                ],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            return True
-        except Exception:
-            pass
-    try:
-        return bool(webbrowser.open(url))
-    except Exception:
-        return False
-
-
-def wait_for_xiaohongshu_login(
-    *,
-    env_file: str,
-    settings,
-    sample_url: str,
-    on_wait: Optional[Callable[[Dict[str, Any]], None]] = None,
-    timeout_seconds: int = LOGIN_WAIT_TIMEOUT_SECONDS,
-    poll_seconds: int = LOGIN_WAIT_POLL_SECONDS,
-) -> Dict[str, Any]:
-    payload = run_login_state_self_check(env_file=env_file, sample_url=sample_url)
-    if not login_state_requires_interactive_login(payload):
-        return payload
-    if not str(getattr(settings, "xhs_chrome_cookie_profile", "") or "").strip():
-        return payload
-
-    window_opened = open_xiaohongshu_login_window(settings=settings, target_url=sample_url or "https://www.xiaohongshu.com/")
-    waiting_payload = dict(payload)
-    waiting_payload["login_window_opened"] = window_opened
-    waiting_payload["message"] = (
-        "检测到小红书未登录，已弹出网页登录窗口，完成登录后会自动继续采集。"
-        if window_opened
-        else "检测到小红书未登录，但未能自动打开网页登录，请先手动登录后重试。"
-    )
-    if on_wait is not None:
-        on_wait(waiting_payload)
-    if not window_opened:
-        return waiting_payload
-
-    deadline = time.time() + max(1, int(timeout_seconds or 1))
-    while time.time() < deadline:
-        time.sleep(max(1, int(poll_seconds or 1)))
-        payload = run_login_state_self_check(env_file=env_file, sample_url=sample_url)
-        payload["login_window_opened"] = True
-        if not login_state_requires_interactive_login(payload):
-            return payload
-        if on_wait is not None:
-            on_wait(payload)
-    payload["login_window_opened"] = True
-    return payload
-
-
 class LoginStateStore:
     def __init__(self, *, env_file: str, urls_file: str, cache_seconds: int = 600) -> None:
         self.env_file = env_file
@@ -1030,230 +620,6 @@ class LoginStateStore:
             self._payload = payload
             self._cached_at = time.time()
             self._running = False
-
-
-def resolve_text_path(path_text: str) -> Path:
-    return Path(path_text).expanduser().resolve()
-
-
-def resolve_metadata_cache_path(urls_file: str) -> Path:
-    path = resolve_text_path(urls_file)
-    suffix = path.suffix or ".txt"
-    return path.with_name(f"{path.stem}{suffix}.meta.json")
-
-
-def load_monitored_metadata(urls_file: str) -> Dict[str, Dict[str, str]]:
-    path = resolve_metadata_cache_path(urls_file)
-    if not path.exists():
-        return {}
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
-    if not isinstance(payload, dict):
-        return {}
-    normalized: Dict[str, Dict[str, str]] = {}
-    for raw_url, raw_meta in payload.items():
-        url = normalize_profile_url(str(raw_url or ""))
-        if not url or not isinstance(raw_meta, dict):
-            continue
-        normalized[url] = {
-            "account": str(raw_meta.get("account") or "").strip(),
-            "account_id": str(raw_meta.get("account_id") or "").strip(),
-            "profile_url": str(raw_meta.get("profile_url") or "").strip(),
-            "fans_text": str(raw_meta.get("fans_text") or "").strip(),
-            "interaction_text": str(raw_meta.get("interaction_text") or "").strip(),
-            "works_text": str(raw_meta.get("works_text") or "").strip(),
-            "fetch_state": str(raw_meta.get("fetch_state") or "").strip(),
-            "fetch_message": str(raw_meta.get("fetch_message") or "").strip(),
-            "fetch_checked_at": str(raw_meta.get("fetch_checked_at") or "").strip(),
-        }
-    return normalized
-
-
-def update_monitored_metadata(urls_file: str, items: List[Dict[str, Any]]) -> Path:
-    path = resolve_metadata_cache_path(urls_file)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    metadata = load_monitored_metadata(urls_file)
-    for item in items:
-        url = normalize_profile_url(str(item.get("url") or item.get("profile_url") or ""))
-        if not url:
-            continue
-        current = metadata.get(url) or {}
-        account_value = str(item.get("account") or "").strip() if "account" in item else current.get("account", "")
-        account_id_value = str(item.get("account_id") or "").strip() if "account_id" in item else current.get("account_id", "")
-        profile_url_value = (
-            str(item.get("profile_url") or "").strip()
-            if "profile_url" in item
-            else str(current.get("profile_url") or url).strip()
-        )
-        fans_value = str(item.get("fans_text") or "").strip() if "fans_text" in item else current.get("fans_text", "")
-        interaction_value = (
-            str(item.get("interaction_text") or "").strip()
-            if "interaction_text" in item
-            else current.get("interaction_text", "")
-        )
-        works_value = str(item.get("works_text") or "").strip() if "works_text" in item else current.get("works_text", "")
-        fetch_state_value = (
-            str(item.get("fetch_state") or "").strip()
-            if "fetch_state" in item
-            else current.get("fetch_state", "")
-        )
-        fetch_message_value = (
-            str(item.get("fetch_message") or "").strip()
-            if "fetch_message" in item
-            else current.get("fetch_message", "")
-        )
-        fetch_checked_at_value = (
-            str(item.get("fetch_checked_at") or "").strip()
-            if "fetch_checked_at" in item
-            else current.get("fetch_checked_at", "")
-        )
-        merged = {
-            "account": account_value,
-            "account_id": account_id_value,
-            "profile_url": profile_url_value or url,
-            "fans_text": fans_value,
-            "interaction_text": interaction_value,
-            "works_text": works_value,
-            "fetch_state": fetch_state_value,
-            "fetch_message": fetch_message_value,
-            "fetch_checked_at": fetch_checked_at_value,
-        }
-        metadata[url] = merged
-    payload = json.dumps(metadata, ensure_ascii=False, indent=2)
-    with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=str(path.parent), delete=False) as handle:
-        handle.write(payload)
-        temp_path = Path(handle.name)
-    temp_path.replace(path)
-    return path
-
-
-def parse_monitored_entries(urls_file: str) -> List[Dict[str, Any]]:
-    path = resolve_text_path(urls_file)
-    if not path.exists():
-        return []
-    entries: List[Dict[str, Any]] = []
-    seen: set[str] = set()
-    for raw_line in path.read_text(encoding="utf-8").splitlines():
-        line = raw_line.strip()
-        if not line:
-            continue
-        active = True
-        candidate = line
-        if line.startswith(MONITORED_PAUSED_PREFIX):
-            active = False
-            candidate = line[len(MONITORED_PAUSED_PREFIX) :].strip()
-        elif line.startswith("#"):
-            continue
-        project = DEFAULT_PROJECT_NAME
-        if "\t" in candidate:
-            raw_project, candidate = candidate.split("\t", 1)
-            project = normalize_project_name(raw_project)
-        normalized = normalize_profile_url(candidate)
-        if not normalized or normalized in seen:
-            continue
-        seen.add(normalized)
-        entries.append({"url": normalized, "active": active, "project": project})
-    return entries
-
-
-def load_monitored_urls(urls_file: str) -> List[str]:
-    return [entry["url"] for entry in parse_monitored_entries(urls_file) if entry.get("active")]
-
-
-def merge_monitored_entries(
-    existing_entries: List[Dict[str, Any]],
-    *,
-    raw_text: str = "",
-    urls: Optional[List[str]] = None,
-    project: str = DEFAULT_PROJECT_NAME,
-) -> tuple[List[Dict[str, Any]], List[str], List[str]]:
-    merged = [
-        {
-            "url": normalize_profile_url(str(entry.get("url") or "")),
-            "active": bool(entry.get("active", True)),
-            "project": normalize_project_name(entry.get("project")),
-        }
-        for entry in existing_entries
-        if normalize_profile_url(str(entry.get("url") or ""))
-    ]
-    index = {entry["url"]: entry for entry in merged}
-    added: List[str] = []
-    reactivated: List[str] = []
-    normalized_project = normalize_project_name(project)
-    for normalized in normalize_profile_urls(list(urls or []), raw_text, None):
-        existing = index.get(normalized)
-        if existing is None:
-            entry = {"url": normalized, "active": True, "project": normalized_project}
-            merged.append(entry)
-            index[normalized] = entry
-            added.append(normalized)
-            continue
-        if not existing.get("active"):
-            existing["active"] = True
-            reactivated.append(normalized)
-    return merged, added, reactivated
-
-
-def merge_monitored_urls(
-    existing_urls: List[str],
-    *,
-    raw_text: str = "",
-    urls: Optional[List[str]] = None,
-) -> tuple[List[str], List[str]]:
-    merged_entries, added, _ = merge_monitored_entries(
-        [{"url": url, "active": True, "project": DEFAULT_PROJECT_NAME} for url in existing_urls],
-        raw_text=raw_text,
-        urls=urls,
-    )
-    return [entry["url"] for entry in merged_entries if entry.get("active")], added
-
-
-def write_monitored_entries(urls_file: str, entries: List[Dict[str, Any]]) -> Path:
-    path = resolve_text_path(urls_file)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    lines: List[str] = []
-    seen: set[str] = set()
-    for entry in entries:
-        normalized = normalize_profile_url(str(entry.get("url") or ""))
-        if not normalized or normalized in seen:
-            continue
-        seen.add(normalized)
-        project = normalize_project_name(entry.get("project"))
-        line = f"{project}\t{normalized}"
-        if entry.get("active", True):
-            lines.append(line)
-        else:
-            lines.append(f"{MONITORED_PAUSED_PREFIX}{line}")
-    payload = "\n".join(lines)
-    if payload:
-        payload += "\n"
-    with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=str(path.parent), delete=False) as handle:
-        handle.write(payload)
-        temp_path = Path(handle.name)
-    temp_path.replace(path)
-    return path
-
-
-def write_monitored_urls(urls_file: str, urls: List[str]) -> Path:
-    return write_monitored_entries(
-        urls_file,
-        [{"url": url, "active": True, "project": DEFAULT_PROJECT_NAME} for url in urls],
-    )
-
-
-def build_project_summaries(entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    grouped: Dict[str, Dict[str, Any]] = {}
-    for entry in entries:
-        project = normalize_project_name(entry.get("project"))
-        bucket = grouped.setdefault(project, {"name": project, "total": 0, "active_count": 0, "paused_count": 0})
-        bucket["total"] += 1
-        if entry.get("active"):
-            bucket["active_count"] += 1
-        else:
-            bucket["paused_count"] += 1
-    return [grouped[key] for key in sorted(grouped, key=lambda item: (item != DEFAULT_PROJECT_NAME, item))]
 
 
 def build_sync_progress(
@@ -1384,6 +750,7 @@ class MonitoringSyncStore:
         self._running = False
         self._pending_resync = False
         self._current_sync_urls: List[str] = []
+        self._current_sync_project = ""
         self._pending_sync_urls: List[str] = []
         self._manual_last_requested_at = 0.0
         self._status: Dict[str, Any] = {
@@ -1437,7 +804,7 @@ class MonitoringSyncStore:
                 "paused_count": len(enriched_entries) - len(active_entries),
                 "urls": [entry["url"] for entry in active_entries],
                 "entries": enriched_entries,
-                "projects": build_project_summaries(enriched_entries),
+                "projects": attach_project_sync_statuses(build_project_summaries(enriched_entries), urls_file=self.urls_file),
                 "profile_lookup_error": profile_lookup_error,
                 "login_state": (
                     self.login_state_store.get_payload(sample_url=sample_url)
@@ -1810,7 +1177,7 @@ class MonitoringSyncStore:
                 if normalized_project
                 else f"立即同步 {len(urls)} 个账号"
             )
-            started = self._request_sync_locked(reason=reason, urls=urls)
+            started = self._request_sync_locked(reason=reason, urls=urls, project=normalized_project)
             if started:
                 self._manual_last_requested_at = time.time()
             return {
@@ -1826,7 +1193,7 @@ class MonitoringSyncStore:
                 "sync_status": self._status_snapshot_locked(),
             }
 
-    def _request_sync_locked(self, *, reason: str, urls: Optional[List[str]] = None) -> bool:
+    def _request_sync_locked(self, *, reason: str, urls: Optional[List[str]] = None, project: str = "") -> bool:
         if self._running:
             self._pending_resync = True
             self._pending_sync_urls = list(urls or [])
@@ -1836,8 +1203,17 @@ class MonitoringSyncStore:
         self._running = True
         self._pending_resync = False
         self._current_sync_urls = list(urls or [])
+        self._current_sync_project = str(project or "").strip()
         self._pending_sync_urls = []
         started_at = iso_now()
+        if self._current_sync_project:
+            update_project_sync_status(
+                urls_file=self.urls_file,
+                project=self._current_sync_project,
+                state="running",
+                message=reason,
+                started_at=started_at,
+            )
         self._status = {
             "state": "running",
             "message": reason,
@@ -1936,6 +1312,7 @@ class MonitoringSyncStore:
                     explicit_urls=current_urls,
                     raw_text="",
                     urls_file=None if current_urls else self.urls_file,
+                    project="",
                     report_json=None,
                     progress_callback=self._handle_progress_update,
                 )
@@ -2033,6 +1410,14 @@ class MonitoringSyncStore:
                     self._current_sync_urls = list(self._pending_sync_urls)
                     self._pending_sync_urls = []
                     started_at = iso_now()
+                    if self._current_sync_project:
+                        update_project_sync_status(
+                            urls_file=self.urls_file,
+                            project=self._current_sync_project,
+                            state="running",
+                            message="检测到新的监测账号，继续同步最新清单",
+                            started_at=started_at,
+                        )
                     self._status = {
                         "state": "running",
                         "message": "检测到新的监测账号，继续同步最新清单",
@@ -2052,10 +1437,33 @@ class MonitoringSyncStore:
                         "summary": result.get("summary", {}),
                     }
                     continue
+                current_project = self._current_sync_project
                 self._running = False
                 self._current_sync_urls = []
+                self._current_sync_project = ""
                 self._pending_sync_urls = []
                 self._status = result
+                if current_project:
+                    if result.get("state") == "success":
+                        summary = result.get("summary") or {}
+                        update_project_sync_status(
+                            urls_file=self.urls_file,
+                            project=current_project,
+                            state="success",
+                            message=result.get("message", ""),
+                            finished_at=result.get("finished_at", ""),
+                            total_accounts=int(summary.get("total_accounts") or 0),
+                            total_works=int(summary.get("total_works") or 0),
+                        )
+                    else:
+                        update_project_sync_status(
+                            urls_file=self.urls_file,
+                            project=current_project,
+                            state="error",
+                            message=result.get("message", ""),
+                            finished_at=result.get("finished_at", ""),
+                            last_error=result.get("last_error", ""),
+                        )
                 break
 
     def _handle_progress_update(self, payload: Dict[str, Any]) -> None:

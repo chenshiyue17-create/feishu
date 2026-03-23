@@ -27,6 +27,7 @@ WORKS_TABLE_FIELDS: List[Dict[str, Any]] = [
     {"field_name": "点赞文本", "type": 1},
     {"field_name": "评论数", "type": 2, "property": {"formatter": "0"}},
     {"field_name": "评论文本", "type": 1},
+    {"field_name": "最新评论摘要", "type": 1},
     {"field_name": "评论增量", "type": 2, "property": {"formatter": "0"}},
     {"field_name": "评论增长率", "type": 2, "property": {"formatter": "0.00"}},
     {"field_name": "评论预警", "type": 1},
@@ -152,6 +153,7 @@ def build_work_feishu_fields(*, report: Dict[str, Any], work: Dict[str, Any]) ->
         "作品类型": work.get("note_type") or "",
         "点赞文本": work.get("like_count_text") or "",
         "评论文本": work.get("comment_count_text") or "",
+        "最新评论摘要": work.get("recent_comments_summary") or "",
         "主页链接": {
             "text": profile.get("nickname") or "小红书主页",
             "link": profile.get("profile_url") or "",

@@ -43,9 +43,19 @@ class Settings:
     xhs_timeout_seconds: int = 20
     xhs_retry_attempts: int = 3
     xhs_retry_delay_seconds: int = 2
-    xhs_batch_concurrency: int = 4
+    xhs_batch_concurrency: int = 2
+    xhs_batch_request_interval_seconds: float = 2.0
+    xhs_batch_chunk_size: int = 8
+    xhs_batch_chunk_cooldown_seconds: float = 12.0
+    xhs_batch_retry_failed_once: bool = True
+    xhs_batch_retry_delay_seconds: float = 20.0
+    xhs_batch_project_cooldown_seconds: float = 45.0
     xhs_manual_sync_cooldown_minutes: int = 20
     xhs_fetch_work_comment_counts: bool = True
+    xhs_enable_signed_profile_pages: bool = True
+    xhs_signed_profile_max_pages: int = 40
+    xhs_fetch_work_comment_preview: bool = True
+    xhs_work_comment_preview_limit: int = 3
     xhs_chrome_cookie_profile: str = ""
     xhs_proxy_pool: List[str] = field(default_factory=list)
     xhs_proxy_cooldown_seconds: int = 300
@@ -119,9 +129,19 @@ def load_settings(env_file: Optional[str] = None) -> Settings:
         xhs_timeout_seconds=_env_int("XHS_TIMEOUT_SECONDS", env_values, default=20),
         xhs_retry_attempts=_env_int("XHS_RETRY_ATTEMPTS", env_values, default=3),
         xhs_retry_delay_seconds=_env_int("XHS_RETRY_DELAY_SECONDS", env_values, default=2),
-        xhs_batch_concurrency=_env_int("XHS_BATCH_CONCURRENCY", env_values, default=4),
+        xhs_batch_concurrency=_env_int("XHS_BATCH_CONCURRENCY", env_values, default=2),
+        xhs_batch_request_interval_seconds=_env_float("XHS_BATCH_REQUEST_INTERVAL_SECONDS", env_values, default=2.0),
+        xhs_batch_chunk_size=_env_int("XHS_BATCH_CHUNK_SIZE", env_values, default=8),
+        xhs_batch_chunk_cooldown_seconds=_env_float("XHS_BATCH_CHUNK_COOLDOWN_SECONDS", env_values, default=12.0),
+        xhs_batch_retry_failed_once=_env_bool("XHS_BATCH_RETRY_FAILED_ONCE", env_values, default=True),
+        xhs_batch_retry_delay_seconds=_env_float("XHS_BATCH_RETRY_DELAY_SECONDS", env_values, default=20.0),
+        xhs_batch_project_cooldown_seconds=_env_float("XHS_BATCH_PROJECT_COOLDOWN_SECONDS", env_values, default=45.0),
         xhs_manual_sync_cooldown_minutes=_env_int("XHS_MANUAL_SYNC_COOLDOWN_MINUTES", env_values, default=20),
         xhs_fetch_work_comment_counts=_env_bool("XHS_FETCH_WORK_COMMENT_COUNTS", env_values, default=True),
+        xhs_enable_signed_profile_pages=_env_bool("XHS_ENABLE_SIGNED_PROFILE_PAGES", env_values, default=True),
+        xhs_signed_profile_max_pages=_env_int("XHS_SIGNED_PROFILE_MAX_PAGES", env_values, default=40),
+        xhs_fetch_work_comment_preview=_env_bool("XHS_FETCH_WORK_COMMENT_PREVIEW", env_values, default=True),
+        xhs_work_comment_preview_limit=_env_int("XHS_WORK_COMMENT_PREVIEW_LIMIT", env_values, default=3),
         xhs_chrome_cookie_profile=_resolve_optional_path(_env("XHS_CHROME_COOKIE_PROFILE", env_values), base_dir),
         xhs_proxy_pool=_load_proxy_pool(proxy_pool_raw, proxy_pool_file, base_dir),
         xhs_proxy_cooldown_seconds=_env_int("XHS_PROXY_COOLDOWN_SECONDS", env_values, default=300),

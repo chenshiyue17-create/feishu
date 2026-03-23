@@ -45,6 +45,7 @@ class ProfileWorksToFeishuTest(unittest.TestCase):
             "like_count_text": "9",
             "comment_count": 12,
             "comment_count_text": "12",
+            "recent_comments_summary": "用户A: 第一条评论 | 用户B: 第二条评论",
             "cover_url": "https://img.example.com/1.jpg",
             "xsec_token": "token",
             "note_id": "",
@@ -56,6 +57,7 @@ class ProfileWorksToFeishuTest(unittest.TestCase):
         self.assertEqual(fields["点赞数"], 9)
         self.assertEqual(fields["评论数"], 12)
         self.assertEqual(fields["评论文本"], "12")
+        self.assertEqual(fields["最新评论摘要"], "用户A: 第一条评论 | 用户B: 第二条评论")
         self.assertIn("note_id 缺失", fields["备注"])
 
     def test_build_work_calendar_fields(self) -> None:

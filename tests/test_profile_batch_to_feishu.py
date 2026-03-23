@@ -7,14 +7,17 @@ from pathlib import Path
 
 from xhs_feishu_monitor.profile_batch_to_feishu import (
     build_dry_run_summary,
+    build_project_launchd_specs,
     build_batch_sync_program_arguments,
     build_record_id_index,
     build_record_state_index,
+    offset_daily_time,
     merge_report_with_existing_work_details,
     load_reports_from_json,
     normalize_batch_item_to_report,
     normalize_unique_value,
     resolve_launchd_paths,
+    slugify_project_name,
     upsert_record_with_index,
 )
 from xhs_feishu_monitor.profile_works_to_feishu import build_work_fingerprint
@@ -139,6 +142,7 @@ class ProfileBatchToFeishuTest(unittest.TestCase):
             urls=["https://www.xiaohongshu.com/user/profile/u1"],
             urls_file=None,
             raw_text="",
+            project="项目A",
             env_file="xhs_feishu_monitor/.env",
             profile_table_name="账号总览表",
             works_table_name="作品明细表",
@@ -151,6 +155,37 @@ class ProfileBatchToFeishuTest(unittest.TestCase):
         self.assertIn("--works-table-name", argv)
         self.assertIn("--ensure-fields", argv)
         self.assertIn("--sync-dashboard", argv)
+        self.assertIn("--project", argv)
+
+    def test_offset_daily_time(self) -> None:
+        self.assertEqual(offset_daily_time("14:00", 20), "14:20")
+        self.assertEqual(offset_daily_time("23:50", 20), "00:10")
+
+    def test_slugify_project_name(self) -> None:
+        self.assertEqual(slugify_project_name("上海 团购"), "上海-团购")
+
+    def test_build_project_launchd_specs(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "urls.txt"
+            path.write_text(
+                "项目A\thttps://www.xiaohongshu.com/user/profile/u1\n"
+                "项目B\thttps://www.xiaohongshu.com/user/profile/u2\n",
+                encoding="utf-8",
+            )
+            specs = build_project_launchd_specs(
+                urls_file=str(path),
+                explicit_project="",
+                daily_at="14:00",
+                project_slot_minutes=20,
+                base_label="com.cc.test",
+            )
+        self.assertEqual(
+            specs,
+            [
+                {"project": "项目A", "daily_at": "14:00", "label": "com.cc.test.项目a"},
+                {"project": "项目B", "daily_at": "14:20", "label": "com.cc.test.项目b"},
+            ],
+        )
 
     def test_merge_report_with_existing_work_details_preserves_note_url_and_comments(self) -> None:
         report = {
@@ -163,6 +198,7 @@ class ProfileBatchToFeishuTest(unittest.TestCase):
                     "note_id": "",
                     "comment_count": None,
                     "comment_count_text": "",
+                    "recent_comments_summary": "",
                 }
             ],
         }
@@ -178,6 +214,7 @@ class ProfileBatchToFeishuTest(unittest.TestCase):
                     "作品链接": {"link": "https://www.xiaohongshu.com/explore/abc123"},
                     "评论数": 18,
                     "评论文本": "18",
+                    "最新评论摘要": "用户A: 老评论",
                 },
             }
         }
@@ -186,6 +223,7 @@ class ProfileBatchToFeishuTest(unittest.TestCase):
         self.assertEqual(merged["works"][0]["note_id"], "abc123")
         self.assertEqual(merged["works"][0]["comment_count"], 18)
         self.assertEqual(merged["works"][0]["comment_count_text"], "18")
+        self.assertEqual(merged["works"][0]["recent_comments_summary"], "用户A: 老评论")
 
     def test_resolve_launchd_paths(self) -> None:
         paths = resolve_launchd_paths(label="com.cc.test-profile-batch-sync")

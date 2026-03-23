@@ -218,6 +218,103 @@ class NormalizeSnapshotTest(unittest.TestCase):
         self.assertEqual(status["ready_count"], 1)
         self.assertIn("proxy timeout", status["last_error"])
 
+    def test_fetch_profile_posted_pages_uses_signed_api_and_returns_paginated_payloads(self) -> None:
+        collector = XHSCollector(
+            Settings(
+                xhs_cookie="a1=test_a1; web_session=demo",
+                xhs_enable_signed_profile_pages=True,
+                xhs_signed_profile_max_pages=3,
+            )
+        )
+
+        class FakeSignedSession:
+            def fetch_profile_posted_pages(self, *, profile_url, initial_state):
+                self.profile_url = profile_url
+                self.initial_state = initial_state
+                return [
+                    {
+                        "items": [
+                            {"id": "note_001", "noteCard": {"noteId": "note_001", "displayTitle": "作品1"}},
+                            {"id": "note_002", "noteCard": {"noteId": "note_002", "displayTitle": "作品2"}},
+                        ],
+                        "cursor": "",
+                        "has_more": False,
+                        "user_id": "u1",
+                    }
+                ]
+
+        initial_state = {
+            "user": {
+                "userPageData": {"basicInfo": {"userId": "u1"}},
+            }
+        }
+
+        with patch.object(collector, "_get_signed_session", return_value=FakeSignedSession()) as session_mock:
+            pages = collector.fetch_profile_posted_pages(
+                profile_url="https://www.xiaohongshu.com/user/profile/u1?xsec_token=demo&xsec_source=pc_search",
+                initial_state=initial_state,
+            )
+
+        self.assertEqual(len(pages), 1)
+        self.assertEqual(len(pages[0]["items"]), 2)
+        self.assertEqual(pages[0]["user_id"], "u1")
+        self.assertFalse(pages[0]["has_more"])
+        session_mock.assert_called_once()
+
+    def test_collect_note_detail_uses_signed_feed_api(self) -> None:
+        collector = XHSCollector(Settings(xhs_cookie="a1=test_a1; web_session=demo"))
+
+        class FakeSignedSession:
+            def fetch_note_detail(self, *, note_id, note_url="", xsec_token="", xsec_source="pc_user"):
+                self.note_id = note_id
+                self.note_url = note_url
+                self.xsec_token = xsec_token
+                return {
+                    "noteId": "note_001",
+                    "title": "作品详情",
+                    "interactInfo": {"commentCount": "12", "likedCount": "9"},
+                }
+
+        with patch.object(collector, "_get_signed_session", return_value=FakeSignedSession()) as session_mock:
+            snapshot = collector.collect_note_detail(
+                note_id="note_001",
+                note_url="https://www.xiaohongshu.com/explore/note_001",
+                xsec_token="token_001",
+            )
+
+        self.assertIsNotNone(snapshot)
+        self.assertEqual(snapshot.note_id, "note_001")
+        self.assertEqual(snapshot.comment_count, 12)
+        self.assertEqual(snapshot.like_count, 9)
+        session_mock.assert_called_once()
+
+    def test_fetch_note_comments_preview_uses_signed_comment_api(self) -> None:
+        collector = XHSCollector(Settings(xhs_cookie="a1=test_a1; web_session=demo"))
+
+        class FakeSignedSession:
+            def fetch_note_comments_preview(self, *, note_id, xsec_token, note_url="", limit=3):
+                self.note_id = note_id
+                self.note_url = note_url
+                self.xsec_token = xsec_token
+                self.limit = limit
+                return [
+                    {"nickname": "用户A", "content": "第一条评论"},
+                    {"nickname": "用户B", "content": "第二条评论"},
+                ]
+
+        with patch.object(collector, "_get_signed_session", return_value=FakeSignedSession()) as session_mock:
+            comments = collector.fetch_note_comments_preview(
+                note_id="note_001",
+                xsec_token="token_001",
+                note_url="https://www.xiaohongshu.com/explore/note_001",
+                limit=2,
+            )
+
+        self.assertEqual(len(comments), 2)
+        self.assertEqual(comments[0]["nickname"], "用户A")
+        self.assertEqual(comments[0]["content"], "第一条评论")
+        session_mock.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

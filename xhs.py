@@ -16,6 +16,7 @@ import requests
 from .chrome_cookies import export_xiaohongshu_cookie_header, resolve_chrome_profile_directory
 from .config import Settings
 from .models import NoteSnapshot, Target
+from .xhs_signed import XHSSignedSession, extract_profile_posted_page_payload
 
 
 NEXT_DATA_PATTERN = re.compile(
@@ -70,6 +71,7 @@ class XHSCollector:
         self._chrome_cookie_header: Optional[str] = None
         self._proxy_index = 0
         self._proxy_cooldowns: Dict[str, float] = {}
+        self._signed_session: Optional[XHSSignedSession] = None
 
     def collect(self, target: Target) -> NoteSnapshot:
         errors: List[str] = []
@@ -271,6 +273,63 @@ class XHSCollector:
             return
         self._proxy_cooldowns.pop(proxy_url, None)
         _record_proxy_success(proxy_url)
+
+    def fetch_profile_posted_pages(self, *, profile_url: str, initial_state: Dict[str, Any]) -> List[Dict[str, Any]]:
+        return self._get_signed_session().fetch_profile_posted_pages(
+            profile_url=profile_url,
+            initial_state=initial_state,
+        )
+
+    def collect_note_detail(
+        self,
+        *,
+        note_id: str,
+        note_url: str = "",
+        xsec_token: str = "",
+        xsec_source: str = "pc_user",
+    ) -> Optional[NoteSnapshot]:
+        note_card = self._get_signed_session().fetch_note_detail(
+            note_id=note_id,
+            note_url=note_url,
+            xsec_token=xsec_token,
+            xsec_source=xsec_source,
+        )
+        if not isinstance(note_card, dict) or not note_card:
+            return None
+        snapshot = _snapshot_from_node(note_card, note_url, note_id)
+        if note_id and not snapshot.note_id:
+            snapshot.note_id = note_id
+        if note_url and not snapshot.note_url:
+            snapshot.note_url = note_url
+        return snapshot
+
+    def fetch_note_comments_preview(
+        self,
+        *,
+        note_id: str,
+        xsec_token: str,
+        note_url: str = "",
+        limit: int = 3,
+    ) -> List[Dict[str, Any]]:
+        return self._get_signed_session().fetch_note_comments_preview(
+            note_id=note_id,
+            xsec_token=xsec_token,
+            note_url=note_url,
+            limit=limit,
+        )
+
+    def _get_signed_session(self) -> XHSSignedSession:
+        if self._signed_session is None:
+            self._signed_session = XHSSignedSession(
+                settings=self.settings,
+                http_session=self.session,
+                resolve_cookie_header=self._resolve_cookie_header,
+                build_requests_proxies=_build_requests_proxies,
+                pick_proxy_url=self._pick_proxy_url,
+                mark_proxy_failed=self._mark_proxy_failed,
+                mark_proxy_success=self._mark_proxy_success,
+            )
+        return self._signed_session
 
 
 def _normalize_snapshot(payload: Any, target: Target, final_url: str) -> NoteSnapshot:

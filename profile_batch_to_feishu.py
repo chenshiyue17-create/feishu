@@ -20,7 +20,13 @@ from .launchd import (
     unload_launch_agent,
     wrap_program_arguments_for_login_shell,
 )
-from .profile_batch_report import collect_profile_reports_with_progress, normalize_profile_urls
+from .profile_batch_report import (
+    collect_profile_reports_with_progress,
+    load_url_entries_file,
+    normalize_profile_url_entries,
+    normalize_profile_urls,
+)
+from .project_sync_status import update_project_sync_status
 from .profile_dashboard_to_feishu import (
     sync_dashboard_portal,
     sync_dashboard_tables,
@@ -60,6 +66,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--url", action="append", default=[], help="单个账号主页链接，可重复传入")
     parser.add_argument("--urls-file", help="每行一个账号主页链接的文本文件")
     parser.add_argument("--raw-text", help="一段原始文本，脚本会自动提取其中的小红书主页链接")
+    parser.add_argument("--project", help="只同步指定项目")
     parser.add_argument("--report-json", help="可选：直接读取 profile_batch_report 导出的 JSON 文件")
     parser.add_argument("--env-file", default="xhs_feishu_monitor/.env")
     parser.add_argument("--profile-table-name", default=PROFILE_TABLE_NAME)
@@ -71,6 +78,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--load-launchd", action="store_true", help="安装后立刻加载 launchd 任务")
     parser.add_argument("--unload-launchd", action="store_true", help="卸载 launchd 任务")
     parser.add_argument("--daily-at", default="14:00", help="每天固定执行时间，格式 HH:MM")
+    parser.add_argument("--project-slot-minutes", type=int, default=20, help="按项目安装错峰任务时，每个项目之间的分钟间隔")
     parser.add_argument("--launchd-label", default=DEFAULT_BATCH_SYNC_LABEL, help="launchd 任务标签")
     parser.add_argument("--launchd-plist", help="launchd plist 路径")
     parser.add_argument("--stdout-log-path", help="stdout 日志路径")
@@ -78,9 +86,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = parser.parse_args(argv)
 
     if args.unload_launchd:
-        plist_path = resolve_launchd_paths(label=args.launchd_label, plist_path=args.launchd_plist)["plist_path"]
-        unload_launch_agent(plist_path=plist_path)
-        print(f"[OK] unloaded launchd plist={plist_path}")
+        unloaded = unload_batch_sync_launchd(label=args.launchd_label, plist_path=args.launchd_plist)
+        if unloaded:
+            for path in unloaded:
+                print(f"[OK] unloaded launchd plist={path}")
+        else:
+            print("[OK] no launchd plist matched")
         return 0
 
     if args.install_launchd:
@@ -93,12 +104,14 @@ def main(argv: Optional[List[str]] = None) -> int:
             urls=urls,
             urls_file=args.urls_file,
             raw_text=args.raw_text or "",
+            project=args.project or "",
             env_file=args.env_file,
             profile_table_name=args.profile_table_name,
             works_table_name=args.works_table_name,
             ensure_fields=args.ensure_fields,
             sync_dashboard=args.sync_dashboard,
             daily_at=args.daily_at,
+            project_slot_minutes=args.project_slot_minutes,
             label=args.launchd_label,
             plist_path=args.launchd_plist,
             stdout_log_path=args.stdout_log_path,
@@ -108,28 +121,62 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 0
 
     settings = load_settings(args.env_file)
-    reports = load_reports_for_sync(
-        settings=settings,
-        explicit_urls=args.url,
-        raw_text=args.raw_text or "",
-        urls_file=args.urls_file,
-        report_json=args.report_json,
-    )
-    if args.dry_run:
-        print(json.dumps(build_dry_run_summary(reports), ensure_ascii=False, indent=2))
-        return 0
+    started_at = datetime.now().astimezone().isoformat(timespec="seconds")
+    if args.project:
+        update_project_sync_status(
+            urls_file=args.urls_file or "",
+            project=args.project,
+            state="running",
+            message=f"项目「{args.project}」开始同步",
+            started_at=started_at,
+        )
+    try:
+        reports = load_reports_for_sync(
+            settings=settings,
+            explicit_urls=args.url,
+            raw_text=args.raw_text or "",
+            urls_file=args.urls_file,
+            project=args.project or "",
+            report_json=args.report_json,
+        )
+        if args.dry_run:
+            print(json.dumps(build_dry_run_summary(reports), ensure_ascii=False, indent=2))
+            return 0
 
-    settings.validate_for_sync()
-    summary = sync_reports_to_feishu(
-        reports=reports,
-        settings=settings,
-        profile_table_name=args.profile_table_name,
-        works_table_name=args.works_table_name,
-        ensure_fields=args.ensure_fields,
-        sync_dashboard=args.sync_dashboard,
-    )
-    print(json.dumps(summary, ensure_ascii=False, indent=2))
-    return 0
+        settings.validate_for_sync()
+        summary = sync_reports_to_feishu(
+            reports=reports,
+            settings=settings,
+            profile_table_name=args.profile_table_name,
+            works_table_name=args.works_table_name,
+            ensure_fields=args.ensure_fields,
+            sync_dashboard=args.sync_dashboard,
+        )
+        if args.project:
+            update_project_sync_status(
+                urls_file=args.urls_file or "",
+                project=args.project,
+                state="success",
+                message=f"项目「{args.project}」同步完成",
+                started_at=started_at,
+                finished_at=datetime.now().astimezone().isoformat(timespec="seconds"),
+                total_accounts=int(summary.get("total_accounts") or 0),
+                total_works=int(summary.get("total_works") or 0),
+            )
+        print(json.dumps(summary, ensure_ascii=False, indent=2))
+        return 0
+    except Exception as exc:
+        if args.project:
+            update_project_sync_status(
+                urls_file=args.urls_file or "",
+                project=args.project,
+                state="error",
+                message=f"项目「{args.project}」同步失败",
+                started_at=started_at,
+                finished_at=datetime.now().astimezone().isoformat(timespec="seconds"),
+                last_error=str(exc),
+            )
+        raise
 
 
 def load_reports_for_sync(
@@ -138,17 +185,23 @@ def load_reports_for_sync(
     explicit_urls: List[str],
     raw_text: str,
     urls_file: Optional[str],
+    project: str,
     report_json: Optional[str],
     progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
 ) -> List[Dict[str, Any]]:
     if report_json:
         return load_reports_from_json(report_json)
 
-    urls = normalize_profile_urls(explicit_urls, raw_text, urls_file)
+    url_entries = normalize_profile_url_entries(explicit_urls, raw_text, urls_file)
+    if str(project or "").strip():
+        project_name = str(project).strip()
+        url_entries = [item for item in url_entries if str(item.get("project") or "").strip() == project_name]
+    urls = [item["url"] for item in url_entries]
     if not urls:
         raise ValueError("没有找到可用的小红书账号主页链接")
     items = collect_profile_reports_with_progress(
         urls=urls,
+        url_entries=url_entries,
         settings=settings,
         progress_callback=progress_callback,
     )
@@ -518,6 +571,7 @@ def merge_report_with_existing_work_details(
         existing_note_url = extract_link_value(existing_fields.get("作品链接"))
         existing_comment_count = to_optional_int(existing_fields.get("评论数"))
         existing_comment_text = str(existing_fields.get("评论文本") or "").strip()
+        existing_comment_summary = str(existing_fields.get("最新评论摘要") or "").strip()
 
         if existing_note_url and not str(work.get("note_url") or "").strip():
             work["note_url"] = existing_note_url
@@ -531,6 +585,8 @@ def merge_report_with_existing_work_details(
             work["comment_count_text"] = existing_comment_text
         elif existing_comment_count is not None and not str(work.get("comment_count_text") or "").strip():
             work["comment_count_text"] = str(existing_comment_count)
+        if existing_comment_summary and not str(work.get("recent_comments_summary") or "").strip():
+            work["recent_comments_summary"] = existing_comment_summary
         merged_works.append(work)
 
     merged_report = dict(report)
@@ -577,18 +633,68 @@ def install_batch_sync_launchd(
     urls: List[str],
     urls_file: Optional[str],
     raw_text: str,
+    project: str,
     env_file: str,
     profile_table_name: str,
     works_table_name: str,
     ensure_fields: bool,
     sync_dashboard: bool,
     daily_at: str,
+    project_slot_minutes: int,
     label: str,
     plist_path: Optional[str],
     stdout_log_path: Optional[str],
     stderr_log_path: Optional[str],
     load_after_install: bool,
 ) -> None:
+    project_specs = build_project_launchd_specs(
+        urls_file=urls_file,
+        explicit_project=project,
+        daily_at=daily_at,
+        project_slot_minutes=project_slot_minutes,
+        base_label=label,
+    )
+    if len(project_specs) > 1:
+        working_directory = str(Path(__file__).resolve().parent.parent)
+        for spec in project_specs:
+            resolved_paths = resolve_launchd_paths(label=spec["label"])
+            program_arguments = build_batch_sync_program_arguments(
+                urls=urls,
+                urls_file=urls_file,
+                raw_text=raw_text,
+                project=spec["project"],
+                env_file=env_file,
+                profile_table_name=profile_table_name,
+                works_table_name=works_table_name,
+                ensure_fields=ensure_fields,
+                sync_dashboard=sync_dashboard,
+            )
+            plist_bytes = build_launch_agent_plist(
+                label=spec["label"],
+                program_arguments=wrap_program_arguments_for_login_shell(
+                    program_arguments=program_arguments,
+                    working_directory=working_directory,
+                ),
+                working_directory=working_directory,
+                start_calendar_interval=parse_daily_time(spec["daily_at"]),
+                stdout_log_path=resolved_paths["stdout_log_path"],
+                stderr_log_path=resolved_paths["stderr_log_path"],
+                environment_variables=build_launch_environment(),
+            )
+            install_launch_agent(
+                plist_bytes=plist_bytes,
+                label=spec["label"],
+                plist_path=resolved_paths["plist_path"],
+                load_after_install=load_after_install,
+            )
+            print(f"[OK] installed launchd label={spec['label']}")
+            print(f"[OK] project={spec['project']}")
+            print(f"[OK] plist={resolved_paths['plist_path']}")
+            print(f"[OK] stdout_log={resolved_paths['stdout_log_path']}")
+            print(f"[OK] stderr_log={resolved_paths['stderr_log_path']}")
+            print(f"[OK] daily_at={spec['daily_at']}")
+        return
+
     resolved_paths = resolve_launchd_paths(
         label=label,
         plist_path=plist_path,
@@ -599,6 +705,7 @@ def install_batch_sync_launchd(
         urls=urls,
         urls_file=urls_file,
         raw_text=raw_text,
+        project=project,
         env_file=env_file,
         profile_table_name=profile_table_name,
         works_table_name=works_table_name,
@@ -636,6 +743,7 @@ def build_batch_sync_program_arguments(
     urls: List[str],
     urls_file: Optional[str],
     raw_text: str,
+    project: str,
     env_file: str,
     profile_table_name: str,
     works_table_name: str,
@@ -656,6 +764,8 @@ def build_batch_sync_program_arguments(
     else:
         for url in urls:
             argv.extend(["--url", url])
+    if str(project or "").strip():
+        argv.extend(["--project", str(project).strip()])
     if profile_table_name != PROFILE_TABLE_NAME:
         argv.extend(["--profile-table-name", profile_table_name])
     if works_table_name != WORKS_TABLE_NAME:
@@ -680,6 +790,71 @@ def resolve_launchd_paths(
         "stdout_log_path": str(Path(stdout_log_path or defaults["stdout_log_path"]).expanduser().resolve()),
         "stderr_log_path": str(Path(stderr_log_path or defaults["stderr_log_path"]).expanduser().resolve()),
     }
+
+
+def build_project_launchd_specs(
+    *,
+    urls_file: Optional[str],
+    explicit_project: str,
+    daily_at: str,
+    project_slot_minutes: int,
+    base_label: str,
+) -> List[Dict[str, str]]:
+    if str(explicit_project or "").strip():
+        return [{"project": str(explicit_project).strip(), "daily_at": daily_at, "label": base_label}]
+    if not urls_file:
+        return []
+    projects = extract_ordered_projects_from_urls_file(urls_file)
+    if len(projects) <= 1 or project_slot_minutes <= 0:
+        return []
+    return [
+        {
+            "project": project,
+            "daily_at": offset_daily_time(daily_at, index * project_slot_minutes),
+            "label": f"{base_label}.{slugify_project_name(project)}",
+        }
+        for index, project in enumerate(projects)
+    ]
+
+
+def extract_ordered_projects_from_urls_file(urls_file: str) -> List[str]:
+    projects: List[str] = []
+    seen = set()
+    for entry in load_url_entries_file(urls_file):
+        project = str(entry.get("project") or "").strip()
+        if not project or project in seen:
+            continue
+        seen.add(project)
+        projects.append(project)
+    return projects
+
+
+def offset_daily_time(daily_at: str, offset_minutes: int) -> str:
+    schedule = parse_daily_time(daily_at)
+    total_minutes = (int(schedule["Hour"]) * 60 + int(schedule["Minute"]) + int(offset_minutes or 0)) % (24 * 60)
+    hour, minute = divmod(total_minutes, 60)
+    return f"{hour:02d}:{minute:02d}"
+
+
+def slugify_project_name(project: str) -> str:
+    text = str(project or "").strip().lower()
+    cleaned = re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "-", text).strip("-")
+    return cleaned or "project"
+
+
+def unload_batch_sync_launchd(*, label: str, plist_path: Optional[str] = None) -> List[str]:
+    if plist_path:
+        resolved = str(Path(plist_path).expanduser().resolve())
+        unload_launch_agent(plist_path=resolved)
+        return [resolved]
+    defaults = resolve_launchd_paths(label=label)
+    launch_agents_dir = Path(defaults["plist_path"]).parent
+    matched = sorted(launch_agents_dir.glob(f"{label}*.plist"))
+    unloaded: List[str] = []
+    for path in matched:
+        unload_launch_agent(plist_path=str(path))
+        unloaded.append(str(path))
+    return unloaded
 
 
 if __name__ == "__main__":

@@ -47,6 +47,22 @@ function formatDurationShort(seconds) {
   return remainMinutes ? `${hours}小时${remainMinutes}分` : `${hours}小时`;
 }
 
+function getProjectSyncStateText(status) {
+  const normalized = String(status || "").toLowerCase();
+  if (normalized === "running") return "同步中";
+  if (normalized === "success") return "最近成功";
+  if (normalized === "error") return "最近失败";
+  return "暂无记录";
+}
+
+function getProjectSyncBadgeClass(status) {
+  const normalized = String(status || "").toLowerCase();
+  if (normalized === "running") return "is-running";
+  if (normalized === "success") return "is-success";
+  if (normalized === "error") return "is-error";
+  return "";
+}
+
 function truncateMiddle(value, maxLength = 64) {
   const text = String(value || "");
   if (text.length <= maxLength) return text;
@@ -615,6 +631,16 @@ function renderProjectCards(projects, syncStatus) {
         .filter(Boolean)
         .slice(0, 3);
       const isActive = getSelectedProjectName() === project.name;
+      const projectSync = project.sync_status || {};
+      const projectSyncState = String(projectSync.state || "");
+      const projectSyncBadgeClass = getProjectSyncBadgeClass(projectSyncState);
+      const projectSyncBadgeText = getProjectSyncStateText(projectSyncState);
+      const projectSyncUpdatedAt = projectSync.last_success_at || projectSync.finished_at || projectSync.updated_at || "";
+      const projectSyncMessage = String(projectSync.message || "").trim();
+      const projectSyncError = String(projectSync.last_error || "").trim();
+      const projectSyncResult = projectSync.total_accounts
+        ? `${formatNumber(projectSync.total_accounts)} 账号 / ${formatNumber(projectSync.total_works || 0)} 作品`
+        : "";
       return `
         <article class="project-card ${isActive ? "is-active" : ""}">
           <div class="project-card-top">
@@ -624,6 +650,26 @@ function renderProjectCards(projects, syncStatus) {
             </div>
             <span class="project-card-badge">${isActive ? "当前项目" : "项目"}</span>
           </div>
+          <div class="project-card-status-row">
+            <span class="sync-badge ${projectSyncBadgeClass}">${projectSyncBadgeText}</span>
+            ${
+              projectSyncUpdatedAt
+                ? `<span class="project-card-status-time subtle">${formatDateTime(projectSyncUpdatedAt)}</span>`
+                : ""
+            }
+          </div>
+          ${
+            projectSyncResult || projectSyncMessage || projectSyncError
+              ? `<div class="project-card-status-text subtle">${
+                  projectSyncResult || projectSyncMessage || projectSyncError
+                }</div>`
+              : ""
+          }
+          ${
+            projectSyncError
+              ? `<div class="project-card-status-error subtle">${truncateMiddle(projectSyncError, 88)}</div>`
+              : ""
+          }
           <div class="project-card-preview">${previewNames.length ? previewNames.join(" / ") : "暂无账号"}</div>
           <div class="project-card-actions">
             <button class="monitor-inline-button project-open-button" data-project="${project.name}" type="button">
@@ -633,11 +679,7 @@ function renderProjectCards(projects, syncStatus) {
               ${manualUpdateState.projectButtonText}
             </button>
           </div>
-          ${
-            syncStatus.summary?.total_accounts
-              ? `<div class="project-card-foot subtle">最近同步结果：${formatNumber(syncStatus.summary.total_accounts)} 账号 / ${formatNumber(syncStatus.summary.total_works || 0)} 作品</div>`
-              : ""
-          }
+          <div class="project-card-foot subtle">点击后切换到该项目的账号、榜单和同步范围</div>
         </article>
       `;
     })

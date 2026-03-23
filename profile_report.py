@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional
 from .chrome_cookies import is_default_chrome_profile_root
 from .config import load_settings
 from .models import Target
+from .profile_metrics import enrich_profile_report_with_note_metrics as _enrich_profile_report_with_note_metrics
 from .xhs import XHSCollector, _coerce_count, extract_initial_state
 
 
@@ -106,6 +107,21 @@ def load_profile_report_payload(*, settings, profile_url: str) -> Dict[str, Any]
                     else:
                         initial_state = extract_initial_state(str(payload))
                     report_preview = build_profile_report(initial_state=initial_state, profile_url=final_url)
+                    if _should_expand_profile_work_count(report_preview):
+                        try:
+                            profile_pages = collector.fetch_profile_posted_pages(
+                                profile_url=profile_url or final_url,
+                                initial_state=initial_state,
+                            )
+                        except Exception as exc:
+                            errors.append(f"attempt {attempt}/{attempts} {variant_label}/{mode} signed-pages: {exc}")
+                            profile_pages = []
+                        if profile_pages:
+                            initial_state = _merge_profile_pages_into_initial_state(
+                                initial_state=initial_state,
+                                profile_pages=profile_pages,
+                            )
+                            report_preview = build_profile_report(initial_state=initial_state, profile_url=final_url)
                     if _should_retry_profile_payload(report_preview=report_preview, final_url=final_url):
                         raise ValueError("账号页返回空结果或登录跳转")
                     candidate_payload = {
@@ -177,6 +193,20 @@ def _should_retry_profile_payload(*, report_preview: Dict[str, Any], final_url: 
     )
     normalized_final_url = str(final_url or "").strip().lower()
     return ("/login" in normalized_final_url and "xiaohongshu.com" in normalized_final_url) or not has_profile_content
+
+
+def _should_expand_profile_work_count(report_preview: Dict[str, Any]) -> bool:
+    profile = report_preview.get("profile") or {}
+    visible_work_count = int(profile.get("visible_work_count") or 0)
+    return bool(profile.get("profile_user_id")) and not bool(profile.get("work_count_exact")) and visible_work_count > 0
+
+
+def _merge_profile_pages_into_initial_state(*, initial_state: Dict[str, Any], profile_pages: List[Dict[str, Any]]) -> Dict[str, Any]:
+    from .xhs import _merge_profile_runtime_pages
+
+    if not profile_pages:
+        return initial_state
+    return _merge_profile_runtime_pages(initial_state, profile_pages)
 
 
 def build_profile_report(*, initial_state: Dict[str, Any], profile_url: str) -> Dict[str, Any]:
@@ -264,25 +294,11 @@ def build_profile_report(*, initial_state: Dict[str, Any], profile_url: str) -> 
 
 
 def enrich_profile_report_with_note_metrics(*, report: Dict[str, Any], settings) -> Dict[str, Any]:
-    if not getattr(settings, "xhs_fetch_work_comment_counts", True):
-        return report
-    works = report.get("works") or []
-    if not works:
-        return report
-
-    collector = XHSCollector(settings)
-    for work in works:
-        note_url = str(work.get("note_url") or "").strip()
-        if not note_url:
-            continue
-        try:
-            snapshot = collector.collect(Target(name="work-detail", url=note_url))
-        except Exception:
-            continue
-        if snapshot.comment_count is not None:
-            work["comment_count"] = snapshot.comment_count
-            work["comment_count_text"] = str(snapshot.comment_count)
-    return report
+    return _enrich_profile_report_with_note_metrics(
+        report=report,
+        settings=settings,
+        collector_factory=XHSCollector,
+    )
 
 
 def _extract_profile_cards(notes: List[Any], *, limit: int = DEFAULT_PROFILE_WORK_PAGE_SIZE) -> List[Dict[str, Any]]:

@@ -613,6 +613,26 @@ body {
   min-height: 44px;
 }
 
+.project-card-status-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+}
+
+.project-card-status-time,
+.project-card-status-text,
+.project-card-status-error {
+  margin-top: 8px;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.project-card-status-error {
+  color: #ffb79d;
+}
+
 .project-card-actions {
   display: flex;
   gap: 8px;

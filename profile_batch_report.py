@@ -5,6 +5,8 @@ import csv
 import json
 import re
 import sys
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
@@ -35,6 +37,68 @@ PROFILE_URL_PATTERN = re.compile(
 )
 
 
+class BatchThrottle:
+    def __init__(
+        self,
+        *,
+        request_interval_seconds: float,
+        chunk_size: int,
+        chunk_cooldown_seconds: float,
+    ) -> None:
+        self.request_interval_seconds = max(0.0, float(request_interval_seconds or 0.0))
+        self.chunk_size = max(0, int(chunk_size or 0))
+        self.chunk_cooldown_seconds = max(0.0, float(chunk_cooldown_seconds or 0.0))
+        self._lock = threading.Lock()
+        self._next_available_at = 0.0
+        self._started_count = 0
+
+    def wait(self) -> None:
+        sleep_seconds = 0.0
+        with self._lock:
+            now = time.time()
+            sleep_seconds = max(0.0, self._next_available_at - now)
+            release_at = max(now, self._next_available_at)
+            self._started_count += 1
+            if (
+                self.chunk_size > 0
+                and self.chunk_cooldown_seconds > 0
+                and self._started_count > 1
+                and (self._started_count - 1) % self.chunk_size == 0
+            ):
+                release_at += self.chunk_cooldown_seconds
+            if self.request_interval_seconds > 0:
+                release_at += self.request_interval_seconds
+            self._next_available_at = release_at
+        if sleep_seconds > 0:
+            time.sleep(sleep_seconds)
+
+
+def is_retryable_batch_error(error_text: Any) -> bool:
+    text = str(error_text or "").strip()
+    if not text:
+        return False
+    lowered = text.lower()
+    if any(keyword in lowered for keyword in ("/login", "login", "cookie", "not logged", "unauthorized")):
+        return False
+    return any(
+        keyword in lowered
+        for keyword in (
+            "timeout",
+            "timed out",
+            "connection reset",
+            "temporarily unavailable",
+            "rate limit",
+            "too many requests",
+            "403",
+            "429",
+            "超时",
+            "风控",
+            "反爬",
+            "空结果",
+        )
+    )
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="批量导出多个小红书账号主页摘要。")
     parser.add_argument("--url", action="append", default=[], help="单个账号主页链接，可重复传入")
@@ -59,7 +123,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(f"[OK] unloaded launchd plist={plist_path}")
         return 0
 
-    urls = normalize_profile_urls(args.url, args.raw_text or "", args.urls_file)
+    url_entries = normalize_profile_url_entries(args.url, args.raw_text or "", args.urls_file)
+    urls = [item["url"] for item in url_entries]
     if not urls:
         raise ValueError("没有找到可用的小红书账号主页链接")
 
@@ -81,7 +146,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 0
 
     settings = load_settings(args.env_file)
-    reports = collect_profile_reports(urls=urls, settings=settings)
+    reports = collect_profile_reports_with_progress(urls=urls, url_entries=url_entries, settings=settings)
     output = {
         "total": len(reports),
         "success": sum(1 for item in reports if item.get("status") == "success"),
@@ -102,18 +167,28 @@ def main(argv: Optional[List[str]] = None) -> int:
 
 
 def normalize_profile_urls(explicit_urls: List[str], raw_text: str, urls_file: Optional[str] = None) -> List[str]:
+    return [item["url"] for item in normalize_profile_url_entries(explicit_urls, raw_text, urls_file)]
+
+
+def normalize_profile_url_entries(
+    explicit_urls: List[str],
+    raw_text: str,
+    urls_file: Optional[str] = None,
+) -> List[Dict[str, str]]:
     normalized: List[str] = []
+    entries: List[Dict[str, str]] = []
     seen: set[str] = set()
-    candidates = [item for item in explicit_urls if str(item).strip()]
-    candidates.extend(load_urls_file(urls_file))
-    candidates.extend(extract_profile_urls(raw_text))
-    for url in candidates:
-        fixed = normalize_profile_url(url)
+    candidates = [{"url": item, "project": ""} for item in explicit_urls if str(item).strip()]
+    candidates.extend(load_url_entries_file(urls_file))
+    candidates.extend({"url": item, "project": ""} for item in extract_profile_urls(raw_text))
+    for item in candidates:
+        fixed = normalize_profile_url(str(item.get("url") or ""))
         if not fixed or fixed in seen:
             continue
         seen.add(fixed)
-        normalized.append(fixed)
-    return normalized
+        project = str(item.get("project") or "").strip()
+        entries.append({"url": fixed, "project": project})
+    return entries
 
 
 def extract_profile_urls(raw_text: str) -> List[str]:
@@ -150,21 +225,26 @@ def normalize_profile_url(url: str) -> str:
 
 
 def load_urls_file(path_text: Optional[str]) -> List[str]:
+    return [item["url"] for item in load_url_entries_file(path_text)]
+
+
+def load_url_entries_file(path_text: Optional[str]) -> List[Dict[str, str]]:
     if not path_text:
         return []
     path = Path(path_text).expanduser().resolve()
     if not path.exists():
         raise FileNotFoundError(f"文件不存在: {path}")
-    urls: List[str] = []
+    entries: List[Dict[str, str]] = []
     for raw_line in path.read_text(encoding="utf-8").splitlines():
         line = raw_line.strip()
         if not line or line.startswith("#"):
             continue
         candidate = line
+        project = ""
         if "\t" in candidate:
-            _, candidate = candidate.split("\t", 1)
-        urls.append(candidate.strip())
-    return urls
+            project, candidate = candidate.split("\t", 1)
+        entries.append({"url": candidate.strip(), "project": project.strip()})
+    return entries
 
 
 def collect_profile_reports(
@@ -175,6 +255,7 @@ def collect_profile_reports(
 ) -> List[Dict[str, Any]]:
     return collect_profile_reports_with_progress(
         urls=urls,
+        url_entries=None,
         settings=settings,
         progress_callback=progress_callback,
     )
@@ -183,59 +264,145 @@ def collect_profile_reports(
 def collect_profile_reports_with_progress(
     *,
     urls: List[str],
+    url_entries: Optional[List[Dict[str, str]]] = None,
     settings,
     progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
 ) -> List[Dict[str, Any]]:
+    normalized_entries = _normalize_batch_entries(urls=urls, url_entries=url_entries)
+    ordered_urls = [item["url"] for item in normalized_entries]
     max_workers = resolve_batch_concurrency(settings)
-    if max_workers == 1 or len(urls) <= 1:
+    throttle = build_batch_throttle(settings)
+    retry_failed_once = bool(getattr(settings, "xhs_batch_retry_failed_once", True))
+    retry_delay_seconds = max(0.0, float(getattr(settings, "xhs_batch_retry_delay_seconds", 20.0) or 0.0))
+    project_cooldown_seconds = max(0.0, float(getattr(settings, "xhs_batch_project_cooldown_seconds", 45.0) or 0.0))
+    if max_workers == 1 or len(ordered_urls) <= 1:
         results = []
-        total = len(urls)
+        total = len(ordered_urls)
         success_count = 0
         failed_count = 0
-        for index, url in enumerate(urls, start=1):
-            item = _collect_single_profile_report(url=url, settings=settings)
-            results.append(item)
-            if item.get("status") == "success":
-                success_count += 1
-            else:
-                failed_count += 1
-            _emit_collect_progress(
-                progress_callback=progress_callback,
-                current=index,
-                total=total,
-                item=item,
-                success_count=success_count,
-                failed_count=failed_count,
-            )
+        current = 0
+        project_batches = build_project_batches(normalized_entries)
+        for group_index, group in enumerate(project_batches):
+            for entry in group:
+                current += 1
+                url = entry["url"]
+                item = _collect_single_profile_report_with_throttle(url=url, settings=settings, throttle=throttle)
+                item = _retry_failed_item_if_needed(
+                    item=item,
+                    url=url,
+                    settings=settings,
+                    throttle=throttle,
+                    retry_failed_once=retry_failed_once,
+                    retry_delay_seconds=retry_delay_seconds,
+                )
+                results.append(item)
+                if item.get("status") == "success":
+                    success_count += 1
+                else:
+                    failed_count += 1
+                _emit_collect_progress(
+                    progress_callback=progress_callback,
+                    current=current,
+                    total=total,
+                    item=item,
+                    success_count=success_count,
+                    failed_count=failed_count,
+                )
+            if group_index < len(project_batches) - 1:
+                _sleep_between_project_batches(project_cooldown_seconds=project_cooldown_seconds)
         return results
 
     indexed_results: Dict[int, Dict[str, Any]] = {}
+    pending_retry_indexes: List[int] = []
     completed = 0
-    total = len(urls)
+    total = len(ordered_urls)
     success_count = 0
     failed_count = 0
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        future_map = {
-            executor.submit(_collect_single_profile_report, url=url, settings=settings): index
-            for index, url in enumerate(urls)
-        }
-        for future in as_completed(future_map):
-            item = future.result()
-            indexed_results[future_map[future]] = item
-            completed += 1
-            if item.get("status") == "success":
-                success_count += 1
-            else:
-                failed_count += 1
-            _emit_collect_progress(
-                progress_callback=progress_callback,
-                current=completed,
-                total=total,
-                item=item,
-                success_count=success_count,
-                failed_count=failed_count,
-            )
-    return [indexed_results[index] for index in range(len(urls))]
+    url_to_index = {item["url"]: index for index, item in enumerate(normalized_entries)}
+    project_batches = build_project_batches(normalized_entries)
+    for group_index, group in enumerate(project_batches):
+        group_urls = [item["url"] for item in group]
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_map = {
+                executor.submit(_collect_single_profile_report_with_throttle, url=url, settings=settings, throttle=throttle): url
+                for url in group_urls
+            }
+            for future in as_completed(future_map):
+                item = future.result()
+                index = url_to_index[future_map[future]]
+                indexed_results[index] = item
+                if retry_failed_once and item.get("status") != "success" and is_retryable_batch_error(item.get("error")):
+                    pending_retry_indexes.append(index)
+                    continue
+                completed += 1
+                if item.get("status") == "success":
+                    success_count += 1
+                else:
+                    failed_count += 1
+                _emit_collect_progress(
+                    progress_callback=progress_callback,
+                    current=completed,
+                    total=total,
+                    item=item,
+                    success_count=success_count,
+                    failed_count=failed_count,
+                )
+        if group_index < len(project_batches) - 1:
+            _sleep_between_project_batches(project_cooldown_seconds=project_cooldown_seconds)
+    for index in sorted(pending_retry_indexes):
+        retried = _retry_failed_item_if_needed(
+            item=indexed_results[index],
+            url=ordered_urls[index],
+            settings=settings,
+            throttle=throttle,
+            retry_failed_once=retry_failed_once,
+            retry_delay_seconds=retry_delay_seconds,
+        )
+        indexed_results[index] = retried
+        completed += 1
+        if retried.get("status") == "success":
+            success_count += 1
+        else:
+            failed_count += 1
+        _emit_collect_progress(
+            progress_callback=progress_callback,
+            current=completed,
+            total=total,
+            item=retried,
+            success_count=success_count,
+            failed_count=failed_count,
+        )
+    return [indexed_results[index] for index in range(len(ordered_urls))]
+
+
+def _normalize_batch_entries(*, urls: List[str], url_entries: Optional[List[Dict[str, str]]]) -> List[Dict[str, str]]:
+    if url_entries:
+        normalized: List[Dict[str, str]] = []
+        for item in url_entries:
+            url = normalize_profile_url(str(item.get("url") or ""))
+            if not url:
+                continue
+            normalized.append({"url": url, "project": str(item.get("project") or "").strip()})
+        return normalized
+    return [{"url": normalize_profile_url(url), "project": ""} for url in urls if normalize_profile_url(url)]
+
+
+def build_project_batches(url_entries: List[Dict[str, str]]) -> List[List[Dict[str, str]]]:
+    grouped: Dict[str, List[Dict[str, str]]] = {}
+    order: List[str] = []
+    for item in url_entries:
+        project = str(item.get("project") or "").strip()
+        if project not in grouped:
+            grouped[project] = []
+            order.append(project)
+        grouped[project].append(item)
+    return [grouped[project] for project in order]
+
+
+def _sleep_between_project_batches(*, project_cooldown_seconds: float) -> None:
+    if project_cooldown_seconds <= 0:
+        return
+    time.sleep(project_cooldown_seconds)
 
 
 def _emit_collect_progress(
@@ -278,10 +445,47 @@ def _emit_collect_progress(
 
 def resolve_batch_concurrency(settings) -> int:
     fetch_mode = str(getattr(settings, "xhs_fetch_mode", "requests") or "requests").strip().lower()
-    configured = max(1, int(getattr(settings, "xhs_batch_concurrency", 4) or 1))
+    configured = max(1, int(getattr(settings, "xhs_batch_concurrency", 2) or 1))
     if fetch_mode in {"playwright", "local_browser"}:
         return 1
-    return min(configured, 8)
+    proxy_pool = list(getattr(settings, "xhs_proxy_pool", []) or [])
+    if len(proxy_pool) <= 1:
+        return min(configured, 2)
+    return min(configured, min(4, len(proxy_pool)))
+
+
+def build_batch_throttle(settings) -> BatchThrottle:
+    return BatchThrottle(
+        request_interval_seconds=float(getattr(settings, "xhs_batch_request_interval_seconds", 2.0) or 0.0),
+        chunk_size=int(getattr(settings, "xhs_batch_chunk_size", 8) or 0),
+        chunk_cooldown_seconds=float(getattr(settings, "xhs_batch_chunk_cooldown_seconds", 12.0) or 0.0),
+    )
+
+
+def _collect_single_profile_report_with_throttle(*, url: str, settings, throttle: Optional[BatchThrottle]) -> Dict[str, Any]:
+    if throttle is not None:
+        throttle.wait()
+    return _collect_single_profile_report(url=url, settings=settings)
+
+
+def _retry_failed_item_if_needed(
+    *,
+    item: Dict[str, Any],
+    url: str,
+    settings,
+    throttle: Optional[BatchThrottle],
+    retry_failed_once: bool,
+    retry_delay_seconds: float,
+) -> Dict[str, Any]:
+    if not retry_failed_once or item.get("status") == "success" or not is_retryable_batch_error(item.get("error")):
+        return item
+    if retry_delay_seconds > 0:
+        time.sleep(retry_delay_seconds)
+    retried = _collect_single_profile_report_with_throttle(url=url, settings=settings, throttle=throttle)
+    retried["retried"] = True
+    retried["retry_error"] = str(item.get("error") or "")
+    retried["retry_status"] = "success" if retried.get("status") == "success" else "failed"
+    return retried
 
 
 def _collect_single_profile_report(*, url: str, settings) -> Dict[str, Any]:

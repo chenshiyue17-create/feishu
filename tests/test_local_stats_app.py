@@ -43,6 +43,7 @@ from xhs_feishu_monitor.local_stats_app.server import (
     write_monitored_entries,
     write_monitored_urls,
 )
+from xhs_feishu_monitor.project_sync_status import update_project_sync_status
 
 
 class LocalStatsAppTest(unittest.TestCase):
@@ -476,15 +477,17 @@ class LocalStatsAppTest(unittest.TestCase):
             )
             captured = {}
 
-            def fake_request_sync_locked(*, reason, urls=None):
+            def fake_request_sync_locked(*, reason, urls=None, project=""):
                 captured["reason"] = reason
                 captured["urls"] = urls or []
+                captured["project"] = project
                 return True
 
             with patch.object(store, "_request_sync_locked", side_effect=fake_request_sync_locked):
                 result = store.request_sync(project="项目A")
             self.assertTrue(result["ok"])
             self.assertEqual(captured["urls"], ["https://www.xiaohongshu.com/user/profile/u1"])
+            self.assertEqual(captured["project"], "项目A")
             self.assertIn("项目「项目A」", captured["reason"])
 
     def test_retry_account_triggers_single_account_sync(self) -> None:
@@ -500,9 +503,10 @@ class LocalStatsAppTest(unittest.TestCase):
             )
             captured = {}
 
-            def fake_request_sync_locked(*, reason, urls=None):
+            def fake_request_sync_locked(*, reason, urls=None, project=""):
                 captured["reason"] = reason
                 captured["urls"] = urls or []
+                captured["project"] = project
                 return True
 
             with patch.object(store, "_request_sync_locked", side_effect=fake_request_sync_locked):
@@ -511,8 +515,39 @@ class LocalStatsAppTest(unittest.TestCase):
             metadata = load_monitored_metadata(str(path))
             self.assertTrue(result["ok"])
             self.assertEqual(captured["urls"], ["https://www.xiaohongshu.com/user/profile/u1"])
+            self.assertEqual(captured["project"], "")
             self.assertEqual(metadata["https://www.xiaohongshu.com/user/profile/u1"]["fetch_state"], "checking")
             self.assertIn("重试", metadata["https://www.xiaohongshu.com/user/profile/u1"]["fetch_message"])
+
+    def test_get_payload_attaches_project_sync_status(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = write_monitored_entries(
+                f"{temp_dir}/urls.txt",
+                [
+                    {"url": "https://www.xiaohongshu.com/user/profile/u1", "active": True, "project": "项目A"},
+                    {"url": "https://www.xiaohongshu.com/user/profile/u2", "active": True, "project": "项目B"},
+                ],
+            )
+            update_project_sync_status(
+                urls_file=str(path),
+                project="项目A",
+                state="success",
+                message="同步完成",
+                finished_at="2026-03-23T14:00:00+08:00",
+                total_accounts=1,
+                total_works=30,
+            )
+            store = MonitoringSyncStore(
+                env_file=f"{temp_dir}/.env",
+                urls_file=str(path),
+                dashboard_store=DashboardStore(env_file=f"{temp_dir}/.env"),
+            )
+            payload = store.get_payload()
+            projects = {item["name"]: item for item in payload["projects"]}
+            self.assertEqual(projects["项目A"]["sync_status"]["state"], "success")
+            self.assertEqual(projects["项目A"]["sync_status"]["total_accounts"], 1)
+            self.assertEqual(projects["项目A"]["sync_status"]["message"], "同步完成")
+            self.assertEqual(projects["项目B"]["sync_status"], {})
 
     def test_request_sync_blocks_manual_cooldown(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
