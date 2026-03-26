@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import sys
 from dataclasses import replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
@@ -23,14 +24,24 @@ from .launchd import (
 from .profile_batch_report import (
     collect_profile_reports_with_progress,
     load_url_entries_file,
+    normalize_profile_url,
     normalize_profile_url_entries,
     normalize_profile_urls,
 )
+from .project_cache import resolve_project_cache_dir, write_project_cache_bundle
 from .project_sync_status import update_project_sync_status
 from .profile_dashboard_to_feishu import (
+    DASHBOARD_CALENDAR_FIELDS,
+    DASHBOARD_CALENDAR_TABLE_NAME,
+    DASHBOARD_SINGLE_WORK_RANKING_FIELDS,
+    build_record_state_index,
+    build_single_work_ranking_fields,
+    build_single_work_rankings,
+    ensure_named_table,
     sync_dashboard_portal,
     sync_dashboard_tables,
     sync_single_work_ranking_table,
+    to_ms,
 )
 from .profile_live_sync import parse_daily_time
 from .profile_to_feishu import (
@@ -59,6 +70,121 @@ from .profile_works_to_feishu import (
 
 DEFAULT_BATCH_SYNC_LABEL = "com.cc.xhs-profile-batch-report"
 NOTE_ID_FROM_URL_PATTERN = re.compile(r"/(?:explore|discovery/item)/([A-Za-z0-9_-]+)")
+LIKE_RANK_TYPE = "单条点赞排行"
+COMMENT_RANK_TYPE = "单条评论排行"
+PROJECT_WORK_RANKING_TABLE_NAME = "项目作品排行榜"
+SINGLE_TABLE_RANKING_TABLE_NAMES = (PROJECT_WORK_RANKING_TABLE_NAME, "小红书单条作品排行", "数据表")
+PROJECT_ACCOUNT_RANKING_TABLE_NAME = "项目账号排行榜"
+PRODUCT_METRIC_NOTE = "口径：每个账号最多采集前30条作品；项目增长按可比账号计算；飞书仅做留底和协作展示"
+ACCOUNT_RANKING_USAGE_NOTE = "用途：按项目查看账号点赞排行和评论排行"
+EXPORT_REVIEW_ROOT_DIR = "/Users/cc/Downloads/飞书缓存/账号榜单导出"
+DAILY_LIKE_REVIEW_TABLE_NAME = "每日点赞复盘"
+DAILY_COMMENT_REVIEW_TABLE_NAME = "每日评论复盘"
+LEGACY_FEISHU_TABLE_NAMES = {
+    "__codex_probe__",
+    "小红书账号总览",
+    "小红书作品数据",
+    "小红书看板总览",
+    "小红书看板趋势",
+    "小红书看板榜单",
+    "小红书仪表盘总控",
+    "小红书日历留底",
+    "小红书作品日历留底",
+    "小红书单条作品排行",
+    "东莞-点赞排行",
+    "东莞-评论排行",
+    "默认项目-点赞排行",
+    "默认项目-评论排行",
+    "项目账号排行榜",
+    "项目作品排行榜",
+}
+DAILY_REVIEW_COMMON_FIELDS: List[Dict[str, Any]] = [
+    {"field_name": "复盘键", "type": 1},
+    {"field_name": "日期", "type": 5, "property": {"date_formatter": "yyyy-MM-dd"}},
+    {"field_name": "日期文本", "type": 1},
+    {"field_name": "快照时间", "type": 5, "property": {"date_formatter": "yyyy-MM-dd HH:mm"}},
+    {"field_name": "快照批次", "type": 1},
+    {"field_name": "项目", "type": 1},
+    {"field_name": "账号ID", "type": 1},
+    {"field_name": "账号", "type": 1},
+    {"field_name": "账号内排名", "type": 2, "property": {"formatter": "0"}},
+    {"field_name": "标题", "type": 1},
+    {"field_name": "摘要", "type": 1},
+    {"field_name": "作品链接", "type": 15},
+    {"field_name": "主页链接", "type": 15},
+    {"field_name": "封面图", "type": 15},
+    {"field_name": "快照目录", "type": 1},
+    {"field_name": "口径说明", "type": 1},
+]
+DAILY_LIKE_REVIEW_FIELDS: List[Dict[str, Any]] = [
+    *DAILY_REVIEW_COMMON_FIELDS,
+    {"field_name": "点赞数", "type": 2, "property": {"formatter": "0"}},
+]
+DAILY_COMMENT_REVIEW_FIELDS: List[Dict[str, Any]] = [
+    *DAILY_REVIEW_COMMON_FIELDS,
+    {"field_name": "评论数", "type": 2, "property": {"formatter": "0"}},
+    {"field_name": "评论口径", "type": 1},
+]
+PROJECT_ACCOUNT_RANKING_FIELDS: List[Dict[str, Any]] = [
+    {"field_name": "项目账号榜单键", "type": 1},
+    {"field_name": "项目", "type": 1},
+    {"field_name": "榜单类型", "type": 1},
+    {"field_name": "排名", "type": 2, "property": {"formatter": "0"}},
+    {"field_name": "排序值", "type": 2, "property": {"formatter": "0"}},
+    {"field_name": "账号ID", "type": 1},
+    {"field_name": "账号", "type": 1},
+    {"field_name": "主页链接", "type": 15},
+    {"field_name": "数据更新时间", "type": 5, "property": {"date_formatter": "yyyy-MM-dd HH:mm"}},
+    {"field_name": "日历日期", "type": 5, "property": {"date_formatter": "yyyy-MM-dd"}},
+    {"field_name": "日期文本", "type": 1},
+    {"field_name": "粉丝数", "type": 2, "property": {"formatter": "0"}},
+    {"field_name": "获赞收藏数", "type": 2, "property": {"formatter": "0"}},
+    {"field_name": "首页总点赞", "type": 2, "property": {"formatter": "0"}},
+    {"field_name": "首页总评论", "type": 2, "property": {"formatter": "0"}},
+    {"field_name": "账号总作品数", "type": 2, "property": {"formatter": "0"}},
+    {"field_name": "作品数展示", "type": 1},
+    {"field_name": "头部作品标题", "type": 1},
+    {"field_name": "头部作品点赞", "type": 2, "property": {"formatter": "0"}},
+    {"field_name": "TOP3作品摘要", "type": 1},
+    {"field_name": "口径说明", "type": 1},
+    {"field_name": "数据用途", "type": 1},
+]
+
+
+def is_feishu_forbidden_error(exc: Exception) -> bool:
+    message = str(exc or "")
+    return "403" in message and "Forbidden" in message
+
+
+def is_feishu_record_not_found_error(exc: Exception) -> bool:
+    return "1254043" in str(exc or "") or "RecordIdNotFound" in str(exc or "")
+
+
+def clear_feishu_table_records(*, settings, table_id: str) -> int:
+    client = FeishuBitableClient(replace(settings, feishu_table_id=table_id))
+    deleted = 0
+    # Deleting while paging can cause page-token scans to skip rows as the table mutates.
+    # Always re-read from the head until the table is empty.
+    while True:
+        batch = client.list_records(page_size=500, field_names=[])
+        if not batch:
+            break
+        deleted_in_round = 0
+        for item in batch:
+            record_id = str(item.get("record_id") or "").strip()
+            if not record_id:
+                continue
+            try:
+                client.delete_record(record_id)
+                deleted += 1
+                deleted_in_round += 1
+            except Exception as exc:
+                if is_feishu_record_not_found_error(exc):
+                    continue
+                raise
+        if deleted_in_round <= 0:
+            break
+    return deleted
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -167,16 +293,35 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 0
     except Exception as exc:
         if args.project:
+            error_message = build_project_sync_error_message(project=args.project, error=exc)
             update_project_sync_status(
                 urls_file=args.urls_file or "",
                 project=args.project,
                 state="error",
-                message=f"项目「{args.project}」同步失败",
+                message=error_message,
                 started_at=started_at,
                 finished_at=datetime.now().astimezone().isoformat(timespec="seconds"),
                 last_error=str(exc),
             )
         raise
+
+
+def build_project_sync_error_message(*, project: str, error: Exception) -> str:
+    project_name = str(project or "").strip() or "未分组"
+    text = str(error or "").strip()
+    if "FieldNameNotFound" in text:
+        return f"项目「{project_name}」飞书上传失败：排行榜表缺少字段"
+    if "RolePermNotAllow" in text or "403" in text:
+        return f"项目「{project_name}」飞书上传失败：当前应用没有足够权限"
+    if "tenant_access_token" in text or "缺少飞书配置" in text:
+        return f"项目「{project_name}」飞书上传失败：凭证或配置异常"
+    if "批量抓取没有成功结果" in text:
+        return f"项目「{project_name}」抓取失败：本轮没有成功账号"
+    if "登录页" in text or "未配置登录态" in text or "当前登录态不可用" in text:
+        return f"项目「{project_name}」抓取失败：登录态异常"
+    if "timed out" in text or "Connection aborted" in text or "RemoteDisconnected" in text:
+        return f"项目「{project_name}」抓取或上传失败：网络连接异常"
+    return f"项目「{project_name}」同步失败"
 
 
 def load_reports_for_sync(
@@ -196,6 +341,11 @@ def load_reports_for_sync(
     if str(project or "").strip():
         project_name = str(project).strip()
         url_entries = [item for item in url_entries if str(item.get("project") or "").strip() == project_name]
+    project_by_url = {
+        normalize_profile_url(str(item.get("url") or "")): str(item.get("project") or "").strip()
+        for item in url_entries
+        if str(item.get("url") or "").strip()
+    }
     urls = [item["url"] for item in url_entries]
     if not urls:
         raise ValueError("没有找到可用的小红书账号主页链接")
@@ -205,7 +355,24 @@ def load_reports_for_sync(
         settings=settings,
         progress_callback=progress_callback,
     )
-    reports = [normalize_batch_item_to_report(item) for item in items if item.get("status") == "success"]
+    reports = [
+        normalize_batch_item_to_report(
+            item,
+            project=project_by_url.get(
+                normalize_profile_url(
+                    str(
+                        item.get("requested_url")
+                        or item.get("final_url")
+                        or (item.get("profile") or {}).get("profile_url")
+                        or ""
+                    )
+                ),
+                "",
+            ),
+        )
+        for item in items
+        if item.get("status") == "success"
+    ]
     if not reports:
         raise ValueError("批量抓取没有成功结果，无法同步到飞书")
     return reports
@@ -229,7 +396,7 @@ def load_reports_from_json(path_text: str) -> List[Dict[str, Any]]:
     return reports
 
 
-def normalize_batch_item_to_report(item: Dict[str, Any]) -> Dict[str, Any]:
+def normalize_batch_item_to_report(item: Dict[str, Any], *, project: str = "") -> Dict[str, Any]:
     profile = dict(item.get("profile") or {})
     works = [dict(work) for work in (item.get("works") or []) if isinstance(work, dict)]
     captured_at = str(item.get("captured_at") or "").strip() or datetime.now().astimezone().isoformat(timespec="seconds")
@@ -239,6 +406,7 @@ def normalize_batch_item_to_report(item: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "captured_at": captured_at,
         "source_url": str(item.get("requested_url") or final_url or profile.get("profile_url") or "").strip(),
+        "project": str(project or item.get("project") or "").strip(),
         "profile": profile,
         "works": works,
     }
@@ -291,191 +459,1193 @@ def sync_reports_to_feishu(
                 "failed_count": 0,
             }
         )
+    cache_result = write_project_cache_bundle(reports=reports, settings=settings)
 
-    tables_client = FeishuBitableClient(settings)
-    profile_table_id = ensure_profile_table(tables_client=tables_client, table_name=profile_table_name)
-    works_table_id = ensure_works_table(
-        tables_client=tables_client,
-        settings=settings,
-        table_name=works_table_name,
+    ranking_settings = (
+        replace(settings, feishu_bitable_app_token=settings.feishu_ranking_bitable_app_token)
+        if str(getattr(settings, "feishu_ranking_bitable_app_token", "") or "").strip()
+        else settings
     )
-    works_calendar_table_id = ensure_works_calendar_table(
-        tables_client=tables_client,
-        settings=settings,
-        table_name=WORKS_CALENDAR_TABLE_NAME,
+    project_ranking_results = sync_project_ranking_tables(
+        reports=reports,
+        settings=ranking_settings,
     )
 
-    profile_client = FeishuBitableClient(replace(settings, feishu_table_id=profile_table_id))
-    works_client = FeishuBitableClient(replace(settings, feishu_table_id=works_table_id))
-    works_calendar_client = FeishuBitableClient(replace(settings, feishu_table_id=works_calendar_table_id))
-
-    if ensure_fields:
-        profile_client.ensure_fields(PROFILE_FIELD_SPECS)
-        works_client.ensure_fields(WORKS_TABLE_FIELDS)
-        works_calendar_client.ensure_fields(WORKS_CALENDAR_FIELDS)
-
-    deduped_profiles = dedupe_profile_records(profile_client)
-    deduped_works = dedupe_work_records(works_client)
-    profile_records = build_record_state_index(profile_client, unique_field="账号ID")
-    profile_index = {key: item["record_id"] for key, item in profile_records.items()}
-    works_records = build_record_state_index(works_client, unique_field="作品指纹")
-    works_index = {key: item["record_id"] for key, item in works_records.items()}
-    works_calendar_records = build_record_state_index(works_calendar_client, unique_field="日历键")
-    works_calendar_index = {key: item["record_id"] for key, item in works_calendar_records.items()}
-    works_calendar_history = build_work_calendar_history_index(
-        works_calendar_client.list_records(
-            page_size=500,
-            field_names=["日期文本", "日历日期", "作品指纹", "点赞数", "点赞文本", "评论数", "评论文本"],
-        )
-    )
-    reports = [merge_report_with_existing_work_details(report=report, works_records=works_records) for report in reports]
-
-    account_results: List[Dict[str, Any]] = []
-    dashboard_synced = 0
-    synced_works = 0
-    skipped_profiles = 0
-    skipped_works = 0
-    skipped_work_calendars = 0
-    dashboard_portal_result = None
-    single_work_ranking_result = None
-    comment_alert_candidates: List[Dict[str, Any]] = []
-    for index, report in enumerate(reports, start=1):
-        profile_fields = build_profile_feishu_fields(report)
-        profile_action, profile_record_id = upsert_record_with_index(
-            client=profile_client,
-            record_index=profile_index,
-            record_state_index=profile_records,
-            unique_field="账号ID",
-            unique_value=profile_fields["账号ID"],
-            fields=profile_fields,
-            compare_ignore_fields=["上报时间"],
-        )
-        if profile_action == "skipped":
-            skipped_profiles += 1
-
-        work_results = []
-        snapshot_date = extract_snapshot_date(report.get("captured_at") or "")
-        for work in report["works"]:
-            work_fields = build_work_feishu_fields(report=report, work=work)
-            fingerprint = str(work_fields.get("作品指纹") or "").strip()
-            weekly_baseline = select_work_weekly_baseline(
-                history_index=works_calendar_history,
-                fingerprint=fingerprint,
-                snapshot_date=snapshot_date,
-            )
-            work_fields.update(build_work_weekly_fields(current_fields=work_fields, baseline_fields=weekly_baseline))
-            previous_fields = (works_records.get(fingerprint) or {}).get("fields") or {}
-            comment_fields, comment_alert = build_work_comment_fields(
-                report=report,
-                work=work,
-                previous_fields=previous_fields,
-                settings=settings,
-            )
-            work_fields.update(comment_fields)
-            work_action, work_record_id = upsert_record_with_index(
-                client=works_client,
-                record_index=works_index,
-                record_state_index=works_records,
-                unique_field="作品指纹",
-                unique_value=work_fields["作品指纹"],
-                fields=work_fields,
-                compare_ignore_fields=["抓取时间"],
-            )
-            if work_action == "skipped":
-                skipped_works += 1
-            if fingerprint:
-                works_records[fingerprint] = {
-                    "record_id": work_record_id,
-                    "fields": dict(work_fields),
-                }
-            calendar_fields = build_work_calendar_fields(report=report, work=work)
-            calendar_key = str(calendar_fields.get("日历键") or "").strip()
-            calendar_action, calendar_record_id = upsert_record_with_index(
-                client=works_calendar_client,
-                record_index=works_calendar_index,
-                record_state_index=works_calendar_records,
-                unique_field="日历键",
-                unique_value=calendar_key,
-                fields=calendar_fields,
-                compare_ignore_fields=["数据更新时间"],
-            )
-            if calendar_action == "skipped":
-                skipped_work_calendars += 1
-            if fingerprint and calendar_key:
-                today_entry = (parse_calendar_key_date(calendar_key), dict(calendar_fields))
-                works_calendar_history.setdefault(fingerprint, [])
-                works_calendar_history[fingerprint] = [
-                    entry for entry in works_calendar_history[fingerprint] if entry[0] != today_entry[0]
-                ]
-                works_calendar_history[fingerprint].append(today_entry)
-                works_calendar_history[fingerprint].sort(key=lambda item: item[0], reverse=True)
-            synced_works += 1
-            if comment_alert:
-                comment_alert_candidates.append(comment_alert)
-            work_results.append(
-                {
-                    "action": work_action,
-                    "record_id": work_record_id,
-                    "title": work_fields["标题文案"],
-                    "calendar_action": calendar_action,
-                    "calendar_record_id": calendar_record_id,
-                }
-            )
-
-        dashboard_result = None
-        if sync_dashboard:
-            dashboard_result = sync_dashboard_tables(report=report, settings=settings)
-            dashboard_synced += 1
-
-        account_results.append(
+    if progress_callback is not None:
+        progress_callback(
             {
-                "账号": report["profile"].get("nickname") or "",
-                "账号ID": report["profile"].get("profile_user_id") or "",
-                "summary_action": profile_action,
-                "summary_record_id": profile_record_id,
-                "works_synced": len(report["works"]),
-                "dashboard": dashboard_result,
-                "sample_works": work_results[:3],
+                "phase": "sync",
+                "current": total_reports,
+                "total": total_reports,
+                "account": "",
+                "works": sum(len(report.get("works") or []) for report in reports),
+                "success_count": total_reports,
+                "failed_count": 0,
             }
         )
+
+    return {
+        "profile_table_id": "",
+        "works_table_id": "",
+        "works_calendar_table_id": "",
+        "total_accounts": total_reports,
+        "successful_accounts": total_reports,
+        "failed_accounts": 0,
+        "total_works": sum(len(report.get("works") or []) for report in reports),
+        "deduped_profiles": 0,
+        "deduped_works": 0,
+        "dashboard_synced": 0,
+        "dashboard_portal": None,
+        "single_work_rankings": project_ranking_results,
+        "comment_alerts": {"skipped": True, "reason": "已切换为仅上传排行榜"},
+        "skipped_profiles": 0,
+        "skipped_works": 0,
+        "skipped_work_calendars": 0,
+        "cache": cache_result,
+        "items": [
+            {
+                "账号": (report.get("profile") or {}).get("nickname") or "",
+                "账号ID": (report.get("profile") or {}).get("profile_user_id") or "",
+                "summary_action": "cached",
+                "works_synced": len(report.get("works") or []),
+                "sample_works": [],
+            }
+            for report in reports
+        ],
+    }
+
+
+def sync_project_ranking_tables(
+    *,
+    reports: List[Dict[str, Any]],
+    settings,
+    progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+) -> Dict[str, Any]:
+    return sync_project_rankings_into_single_table(reports=reports, settings=settings, progress_callback=progress_callback)
+
+
+def sync_project_rankings_into_single_table(
+    *,
+    reports: List[Dict[str, Any]],
+    settings,
+    progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+) -> Dict[str, Any]:
+    grouped_reports: Dict[str, List[Dict[str, Any]]] = {}
+    for report in reports:
+        project_name = str(report.get("project") or "").strip() or "未分组"
+        grouped_reports.setdefault(project_name, []).append(report)
+
+    grouped_rows: Dict[str, List[Dict[str, Any]]] = {}
+    rank_limit = max(1, int(getattr(settings, "feishu_ranking_upload_limit", 30) or 30))
+    for project_name, project_reports in sorted(grouped_reports.items(), key=lambda item: item[0]):
+        rankings = build_single_work_rankings(reports=project_reports, history_index={})
+        project_rows: List[Dict[str, Any]] = []
+        for rank_type in (LIKE_RANK_TYPE, COMMENT_RANK_TYPE):
+            ranked_items = (rankings.get(rank_type) or [])[:rank_limit]
+            for rank, item in enumerate(ranked_items, start=1):
+                project_rows.append(build_single_work_ranking_fields(item=item, rank_type=rank_type, rank=rank))
+        grouped_rows[project_name] = project_rows
+
+    return sync_project_ranking_rows_into_single_table(grouped_rows=grouped_rows, settings=settings, progress_callback=progress_callback)
+
+
+def has_cached_project_rankings(*, settings, project: str = "") -> bool:
+    return has_cached_project_upload_payload(settings=settings, project=project, include_calendar=True, include_rankings=True)
+
+
+def has_cached_project_upload_payload(
+    *,
+    settings,
+    project: str = "",
+    include_calendar: bool = True,
+    include_rankings: bool = True,
+) -> bool:
+    cache_dir = resolve_project_cache_dir(settings)
+    if not cache_dir.exists():
+        return False
+    target_slug = slugify_project_name(project) if str(project or "").strip() else ""
+    for path in cache_dir.iterdir():
+        if not path.is_dir():
+            continue
+        if target_slug and path.name != target_slug:
+            continue
+        has_calendar = include_calendar and (path / "calendar_rows.json").exists()
+        has_rankings = include_rankings and (path / "ranking_rows.json").exists()
+        if has_calendar or has_rankings:
+            return True
+    if include_rankings and has_export_review_snapshots(project=project):
+        return True
+    return False
+
+
+def resolve_export_review_root(export_dir: str = "") -> Path:
+    raw = str(export_dir or EXPORT_REVIEW_ROOT_DIR).strip() or EXPORT_REVIEW_ROOT_DIR
+    return Path(raw).expanduser().resolve()
+
+
+def has_export_review_snapshots(*, project: str = "", export_dir: str = "") -> bool:
+    root = resolve_export_review_root(export_dir)
+    if not root.exists():
+        return False
+    target_project = str(project or "").strip()
+    for summary_path in sorted(root.glob("*/*/项目导出摘要.json")):
+        payload = load_json_file(summary_path)
+        if not isinstance(payload, dict):
+            continue
+        project_name = str(payload.get("project") or summary_path.parent.parent.name).strip()
+        if target_project and project_name != target_project:
+            continue
+        return True
+    return False
+
+
+def load_json_file(path: Path) -> Any:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def build_export_review_key(
+    *,
+    snapshot_slug: str,
+    project: str,
+    account_id: str,
+    metric_label: str,
+    work_url: str,
+    title: str,
+) -> str:
+    source = "|".join(
+        [
+            str(snapshot_slug or "").strip(),
+            str(project or "").strip(),
+            str(account_id or "").strip(),
+            str(metric_label or "").strip(),
+            str(work_url or "").strip(),
+            str(title or "").strip(),
+        ]
+    )
+    digest = hashlib.sha1(source.encode("utf-8")).hexdigest()[:16]
+    return f"{snapshot_slug}|{project}|{account_id}|{metric_label}|{digest}"
+
+
+def _link_field(text: str, url: Any) -> Dict[str, str] | str:
+    url_text = str(url or "").strip()
+    if not url_text:
+        return ""
+    return {"text": str(text or url_text).strip() or url_text, "link": url_text}
+
+
+def load_export_review_rows(*, project: str = "", export_dir: str = "", settings: Any = None) -> Dict[str, List[Dict[str, Any]]]:
+    root = resolve_export_review_root(export_dir)
+    target_project = str(project or "").strip()
+    grouped_rows: Dict[str, List[Dict[str, Any]]] = {
+        DAILY_LIKE_REVIEW_TABLE_NAME: [],
+        DAILY_COMMENT_REVIEW_TABLE_NAME: [],
+    }
+    if not root.exists():
+        return grouped_rows
+
+    runtime_settings = settings or load_settings("xhs_feishu_monitor/.env")
+    review_days = max(1, int(getattr(runtime_settings, "feishu_review_upload_days", 14) or 14))
+    per_account_limit = max(1, int(getattr(runtime_settings, "feishu_review_per_account_limit", 10) or 10))
+    today = datetime.now().astimezone().date()
+    latest_daily_summaries: Dict[tuple[str, str], tuple[str, Path, Dict[str, Any]]] = {}
+
+    for summary_path in sorted(root.glob("*/*/项目导出摘要.json")):
+        try:
+            payload = load_json_file(summary_path)
+        except Exception:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        project_name = str(payload.get("project") or summary_path.parent.parent.name).strip() or "未分组"
+        if target_project and project_name != target_project:
+            continue
+        snapshot_slug = str(payload.get("snapshot_slug") or summary_path.parent.name).strip()
+        snapshot_date_text = snapshot_slug.split("_", 1)[0] if snapshot_slug else str(payload.get("snapshot_time") or "")[:10]
+        try:
+            snapshot_date = datetime.strptime(snapshot_date_text, "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        if snapshot_date < (today - timedelta(days=review_days - 1)):
+            continue
+        key = (project_name, snapshot_date_text)
+        previous = latest_daily_summaries.get(key)
+        if previous and previous[0] >= snapshot_slug:
+            continue
+        latest_daily_summaries[key] = (snapshot_slug, summary_path, payload)
+
+    for (_project_name, _snapshot_date_text), (snapshot_slug, summary_path, payload) in sorted(latest_daily_summaries.items(), key=lambda item: (item[0][0], item[0][1])):
+        project_name = str(payload.get("project") or summary_path.parent.parent.name).strip() or "未分组"
+        snapshot_time = str(payload.get("snapshot_time") or "").strip()
+        snapshot_ms = to_ms(snapshot_time)
+        snapshot_date_text = snapshot_slug.split("_", 1)[0] if snapshot_slug else snapshot_time[:10]
+        snapshot_date_ms = to_ms(f"{snapshot_date_text}T00:00:00+08:00") if snapshot_date_text else 0
+        export_dir_text = str(payload.get("export_dir") or summary_path.parent).strip()
+        for account_summary in payload.get("accounts") or []:
+            if not isinstance(account_summary, dict):
+                continue
+            account_id = str(account_summary.get("account_id") or "").strip()
+            account_name = str(account_summary.get("account") or account_id).strip() or account_id
+            files = account_summary.get("files") or {}
+            for table_name, metric_label, value_field, file_key in (
+                (DAILY_LIKE_REVIEW_TABLE_NAME, "点赞", "点赞数", "like_json"),
+                (DAILY_COMMENT_REVIEW_TABLE_NAME, "评论", "评论数", "comment_json"),
+            ):
+                file_path = Path(str(files.get(file_key) or "").strip())
+                if not file_path.exists():
+                    continue
+                try:
+                    ranking_rows = load_json_file(file_path)
+                except Exception:
+                    continue
+                if not isinstance(ranking_rows, list):
+                    continue
+                for row in ranking_rows[:per_account_limit]:
+                    if not isinstance(row, dict):
+                        continue
+                    work_url = str(row.get("作品链接") or "").strip()
+                    title = str(row.get("标题") or "").strip()
+                    review_key = build_export_review_key(
+                        snapshot_slug=snapshot_slug,
+                        project=project_name,
+                        account_id=account_id,
+                        metric_label=metric_label,
+                        work_url=work_url,
+                        title=title,
+                    )
+                    value = to_optional_int(row.get("数值")) or 0
+                    fields: Dict[str, Any] = {
+                        "复盘键": review_key,
+                        "日期": snapshot_date_ms,
+                        "日期文本": snapshot_date_text,
+                        "快照时间": snapshot_ms,
+                        "快照批次": snapshot_slug,
+                        "项目": project_name,
+                        "账号ID": account_id,
+                        "账号": account_name,
+                        "账号内排名": to_optional_int(row.get("排名")) or 0,
+                        "标题": title,
+                        "摘要": str(row.get("摘要") or "").strip(),
+                        "作品链接": _link_field(title or "作品详情", work_url),
+                        "主页链接": _link_field(account_name or "账号主页", row.get("主页链接")),
+                        "封面图": _link_field("封面图", row.get("封面图")),
+                        "快照目录": export_dir_text,
+                        "口径说明": PRODUCT_METRIC_NOTE,
+                        value_field: value,
+                    }
+                    if table_name == DAILY_COMMENT_REVIEW_TABLE_NAME:
+                        fields["评论口径"] = str(row.get("评论口径") or "未知").strip() or "未知"
+                    grouped_rows[table_name].append({key: value for key, value in fields.items() if value not in ("", None)})
+    return grouped_rows
+
+
+def sync_export_review_tables_to_feishu(
+    *,
+    settings,
+    project: str = "",
+    progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+) -> Dict[str, Any]:
+    grouped_rows = load_export_review_rows(project=project, settings=settings)
+    total_rows = sum(len(rows) for rows in grouped_rows.values())
+    if total_rows <= 0:
+        if project:
+            raise ValueError(f"项目「{project}」当前没有可上传的导出复盘快照")
+        raise ValueError("当前没有可上传的导出复盘快照")
+
+    ranking_settings = (
+        replace(settings, feishu_bitable_app_token=settings.feishu_ranking_bitable_app_token)
+        if str(getattr(settings, "feishu_ranking_bitable_app_token", "") or "").strip()
+        else settings
+    )
+    tables_client = FeishuBitableClient(ranking_settings)
+    if progress_callback is not None:
+        progress_callback(
+            {
+                "phase": "sync",
+                "current": 0,
+                "total": max(1, total_rows),
+                "account": "",
+                "works": 0,
+                "success_count": 0,
+                "failed_count": 0,
+                "status": "读取复盘表结构",
+            }
+        )
+
+    summary: Dict[str, Any] = {
+        "daily_like_review_created": 0,
+        "daily_like_review_updated": 0,
+        "daily_like_review_skipped": 0,
+        "daily_like_review_deleted": 0,
+        "daily_comment_review_created": 0,
+        "daily_comment_review_updated": 0,
+        "daily_comment_review_skipped": 0,
+        "daily_comment_review_deleted": 0,
+    }
+    processed = 0
+    success_count = 0
+    managed_projects = {str(project or "").strip() or "未分组" for rows in grouped_rows.values() for project in [None] if False}
+    for rows in grouped_rows.values():
+        for row in rows:
+            managed_projects.add(str(row.get("项目") or "").strip() or "未分组")
+
+    for table_name, field_specs, value_prefix in (
+        (DAILY_LIKE_REVIEW_TABLE_NAME, DAILY_LIKE_REVIEW_FIELDS, "daily_like_review"),
+        (DAILY_COMMENT_REVIEW_TABLE_NAME, DAILY_COMMENT_REVIEW_FIELDS, "daily_comment_review"),
+    ):
+        rows = grouped_rows.get(table_name) or []
+        table_id = ensure_named_table(
+            tables_client=tables_client,
+            table_name=table_name,
+            default_view_name=table_name,
+            fields=field_specs,
+        )
+        client = FeishuBitableClient(replace(ranking_settings, feishu_table_id=table_id))
+        client.ensure_fields(field_specs)
+        supported_field_names = {
+            str(item.get("field_name") or "").strip()
+            for item in client.list_fields()
+            if str(item.get("field_name") or "").strip()
+        }
+        desired_supported_field_names = {
+            str(spec.get("field_name") or "").strip()
+            for spec in field_specs
+            if str(spec.get("field_name") or "").strip() in supported_field_names
+        }
+        state_index = build_record_state_index(
+            client,
+            unique_field="复盘键",
+            field_names=["复盘键", *sorted(desired_supported_field_names)],
+        )
+        desired_fields: Dict[str, Dict[str, Any]] = {}
+        for row in rows:
+            fields = {key: value for key, value in dict(row).items() if not supported_field_names or key in supported_field_names}
+            row_key = str(fields.get("复盘键") or "").strip()
+            if row_key:
+                desired_fields[row_key] = fields
+
+        for row_key, fields in desired_fields.items():
+            existing = state_index.pop(row_key, None)
+            record_id = str((existing or {}).get("record_id") or "").strip()
+            if record_id:
+                if fields_match((existing or {}).get("fields") or {}, fields, ignore_fields=["快照时间"]):
+                    summary[f"{value_prefix}_skipped"] += 1
+                else:
+                    client.update_record(record_id, fields)
+                    summary[f"{value_prefix}_updated"] += 1
+                    success_count += 1
+            else:
+                client.create_record(fields)
+                summary[f"{value_prefix}_created"] += 1
+                success_count += 1
+            processed += 1
+            if progress_callback is not None:
+                progress_callback(
+                    {
+                        "phase": "sync",
+                        "current": processed,
+                        "total": max(1, total_rows),
+                        "account": str(fields.get("账号") or fields.get("项目") or ""),
+                        "works": 0,
+                        "success_count": success_count,
+                        "failed_count": 0,
+                        "status": f"写入{table_name}",
+                    }
+                )
+
+        for row_key, existing in state_index.items():
+            record_id = str((existing or {}).get("record_id") or "").strip()
+            fields = (existing or {}).get("fields") or {}
+            project_name = str(fields.get("项目") or "").strip() or "未分组"
+            if not record_id or project_name not in managed_projects:
+                continue
+            client.delete_record(record_id)
+            summary[f"{value_prefix}_deleted"] += 1
+
+        summary[f"{value_prefix}_table_name"] = table_name
+        summary[f"{value_prefix}_table_id"] = table_id
+
+    summary["single_work_ranking_created"] = summary["daily_like_review_created"] + summary["daily_comment_review_created"]
+    summary["single_work_ranking_updated"] = summary["daily_like_review_updated"] + summary["daily_comment_review_updated"]
+    summary["single_work_ranking_skipped"] = summary["daily_like_review_skipped"] + summary["daily_comment_review_skipped"]
+    summary["single_work_ranking_deleted"] = summary["daily_like_review_deleted"] + summary["daily_comment_review_deleted"]
+    summary["project_count"] = len({str(row.get("项目") or "").strip() for rows in grouped_rows.values() for row in rows if str(row.get("项目") or "").strip()})
+    return summary
+
+
+def rebuild_feishu_review_tables_from_exports(
+    *,
+    settings,
+    project: str = "",
+    progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+) -> Dict[str, Any]:
+    ranking_settings = (
+        replace(settings, feishu_bitable_app_token=settings.feishu_ranking_bitable_app_token)
+        if str(getattr(settings, "feishu_ranking_bitable_app_token", "") or "").strip()
+        else settings
+    )
+    tables_client = FeishuBitableClient(ranking_settings)
+    target_keep_names = {DAILY_LIKE_REVIEW_TABLE_NAME, DAILY_COMMENT_REVIEW_TABLE_NAME}
+    deleted_tables = 0
+    cleared_tables = 0
+    cleared_records = 0
+    if not str(project or "").strip():
+        for table in tables_client.list_tables():
+            table_name = str(table.get("name") or "").strip()
+            table_id = str(table.get("table_id") or "").strip()
+            if not table_id or table_name in target_keep_names:
+                continue
+            if table_name in LEGACY_FEISHU_TABLE_NAMES:
+                try:
+                    tables_client.delete_table(table_id)
+                    deleted_tables += 1
+                except Exception as exc:
+                    if not is_feishu_forbidden_error(exc):
+                        raise
+                    cleared_records += clear_feishu_table_records(settings=ranking_settings, table_id=table_id)
+                    cleared_tables += 1
+    summary = sync_export_review_tables_to_feishu(
+        settings=settings,
+        project=project,
+        progress_callback=progress_callback,
+    )
+    summary["deleted_legacy_tables"] = deleted_tables
+    summary["cleared_legacy_tables"] = cleared_tables
+    summary["cleared_legacy_records"] = cleared_records
+    return summary
+
+
+def sync_cached_project_rankings_to_feishu(
+    *,
+    settings,
+    project: str = "",
+    progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+    upload_calendar: bool = True,
+    upload_rankings: bool = True,
+) -> Dict[str, Any]:
+    if not upload_calendar and not upload_rankings:
+        raise ValueError("至少选择一种飞书上传内容")
+
+    calendar_summary: Dict[str, Any] = {}
+    if upload_calendar:
+        calendar_summary = sync_cached_project_calendar_to_feishu(
+            settings=settings,
+            project=project,
+            progress_callback=progress_callback,
+        )
+    ranking_summary: Dict[str, Any] = {}
+    if upload_rankings:
+        ranking_summary = sync_export_review_tables_to_feishu(
+            settings=settings,
+            project=project,
+            progress_callback=progress_callback,
+        )
+
+    if not ranking_summary and not calendar_summary.get("calendar_project_count"):
+        if project:
+            raise ValueError(f"项目「{project}」当前没有可上传的复盘快照或日历留底")
+        raise ValueError("当前没有可上传的复盘快照或日历留底")
+
+    return {**calendar_summary, **ranking_summary}
+
+
+def sync_cached_project_calendar_to_feishu(
+    *,
+    settings,
+    project: str = "",
+    progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+) -> Dict[str, Any]:
+    cache_dir = resolve_project_cache_dir(settings)
+    target_project = str(project or "").strip()
+    target_slug = slugify_project_name(target_project) if target_project else ""
+    grouped_rows: Dict[str, List[Dict[str, Any]]] = {}
+    if not cache_dir.exists():
+        return {
+            "calendar_table_name": DASHBOARD_CALENDAR_TABLE_NAME,
+            "calendar_project_count": 0,
+            "calendar_created": 0,
+            "calendar_updated": 0,
+            "calendar_skipped": 0,
+        }
+
+    for path in sorted(cache_dir.iterdir(), key=lambda item: item.name):
+        if not path.is_dir():
+            continue
+        if target_slug and path.name != target_slug:
+            continue
+        calendar_path = path / "calendar_rows.json"
+        if not calendar_path.exists():
+            continue
+        payload = json.loads(calendar_path.read_text(encoding="utf-8"))
+        if not isinstance(payload, list):
+            continue
+        project_name = target_project or path.name
+        rows = [dict(item) for item in payload if isinstance(item, dict) and str(item.get("日历键") or "").strip()]
+        if rows:
+            grouped_rows[project_name] = rows
+
+    if not grouped_rows:
+        return {
+            "calendar_table_name": DASHBOARD_CALENDAR_TABLE_NAME,
+            "calendar_project_count": 0,
+            "calendar_created": 0,
+            "calendar_updated": 0,
+            "calendar_skipped": 0,
+        }
+
+    total_rows = sum(len(rows) for rows in grouped_rows.values())
+    if progress_callback is not None:
+        progress_callback(
+            {
+                "phase": "sync",
+                "current": 0,
+                "total": max(1, total_rows),
+                "account": "",
+                "works": 0,
+                "success_count": 0,
+                "failed_count": 0,
+                "status": "读取日历留底表结构",
+            }
+        )
+    ranking_settings = (
+        replace(settings, feishu_bitable_app_token=settings.feishu_ranking_bitable_app_token)
+        if str(getattr(settings, "feishu_ranking_bitable_app_token", "") or "").strip()
+        else settings
+    )
+    tables_client = FeishuBitableClient(ranking_settings)
+    table_id = ensure_named_table(
+        tables_client=tables_client,
+        table_name=DASHBOARD_CALENDAR_TABLE_NAME,
+        fields=DASHBOARD_CALENDAR_FIELDS,
+        default_view_name="日历留底",
+    )
+
+    client = FeishuBitableClient(replace(ranking_settings, feishu_table_id=table_id))
+    if progress_callback is not None:
+        progress_callback(
+            {
+                "phase": "sync",
+                "current": 0,
+                "total": max(1, total_rows),
+                "account": "",
+                "works": 0,
+                "success_count": 0,
+                "failed_count": 0,
+                "status": "读取日历留底字段",
+            }
+        )
+    client.ensure_fields(DASHBOARD_CALENDAR_FIELDS)
+    supported_field_names = {
+        str(item.get("field_name") or "").strip()
+        for item in client.list_fields()
+        if str(item.get("field_name") or "").strip()
+    }
+    desired_supported_field_names = {
+        "日历键",
+        "账号",
+        "备注",
+        "数据更新时间",
+    }
+    desired_supported_field_names = [field_name for field_name in desired_supported_field_names if field_name in supported_field_names]
+    record_index = build_record_id_index(client, unique_field="日历键")
+    record_state_index = build_record_state_index(
+        client,
+        unique_field="日历键",
+        field_names=desired_supported_field_names,
+    )
+
+    created = 0
+    updated = 0
+    skipped = 0
+    processed = 0
+    for project_name, rows in sorted(grouped_rows.items(), key=lambda item: item[0]):
+        for raw_fields in rows:
+            fields = dict(raw_fields)
+            if supported_field_names and "项目" not in supported_field_names and "备注" in supported_field_names:
+                remark = str(fields.get("备注") or "").strip()
+                project_remark = f"项目：{project_name}"
+                if project_remark not in remark:
+                    fields["备注"] = f"{remark} | {project_remark}".strip(" |") if remark else project_remark
+            if "备注" in supported_field_names:
+                remark = str(fields.get("备注") or "").strip()
+                if PRODUCT_METRIC_NOTE not in remark:
+                    fields["备注"] = f"{remark} | {PRODUCT_METRIC_NOTE}".strip(" |") if remark else PRODUCT_METRIC_NOTE
+            if supported_field_names:
+                fields = {key: value for key, value in fields.items() if key in supported_field_names}
+            action, _record_id = upsert_record_with_index(
+                client=client,
+                record_index=record_index,
+                record_state_index=record_state_index,
+                unique_field="日历键",
+                unique_value=fields.get("日历键"),
+                fields=fields,
+                compare_ignore_fields=["数据更新时间"],
+            )
+            if action == "created":
+                created += 1
+            elif action == "updated":
+                updated += 1
+            else:
+                skipped += 1
+            processed += 1
+            if progress_callback is not None:
+                progress_callback(
+                    {
+                        "phase": "sync",
+                        "current": processed,
+                        "total": max(1, total_rows),
+                        "account": str(fields.get("账号") or project_name),
+                        "works": 0,
+                        "success_count": created + updated,
+                        "failed_count": 0,
+                        "status": "写入日历留底",
+                    }
+                )
+
+    return {
+        "calendar_table_name": DASHBOARD_CALENDAR_TABLE_NAME,
+        "calendar_table_id": table_id,
+        "calendar_project_count": len(grouped_rows),
+        "calendar_created": created,
+        "calendar_updated": updated,
+        "calendar_skipped": skipped,
+    }
+
+
+def sync_cached_project_account_rankings_to_feishu(
+    *,
+    settings,
+    project: str = "",
+    progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+) -> Dict[str, Any]:
+    cache_dir = resolve_project_cache_dir(settings)
+    target_project = str(project or "").strip()
+    target_slug = slugify_project_name(target_project) if target_project else ""
+    grouped_calendar_rows: Dict[str, List[Dict[str, Any]]] = {}
+    if not cache_dir.exists():
+        return {
+            "project_account_ranking_table_name": PROJECT_ACCOUNT_RANKING_TABLE_NAME,
+            "project_account_ranking_project_count": 0,
+            "project_account_ranking_created": 0,
+            "project_account_ranking_updated": 0,
+            "project_account_ranking_skipped": 0,
+            "project_account_ranking_deleted": 0,
+        }
+
+    for path in sorted(cache_dir.iterdir(), key=lambda item: item.name):
+        if not path.is_dir():
+            continue
+        if target_slug and path.name != target_slug:
+            continue
+        calendar_path = path / "calendar_rows.json"
+        if not calendar_path.exists():
+            continue
+        payload = json.loads(calendar_path.read_text(encoding="utf-8"))
+        if not isinstance(payload, list):
+            continue
+        project_name = target_project or path.name
+        rows = [dict(item) for item in payload if isinstance(item, dict) and str(item.get("账号ID") or "").strip()]
+        if rows:
+            grouped_calendar_rows[project_name] = rows
+
+    if not grouped_calendar_rows:
+        return {
+            "project_account_ranking_table_name": PROJECT_ACCOUNT_RANKING_TABLE_NAME,
+            "project_account_ranking_project_count": 0,
+            "project_account_ranking_created": 0,
+            "project_account_ranking_updated": 0,
+            "project_account_ranking_skipped": 0,
+            "project_account_ranking_deleted": 0,
+        }
+
+    grouped_rows = build_project_account_ranking_rows(grouped_calendar_rows)
+    total_rows = sum(len(rows) for rows in grouped_rows.values())
+    if progress_callback is not None:
+        progress_callback(
+            {
+                "phase": "sync",
+                "current": 0,
+                "total": max(1, total_rows),
+                "account": "",
+                "works": 0,
+                "success_count": 0,
+                "failed_count": 0,
+                "status": "读取项目账号榜表结构",
+            }
+        )
+    ranking_settings = (
+        replace(settings, feishu_bitable_app_token=settings.feishu_ranking_bitable_app_token)
+        if str(getattr(settings, "feishu_ranking_bitable_app_token", "") or "").strip()
+        else settings
+    )
+    tables_client = FeishuBitableClient(ranking_settings)
+    table_id = ensure_named_table(
+        tables_client=tables_client,
+        table_name=PROJECT_ACCOUNT_RANKING_TABLE_NAME,
+        default_view_name="项目账号排行",
+        fields=PROJECT_ACCOUNT_RANKING_FIELDS,
+    )
+    client = FeishuBitableClient(replace(ranking_settings, feishu_table_id=table_id))
+    client.ensure_fields(PROJECT_ACCOUNT_RANKING_FIELDS)
+    if progress_callback is not None:
+        progress_callback(
+            {
+                "phase": "sync",
+                "current": 0,
+                "total": max(1, total_rows),
+                "account": "",
+                "works": 0,
+                "success_count": 0,
+                "failed_count": 0,
+                "status": "读取项目账号榜字段",
+            }
+        )
+    supported_field_names = {
+        str(item.get("field_name") or "").strip()
+        for item in client.list_fields()
+        if str(item.get("field_name") or "").strip()
+    }
+    desired_supported_field_names = {
+        str(spec.get("field_name") or "").strip()
+        for spec in PROJECT_ACCOUNT_RANKING_FIELDS
+        if str(spec.get("field_name") or "").strip() in supported_field_names
+    }
+    record_index = build_record_id_index(client, unique_field="项目账号榜单键")
+    record_state_index = build_record_state_index(
+        client,
+        unique_field="项目账号榜单键",
+        field_names=["项目账号榜单键", *sorted(desired_supported_field_names)],
+    )
+
+    desired_keys: set[str] = set()
+    created = 0
+    updated = 0
+    skipped = 0
+    processed = 0
+    for project_name, rows in sorted(grouped_rows.items(), key=lambda item: item[0]):
+        for raw_fields in rows:
+            fields = {key: value for key, value in dict(raw_fields).items() if not supported_field_names or key in supported_field_names}
+            row_key = str(fields.get("项目账号榜单键") or "").strip()
+            if not row_key:
+                continue
+            desired_keys.add(row_key)
+            action, _record_id = upsert_record_with_index(
+                client=client,
+                record_index=record_index,
+                record_state_index=record_state_index,
+                unique_field="项目账号榜单键",
+                unique_value=row_key,
+                fields=fields,
+                compare_ignore_fields=["数据更新时间"],
+            )
+            if action == "created":
+                created += 1
+            elif action == "updated":
+                updated += 1
+            else:
+                skipped += 1
+            processed += 1
+            if progress_callback is not None:
+                progress_callback(
+                    {
+                        "phase": "sync",
+                        "current": processed,
+                        "total": max(1, total_rows),
+                        "account": str(fields.get("账号") or project_name),
+                        "works": 0,
+                        "success_count": created + updated,
+                        "failed_count": 0,
+                        "status": "写入项目账号榜",
+                    }
+                )
+
+    deleted = 0
+    for row_key, existing in record_state_index.items():
+        record_id = str((existing or {}).get("record_id") or "").strip()
+        fields = (existing or {}).get("fields") or {}
+        project_name = str(fields.get("项目") or "").strip()
+        if not record_id or row_key in desired_keys:
+            continue
+        if project_name and project_name in grouped_rows:
+            client.delete_record(record_id)
+            deleted += 1
+
+    return {
+        "project_account_ranking_table_name": PROJECT_ACCOUNT_RANKING_TABLE_NAME,
+        "project_account_ranking_table_id": table_id,
+        "project_account_ranking_project_count": len(grouped_rows),
+        "project_account_ranking_created": created,
+        "project_account_ranking_updated": updated,
+        "project_account_ranking_skipped": skipped,
+        "project_account_ranking_deleted": deleted,
+    }
+
+
+def build_project_account_ranking_rows(grouped_calendar_rows: Dict[str, List[Dict[str, Any]]]) -> Dict[str, List[Dict[str, Any]]]:
+    grouped_rows: Dict[str, List[Dict[str, Any]]] = {}
+    for project_name, calendar_rows in grouped_calendar_rows.items():
+        latest_by_account: Dict[str, Dict[str, Any]] = {}
+        for row in calendar_rows:
+            account_id = str(row.get("账号ID") or "").strip()
+            if not account_id:
+                continue
+            current_date = str(row.get("日期文本") or "")
+            current_updated = to_optional_int(row.get("数据更新时间")) or 0
+            existing = latest_by_account.get(account_id) or {}
+            existing_date = str(existing.get("日期文本") or "")
+            existing_updated = to_optional_int(existing.get("数据更新时间")) or 0
+            if current_date > existing_date or (current_date == existing_date and current_updated >= existing_updated):
+                latest_by_account[account_id] = dict(row)
+
+        latest_rows = list(latest_by_account.values())
+        ranking_specs = {
+            "点赞排行": "首页总点赞",
+            "评论排行": "首页总评论",
+        }
+        rank_maps = {ranking_type: build_dense_rank_map(latest_rows, value_field=value_field) for ranking_type, value_field in ranking_specs.items()}
+
+        project_account_rows: List[Dict[str, Any]] = []
+        for ranking_type, value_field in ranking_specs.items():
+            ranking_rows = sorted(
+                latest_rows,
+                key=lambda item: (
+                    -(to_optional_int(item.get(value_field)) or 0),
+                    str(item.get("账号") or item.get("账号ID") or ""),
+                ),
+            )
+            rank_map = rank_maps[ranking_type]
+            for row in ranking_rows:
+                account_id = str(row.get("账号ID") or "").strip()
+                rank = rank_map.get(account_id) or 0
+                fields = {
+                    "项目账号榜单键": f"{project_name}|{ranking_type}|{account_id}",
+                    "项目": project_name,
+                    "榜单类型": ranking_type,
+                    "排名": rank,
+                    "排序值": to_optional_int(row.get(value_field)) or 0,
+                    "账号ID": account_id,
+                    "账号": str(row.get("账号") or "").strip(),
+                    "主页链接": row.get("主页链接"),
+                    "数据更新时间": row.get("数据更新时间"),
+                    "日历日期": row.get("日历日期"),
+                    "日期文本": row.get("日期文本"),
+                    "粉丝数": row.get("粉丝数") or 0,
+                    "获赞收藏数": row.get("获赞收藏数") or 0,
+                    "首页总点赞": row.get("首页总点赞") or 0,
+                    "首页总评论": row.get("首页总评论") or 0,
+                    "账号总作品数": row.get("账号总作品数") or 0,
+                    "作品数展示": row.get("作品数展示") or "",
+                    "头部作品标题": row.get("头部作品标题") or "",
+                    "头部作品点赞": row.get("头部作品点赞") or 0,
+                    "TOP3作品摘要": row.get("TOP3作品摘要") or "",
+                    "口径说明": PRODUCT_METRIC_NOTE,
+                    "数据用途": ACCOUNT_RANKING_USAGE_NOTE,
+                }
+                project_account_rows.append({key: value for key, value in fields.items() if value not in ("", None)})
+        grouped_rows[project_name] = project_account_rows
+    return grouped_rows
+
+
+def build_dense_rank_map(rows: List[Dict[str, Any]], *, value_field: str) -> Dict[str, int]:
+    ranked = sorted(
+        rows,
+        key=lambda item: (
+            -(to_optional_int(item.get(value_field)) or 0),
+            str(item.get("账号") or item.get("账号ID") or ""),
+        ),
+    )
+    rank_map: Dict[str, int] = {}
+    current_rank = 0
+    previous_value: Optional[int] = None
+    for index, row in enumerate(ranked, start=1):
+        account_id = str(row.get("账号ID") or "").strip()
+        if not account_id:
+            continue
+        current_value = to_optional_int(row.get(value_field)) or 0
+        if previous_value is None or current_value != previous_value:
+            current_rank = index
+            previous_value = current_value
+        rank_map[account_id] = current_rank
+    return rank_map
+
+
+def sync_project_ranking_rows_into_single_table(
+    *,
+    grouped_rows: Dict[str, List[Dict[str, Any]]],
+    settings,
+    progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+) -> Dict[str, Any]:
+    total_rows = sum(len(rows) for rows in grouped_rows.values())
+    if progress_callback is not None:
+        progress_callback(
+            {
+                "phase": "sync",
+                "current": 0,
+                "total": max(1, total_rows),
+                "account": "",
+                "works": 0,
+                "success_count": 0,
+                "failed_count": 0,
+                "status": "读取飞书表结构",
+            }
+        )
+    ranking_settings = (
+        replace(settings, feishu_bitable_app_token=settings.feishu_ranking_bitable_app_token)
+        if str(getattr(settings, "feishu_ranking_bitable_app_token", "") or "").strip()
+        else settings
+    )
+    tables_client = FeishuBitableClient(ranking_settings)
+    tables = tables_client.list_tables()
+    table_id = ""
+    table_name = ""
+    for preferred_name in SINGLE_TABLE_RANKING_TABLE_NAMES:
+        for table in tables:
+            if str(table.get("name") or "").strip() == preferred_name:
+                table_id = str(table.get("table_id") or "").strip()
+                table_name = preferred_name
+                break
+        if table_id:
+            break
+    if not table_id:
+        table_id = ensure_named_table(
+            tables_client=tables_client,
+            table_name=PROJECT_WORK_RANKING_TABLE_NAME,
+            default_view_name="项目作品排行",
+            fields=DASHBOARD_SINGLE_WORK_RANKING_FIELDS,
+        )
+        table_name = PROJECT_WORK_RANKING_TABLE_NAME
+
+    client = FeishuBitableClient(replace(ranking_settings, feishu_table_id=table_id))
+    if table_name == PROJECT_WORK_RANKING_TABLE_NAME:
+        client.ensure_fields(DASHBOARD_SINGLE_WORK_RANKING_FIELDS)
+    if progress_callback is not None:
+        progress_callback(
+            {
+                "phase": "sync",
+                "current": 0,
+                "total": max(1, total_rows),
+                "account": "",
+                "works": 0,
+                "success_count": 0,
+                "failed_count": 0,
+                "status": "读取飞书字段",
+            }
+        )
+    supported_field_names = {
+        str(item.get("field_name") or "").strip()
+        for item in client.list_fields()
+        if str(item.get("field_name") or "").strip()
+    }
+    if progress_callback is not None:
+        progress_callback(
+            {
+                "phase": "sync",
+                "current": 0,
+                "total": max(1, total_rows),
+                "account": "",
+                "works": 0,
+                "success_count": 0,
+                "failed_count": 0,
+                "status": "读取飞书旧记录",
+            }
+        )
+    desired_supported_field_names = {
+        str(spec.get("field_name") or "").strip()
+        for spec in DASHBOARD_SINGLE_WORK_RANKING_FIELDS
+        if str(spec.get("field_name") or "").strip() in supported_field_names
+    }
+    state_index = build_record_state_index(
+        client,
+        unique_field="榜单键",
+        field_names=["榜单键", *sorted(desired_supported_field_names)],
+    )
+    desired_fields: Dict[str, Dict[str, Any]] = {}
+
+    for project_name, project_rows in sorted(grouped_rows.items(), key=lambda item: item[0]):
+        for raw_fields in project_rows:
+            fields = dict(raw_fields or {})
+            raw_rank_type = str(fields.get("榜单类型") or "").strip()
+            if raw_rank_type not in {LIKE_RANK_TYPE, COMMENT_RANK_TYPE}:
+                continue
+            standard_rank_type = strip_single_work_prefix(raw_rank_type)
+            row_key = str(fields.get("榜单键") or "").strip()
+            if not row_key:
+                continue
+            fields["榜单类型"] = standard_rank_type
+            fields["榜单键"] = f"{project_name}|{row_key}"
+            fields["文本"] = project_name
+            ranking_note = f"{ACCOUNT_RANKING_USAGE_NOTE}；{PRODUCT_METRIC_NOTE}"
+            if "榜单摘要" in supported_field_names:
+                summary = str(fields.get("榜单摘要") or "").strip()
+                if PRODUCT_METRIC_NOTE not in summary:
+                    fields["榜单摘要"] = f"{summary} | {PRODUCT_METRIC_NOTE}".strip(" |") if summary else ranking_note
+            if supported_field_names and "文本" not in supported_field_names:
+                if "卡片标签" in supported_field_names:
+                    card_label = str(fields.get("卡片标签") or "").strip()
+                    fields["卡片标签"] = f"{project_name} · {card_label}" if card_label else project_name
+                elif "榜单摘要" in supported_field_names:
+                    summary = str(fields.get("榜单摘要") or "").strip()
+                    fields["榜单摘要"] = f"{project_name} | {summary}" if summary else project_name
+            if supported_field_names:
+                fields = {key: value for key, value in fields.items() if key in supported_field_names}
+            desired_fields[str(fields["榜单键"])] = fields
+
+    created = 0
+    updated = 0
+    skipped = 0
+    deleted = 0
+    processed = 0
+    for row_key, fields in desired_fields.items():
+        existing = state_index.pop(row_key, None)
+        record_id = str((existing or {}).get("record_id") or "").strip()
+        if record_id:
+            if fields_match((existing or {}).get("fields") or {}, fields, ignore_fields=["数据更新时间"]):
+                skipped += 1
+                processed += 1
+                if progress_callback is not None:
+                    progress_callback(
+                        {
+                            "phase": "sync",
+                            "current": processed,
+                            "total": max(1, total_rows),
+                            "account": str(fields.get("文本") or ""),
+                            "works": 0,
+                            "success_count": created + updated,
+                            "failed_count": 0,
+                            "status": "写入排行榜",
+                        }
+                    )
+                continue
+            try:
+                client.update_record(record_id, fields)
+                updated += 1
+            except Exception as exc:
+                if is_feishu_forbidden_error(exc):
+                    skipped += 1
+                    processed += 1
+                    if progress_callback is not None:
+                        progress_callback(
+                            {
+                                "phase": "sync",
+                                "current": processed,
+                                "total": max(1, total_rows),
+                                "account": str(fields.get("文本") or ""),
+                                "works": 0,
+                                "success_count": created + updated,
+                                "failed_count": 0,
+                                "status": "更新受限，已跳过该记录",
+                            }
+                        )
+                    continue
+                raise
+            processed += 1
+            if progress_callback is not None:
+                progress_callback(
+                    {
+                        "phase": "sync",
+                        "current": processed,
+                        "total": max(1, total_rows),
+                        "account": str(fields.get("文本") or ""),
+                        "works": 0,
+                        "success_count": created + updated,
+                        "failed_count": 0,
+                        "status": "写入排行榜",
+                    }
+                )
+            continue
+        try:
+            client.create_record(fields)
+            created += 1
+        except Exception as exc:
+            if is_feishu_forbidden_error(exc):
+                skipped += 1
+                processed += 1
+                if progress_callback is not None:
+                    progress_callback(
+                        {
+                            "phase": "sync",
+                            "current": processed,
+                            "total": max(1, total_rows),
+                            "account": str(fields.get("文本") or ""),
+                            "works": 0,
+                            "success_count": created + updated,
+                            "failed_count": 0,
+                            "status": "创建受限，已跳过该记录",
+                        }
+                    )
+                continue
+            raise
+        processed += 1
         if progress_callback is not None:
             progress_callback(
                 {
                     "phase": "sync",
-                    "current": index,
-                    "total": total_reports,
-                    "account": str(report["profile"].get("nickname") or report["profile"].get("profile_user_id") or ""),
-                    "account_id": str(report["profile"].get("profile_user_id") or ""),
-                    "works": len(report["works"]),
-                    "synced_works": synced_works,
-                    "success_count": index,
+                    "current": processed,
+                    "total": max(1, total_rows),
+                    "account": str(fields.get("文本") or ""),
+                    "works": 0,
+                    "success_count": created + updated,
                     "failed_count": 0,
+                    "status": "写入排行榜",
                 }
             )
 
-    if sync_dashboard and reports:
-        dashboard_portal_result = sync_dashboard_portal(reports=reports, settings=settings)
-        single_work_ranking_result = sync_single_work_ranking_table(reports=reports, settings=settings)
-
-    comment_alert_result = sync_comment_alerts(settings=settings, alerts=comment_alert_candidates)
+    managed_type_suffixes = {"点赞排行", "评论排行"}
+    managed_raw_types = {LIKE_RANK_TYPE, COMMENT_RANK_TYPE, "单条第二天增长排行"}
+    managed_projects = {str(project_name or "").strip() or "未分组" for project_name in grouped_rows}
+    if progress_callback is not None and state_index:
+        progress_callback(
+            {
+                "phase": "sync",
+                "current": processed,
+                "total": max(1, total_rows),
+                "account": "",
+                "works": 0,
+                "success_count": created + updated,
+                "failed_count": 0,
+                "status": "清理旧记录",
+            }
+        )
+    for row_key, existing in state_index.items():
+        fields = (existing or {}).get("fields") or {}
+        rank_type = str(fields.get("榜单类型") or "").strip()
+        project_name = str(fields.get("文本") or "").strip() or "未分组"
+        record_id = str((existing or {}).get("record_id") or "").strip()
+        if not record_id:
+            continue
+        if project_name not in managed_projects:
+            continue
+        if rank_type in managed_raw_types or rank_type in managed_type_suffixes or any(rank_type.endswith(suffix) for suffix in managed_type_suffixes):
+            try:
+                client.delete_record(record_id)
+                deleted += 1
+            except Exception as exc:
+                if is_feishu_forbidden_error(exc):
+                    skipped += 1
+                    continue
+                raise
 
     return {
-        "profile_table_id": profile_table_id,
-        "works_table_id": works_table_id,
-        "works_calendar_table_id": works_calendar_table_id,
-        "total_accounts": len(reports),
-        "total_works": synced_works,
-        "deduped_profiles": deduped_profiles,
-        "deduped_works": deduped_works,
-        "dashboard_synced": dashboard_synced,
-        "dashboard_portal": dashboard_portal_result,
-        "single_work_rankings": single_work_ranking_result,
-        "comment_alerts": comment_alert_result,
-        "skipped_profiles": skipped_profiles,
-        "skipped_works": skipped_works,
-        "skipped_work_calendars": skipped_work_calendars,
-        "items": account_results,
+        "mode": "single_table_partitioned",
+        "table_name": table_name,
+        "table_id": table_id,
+        "project_count": len(grouped_rows),
+        "single_work_ranking_created": created,
+        "single_work_ranking_updated": updated,
+        "single_work_ranking_skipped": skipped,
+        "single_work_ranking_deleted": deleted,
     }
+
+
+def build_project_ranking_table_name(*, project_name: str, rank_label: str) -> str:
+    project_text = str(project_name or "").strip() or "未分组"
+    return f"{project_text}-{rank_label}"
+
+
+def strip_single_work_prefix(rank_type: str) -> str:
+    text = str(rank_type or "").strip()
+    if text.startswith("单条"):
+        return text[2:]
+    return text
 
 
 def build_record_id_index(client: FeishuBitableClient, *, unique_field: str) -> Dict[str, str]:
@@ -489,9 +1659,24 @@ def build_record_id_index(client: FeishuBitableClient, *, unique_field: str) -> 
     return index
 
 
-def build_record_state_index(client: FeishuBitableClient, *, unique_field: str) -> Dict[str, Dict[str, Any]]:
+def build_record_state_index(
+    client: FeishuBitableClient,
+    *,
+    unique_field: str,
+    field_names: Optional[List[str]] = None,
+) -> Dict[str, Dict[str, Any]]:
     index: Dict[str, Dict[str, Any]] = {}
-    for record in client.list_records(page_size=500):
+    normalized_field_names = None
+    if field_names:
+        seen: set[str] = set()
+        normalized_field_names = []
+        for field_name in [unique_field, *field_names]:
+            normalized = str(field_name or "").strip()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            normalized_field_names.append(normalized)
+    for record in client.list_records(page_size=500, field_names=normalized_field_names):
         fields = record.get("fields") or {}
         unique_value = normalize_unique_value(fields.get(unique_field))
         record_id = str(record.get("record_id") or "").strip()

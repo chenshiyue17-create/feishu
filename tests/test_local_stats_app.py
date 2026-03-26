@@ -4,7 +4,9 @@ import tempfile
 import time
 import unittest
 from datetime import datetime
-from unittest.mock import patch
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import call, patch
 
 from xhs_feishu_monitor.chrome_cookies import DEFAULT_CHROME_PROFILE_ROOT
 from xhs_feishu_monitor.config import Settings
@@ -30,6 +32,8 @@ from xhs_feishu_monitor.local_stats_app.server import (
     build_profile_name_index,
     load_monitored_metadata,
     enrich_monitored_entries,
+    export_project_rankings,
+    export_single_account_rankings,
     extract_profile_user_id,
     login_state_requires_interactive_login,
     load_monitored_urls,
@@ -43,6 +47,7 @@ from xhs_feishu_monitor.local_stats_app.server import (
     write_monitored_entries,
     write_monitored_urls,
 )
+from xhs_feishu_monitor.local_stats_app.login_state import is_transient_self_check_failure
 from xhs_feishu_monitor.project_sync_status import update_project_sync_status
 
 
@@ -141,17 +146,17 @@ class LocalStatsAppTest(unittest.TestCase):
         self.assertEqual(rankings["单条点赞排行"][0]["profile_url"], "https://profile-a")
         self.assertEqual(rankings["单条点赞排行"][0]["cover_url"], "https://img.example.com/a.jpg")
 
-    def test_build_alerts_sorts_by_numeric_rate(self) -> None:
+    def test_build_alerts_sorts_by_numeric_delta(self) -> None:
         alerts = build_alerts(
             [
-                {"预警日期": "2026-03-18", "标题文案": "作品A", "评论增长率": "9.8", "评论增量": 20},
-                {"预警日期": "2026-03-18", "账号ID": "u2", "标题文案": "作品B", "评论增长率": "12.5%", "评论增量": 10, "主页链接": {"link": "https://profile-b"}},
+                {"预警日期": "2026-03-18", "标题文案": "作品A", "预警类型": "评论预警", "点赞增量": 1, "评论增量": 20},
+                {"预警日期": "2026-03-18", "账号ID": "u2", "标题文案": "作品B", "预警类型": "点赞预警", "点赞增量": 12, "评论增量": 10, "主页链接": {"link": "https://profile-b"}},
             ]
         )
-        self.assertEqual(alerts[0]["title"], "作品B")
-        self.assertEqual(alerts[0]["account_id"], "u2")
-        self.assertEqual(alerts[0]["rate"], 12.5)
-        self.assertEqual(alerts[0]["profile_url"], "https://profile-b")
+        self.assertEqual(alerts[0]["title"], "作品A")
+        self.assertEqual(alerts[1]["account_id"], "u2")
+        self.assertEqual(alerts[0]["delta"], 20)
+        self.assertEqual(alerts[1]["profile_url"], "https://profile-b")
 
     def test_build_portal_card_uses_latest_update(self) -> None:
         portal = build_portal_card(
@@ -315,6 +320,11 @@ class LocalStatsAppTest(unittest.TestCase):
                 {"state": "warning", "message": "样本账号只拿到公开页摘要"}
             )
         )
+
+    def test_is_transient_self_check_failure(self) -> None:
+        self.assertTrue(is_transient_self_check_failure("HTML 中未找到可解析的 __INITIAL_STATE__ 数据"))
+        self.assertTrue(is_transient_self_check_failure("Page.goto: net::ERR_CONNECTION_CLOSED"))
+        self.assertFalse(is_transient_self_check_failure("命中登录页，当前登录态不可用"))
 
     def test_merge_monitored_urls_adds_and_dedupes(self) -> None:
         merged, added = merge_monitored_urls(
@@ -566,6 +576,283 @@ class LocalStatsAppTest(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertIn("手动更新过于频繁", result["message"])
         self.assertTrue(result["sync_status"]["manual_sync_locked"])
+
+    def test_status_snapshot_exposes_upload_status(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = write_monitored_entries(
+                f"{temp_dir}/urls.txt",
+                [{"url": "https://www.xiaohongshu.com/user/profile/u1", "active": True, "project": "项目A"}],
+            )
+            store = MonitoringSyncStore(
+                env_file=f"{temp_dir}/.env",
+                urls_file=str(path),
+                dashboard_store=DashboardStore(env_file=f"{temp_dir}/.env"),
+            )
+            payload = store.get_payload()
+        self.assertIn("upload_status", payload["sync_status"])
+        self.assertEqual(payload["sync_status"]["upload_status"]["state"], "idle")
+        self.assertFalse(payload["sync_status"]["upload_status"]["has_retry_payload"])
+
+    def test_sync_loop_updates_dashboard_before_feishu_upload(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = write_monitored_entries(
+                f"{temp_dir}/urls.txt",
+                [{"url": "https://www.xiaohongshu.com/user/profile/u1", "active": True, "project": "项目A"}],
+            )
+            dashboard_store = DashboardStore(env_file=f"{temp_dir}/.env")
+            store = MonitoringSyncStore(
+                env_file=f"{temp_dir}/.env",
+                urls_file=str(path),
+                dashboard_store=dashboard_store,
+            )
+            store._running = True
+            store._current_sync_urls = ["https://www.xiaohongshu.com/user/profile/u1"]
+            store._current_sync_project = "项目A"
+            store._status = {
+                "state": "running",
+                "message": "开始同步",
+                "started_at": "2026-03-23T18:00:00+08:00",
+                "finished_at": "",
+                "last_success_at": "",
+                "last_error": "",
+                "pending": False,
+                "progress": {},
+                "summary": {},
+            }
+            reports = [
+                {
+                    "captured_at": "2026-03-23T18:05:00+08:00",
+                    "source_url": "https://www.xiaohongshu.com/user/profile/u1",
+                    "profile": {
+                        "profile_user_id": "u1",
+                        "nickname": "账号A",
+                        "profile_url": "https://www.xiaohongshu.com/user/profile/u1",
+                        "fans_count_text": "100",
+                        "interaction_count_text": "200",
+                    },
+                    "works": [{"title_copy": "作品A"}],
+                }
+            ]
+            settings = SimpleNamespace(validate_for_sync=lambda: None)
+            with (
+                patch("xhs_feishu_monitor.local_stats_app.server.load_settings", return_value=settings),
+                patch.object(store, "_ensure_login_ready_for_sync", return_value=None),
+                patch("xhs_feishu_monitor.local_stats_app.server.load_reports_for_sync", return_value=reports),
+                patch(
+                    "xhs_feishu_monitor.local_stats_app.server.build_dashboard_payload_with_reports",
+                    return_value={"generated_at": "2026-03-23T18:05:00+08:00", "latest_date": "2026-03-23"},
+                ),
+                patch.object(store, "_stage_feishu_upload", return_value="staged") as stage_upload,
+            ):
+                store._sync_loop()
+        self.assertEqual(store._status["state"], "success")
+        self.assertIn("看板已更新，飞书上传任务已准备好", store._status["message"])
+        self.assertEqual(store._status["summary"]["feishu_upload_state"], "staged")
+        stage_upload.assert_called_once()
+
+    def test_upload_progress_does_not_override_dashboard_success_state(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = write_monitored_entries(
+                f"{temp_dir}/urls.txt",
+                [{"url": "https://www.xiaohongshu.com/user/profile/u1", "active": True, "project": "项目A"}],
+            )
+            store = MonitoringSyncStore(
+                env_file=f"{temp_dir}/.env",
+                urls_file=str(path),
+                dashboard_store=DashboardStore(env_file=f"{temp_dir}/.env"),
+            )
+            store._status["state"] = "success"
+            store._status["message"] = "看板已更新"
+            store._upload_status = {
+                "state": "running",
+                "message": "飞书后台上传中",
+                "started_at": "2026-03-23T18:00:00+08:00",
+                "finished_at": "",
+                "last_success_at": "",
+                "last_error": "",
+                "pending": False,
+                "progress": {},
+                "summary": {},
+            }
+            store._handle_upload_progress_update(
+                {
+                    "phase": "sync",
+                    "current": 1,
+                    "total": 3,
+                    "account": "账号A",
+                    "works": 30,
+                    "success_count": 1,
+                    "failed_count": 0,
+                }
+            )
+        self.assertEqual(store._status["state"], "success")
+        self.assertEqual(store._status["message"], "看板已更新")
+        self.assertEqual(store._upload_status["progress"]["phase"], "sync")
+
+    def test_retry_feishu_upload_requires_cached_job(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = write_monitored_entries(
+                f"{temp_dir}/urls.txt",
+                [{"url": "https://www.xiaohongshu.com/user/profile/u1", "active": True, "project": "项目A"}],
+            )
+            store = MonitoringSyncStore(
+                env_file=f"{temp_dir}/.env",
+                urls_file=str(path),
+                dashboard_store=DashboardStore(env_file=f"{temp_dir}/.env"),
+            )
+            with patch("xhs_feishu_monitor.local_stats_app.server.has_cached_project_upload_payload", return_value=False):
+                result = store.retry_feishu_upload()
+        self.assertFalse(result["ok"])
+        self.assertIn("当前没有可上传的飞书任务，也没有本地缓存", result["message"])
+
+    def test_retry_feishu_upload_starts_cached_job(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = write_monitored_entries(
+                f"{temp_dir}/urls.txt",
+                [{"url": "https://www.xiaohongshu.com/user/profile/u1", "active": True, "project": "项目A"}],
+            )
+            store = MonitoringSyncStore(
+                env_file=f"{temp_dir}/.env",
+                urls_file=str(path),
+                dashboard_store=DashboardStore(env_file=f"{temp_dir}/.env"),
+            )
+            store._last_upload_retry_job = {
+                "reports": [{"profile": {"profile_user_id": "u1"}}],
+                "settings": SimpleNamespace(),
+                "project": "项目A",
+            }
+            with patch.object(store, "_start_upload_job_locked") as start_upload:
+                result = store.retry_feishu_upload()
+        self.assertTrue(result["ok"])
+        self.assertIn("已开始上传全部项目飞书数据", result["message"])
+        start_upload.assert_called_once()
+
+    def test_retry_feishu_upload_can_start_from_cached_rankings(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = write_monitored_entries(
+                f"{temp_dir}/urls.txt",
+                [{"url": "https://www.xiaohongshu.com/user/profile/u1", "active": True, "project": "项目A"}],
+            )
+            store = MonitoringSyncStore(
+                env_file=f"{temp_dir}/.env",
+                urls_file=str(path),
+                dashboard_store=DashboardStore(env_file=f"{temp_dir}/.env"),
+            )
+            settings = SimpleNamespace()
+            with (
+                patch("xhs_feishu_monitor.local_stats_app.server.load_settings", return_value=settings),
+                patch("xhs_feishu_monitor.local_stats_app.server.has_cached_project_upload_payload", return_value=True),
+                patch.object(store, "_start_upload_job_locked") as start_upload,
+            ):
+                result = store.retry_feishu_upload()
+        self.assertTrue(result["ok"])
+        self.assertIn("已开始上传全部项目飞书数据", result["message"])
+        upload_job = start_upload.call_args.args[0]
+        self.assertEqual(upload_job["mode"], "cache")
+        self.assertEqual(upload_job["upload_scope"], "full")
+        self.assertEqual(upload_job["estimated_total"], 2)
+
+    def test_retry_feishu_upload_can_start_selected_project_from_cached_rankings(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = write_monitored_entries(
+                f"{temp_dir}/urls.txt",
+                [{"url": "https://www.xiaohongshu.com/user/profile/u1", "active": True, "project": "东莞"}],
+            )
+            store = MonitoringSyncStore(
+                env_file=f"{temp_dir}/.env",
+                urls_file=str(path),
+                dashboard_store=DashboardStore(env_file=f"{temp_dir}/.env"),
+            )
+            settings = SimpleNamespace()
+            store._last_upload_retry_job = {
+                "mode": "cache",
+                "reports": [],
+                "settings": settings,
+                "project": "",
+                "estimated_total": 2,
+            }
+            with (
+                patch("xhs_feishu_monitor.local_stats_app.server.load_settings", return_value=settings),
+                patch("xhs_feishu_monitor.local_stats_app.server.has_cached_project_upload_payload", return_value=True) as has_cache,
+                patch.object(store, "_start_upload_job_locked") as start_upload,
+            ):
+                result = store.retry_feishu_upload(project="东莞")
+        self.assertTrue(result["ok"])
+        self.assertIn("已开始上传项目「东莞」飞书数据", result["message"])
+        self.assertIn(call(settings=settings, project="东莞", include_calendar=True, include_rankings=True), has_cache.call_args_list)
+        upload_job = start_upload.call_args.args[0]
+        self.assertEqual(upload_job["mode"], "cache")
+        self.assertEqual(upload_job["project"], "东莞")
+        self.assertEqual(upload_job["upload_scope"], "full")
+        self.assertEqual(upload_job["estimated_total"], 1)
+
+    def test_retry_feishu_upload_selected_project_requires_project_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = write_monitored_entries(
+                f"{temp_dir}/urls.txt",
+                [{"url": "https://www.xiaohongshu.com/user/profile/u1", "active": True, "project": "东莞"}],
+            )
+            store = MonitoringSyncStore(
+                env_file=f"{temp_dir}/.env",
+                urls_file=str(path),
+                dashboard_store=DashboardStore(env_file=f"{temp_dir}/.env"),
+            )
+            settings = SimpleNamespace()
+            with (
+                patch("xhs_feishu_monitor.local_stats_app.server.load_settings", return_value=settings),
+                patch("xhs_feishu_monitor.local_stats_app.server.has_cached_project_upload_payload", return_value=False),
+            ):
+                result = store.retry_feishu_upload(project="东莞")
+        self.assertFalse(result["ok"])
+        self.assertIn("当前项目“东莞”没有可上传的本地缓存", result["message"])
+
+    def test_retry_feishu_upload_can_start_calendar_only(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = write_monitored_entries(
+                f"{temp_dir}/urls.txt",
+                [{"url": "https://www.xiaohongshu.com/user/profile/u1", "active": True, "project": "项目A"}],
+            )
+            store = MonitoringSyncStore(
+                env_file=f"{temp_dir}/.env",
+                urls_file=str(path),
+                dashboard_store=DashboardStore(env_file=f"{temp_dir}/.env"),
+            )
+            settings = SimpleNamespace()
+            with (
+                patch("xhs_feishu_monitor.local_stats_app.server.load_settings", return_value=settings),
+                patch("xhs_feishu_monitor.local_stats_app.server.has_cached_project_upload_payload", return_value=True) as has_cache,
+                patch.object(store, "_start_upload_job_locked") as start_upload,
+            ):
+                result = store.retry_feishu_upload(project="项目A", scope="calendar")
+        self.assertTrue(result["ok"])
+        self.assertIn("已开始上传项目「项目A」日历留底", result["message"])
+        self.assertIn(call(settings=settings, project="项目A", include_calendar=True, include_rankings=False), has_cache.call_args_list)
+        upload_job = start_upload.call_args.args[0]
+        self.assertEqual(upload_job["upload_scope"], "calendar")
+
+    def test_retry_feishu_upload_can_start_rankings_only_for_all_projects(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = write_monitored_entries(
+                f"{temp_dir}/urls.txt",
+                [{"url": "https://www.xiaohongshu.com/user/profile/u1", "active": True, "project": "项目A"}],
+            )
+            store = MonitoringSyncStore(
+                env_file=f"{temp_dir}/.env",
+                urls_file=str(path),
+                dashboard_store=DashboardStore(env_file=f"{temp_dir}/.env"),
+            )
+            settings = SimpleNamespace()
+            with (
+                patch("xhs_feishu_monitor.local_stats_app.server.load_settings", return_value=settings),
+                patch("xhs_feishu_monitor.local_stats_app.server.has_cached_project_upload_payload", return_value=True) as has_cache,
+                patch.object(store, "_start_upload_job_locked") as start_upload,
+            ):
+                result = store.retry_feishu_upload(scope="rankings")
+        self.assertTrue(result["ok"])
+        self.assertIn("已开始上传全部项目排行榜", result["message"])
+        self.assertIn(call(settings=settings, include_calendar=False, include_rankings=True), has_cache.call_args_list)
+        upload_job = start_upload.call_args.args[0]
+        self.assertEqual(upload_job["upload_scope"], "rankings")
 
     def test_dashboard_store_uses_stale_cache_when_refresh_fails(self) -> None:
         store = DashboardStore(env_file="/tmp/test.env", cache_seconds=0)
@@ -863,6 +1150,22 @@ class LocalStatsAppTest(unittest.TestCase):
         self.assertEqual(payload["note_id_count"], 0)
         self.assertEqual(payload["sample_account"], "账号A")
 
+    def test_run_login_state_self_check_warns_when_sample_fetch_is_transient_failure(self) -> None:
+        settings = Settings(xhs_fetch_mode="requests", xhs_chrome_cookie_profile="/tmp/profile")
+        with patch("xhs_feishu_monitor.local_stats_app.server.load_settings", return_value=settings):
+            with patch("xhs_feishu_monitor.local_stats_app.server.export_xiaohongshu_cookie_header", return_value="a=b"):
+                with patch(
+                    "xhs_feishu_monitor.local_stats_app.server.load_profile_report_payload",
+                    side_effect=RuntimeError("HTML 中未找到可解析的 __INITIAL_STATE__ 数据"),
+                ):
+                    payload = run_login_state_self_check(
+                        env_file="/tmp/test.env",
+                        sample_url="https://www.xiaohongshu.com/user/profile/u1",
+                    )
+        self.assertEqual(payload["state"], "warning")
+        self.assertIn("样本账号抓取异常", payload["message"])
+        self.assertFalse(login_state_requires_interactive_login(payload))
+
     def test_run_login_state_self_check_ok_when_note_ids_exist(self) -> None:
         settings = Settings(xhs_fetch_mode="requests", xhs_chrome_cookie_profile="/tmp/profile")
         with patch("xhs_feishu_monitor.local_stats_app.server.load_settings", return_value=settings):
@@ -954,6 +1257,164 @@ class LocalStatsAppTest(unittest.TestCase):
                 payload = store.get_payload()
         self.assertEqual(payload["login_state"]["state"], "ok")
         self.assertEqual(payload["login_state"]["message"], "登录态正常")
+
+    def test_login_state_store_run_check_opens_login_window_on_login_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = write_monitored_entries(
+                f"{temp_dir}/urls.txt",
+                [{"url": "https://www.xiaohongshu.com/user/profile/u1", "active": True, "project": "项目A"}],
+            )
+            login_state_store = LoginStateStore(env_file=f"{temp_dir}/.env", urls_file=str(path), cache_seconds=999)
+            login_state_store._sample_url = "https://www.xiaohongshu.com/user/profile/u1"
+            settings = Settings(xhs_fetch_mode="requests", xhs_chrome_cookie_profile=DEFAULT_CHROME_PROFILE_ROOT)
+
+            def fake_wait_for_login(**kwargs):
+                kwargs["on_wait"](
+                    build_login_state_payload(
+                        state="error",
+                        message="检测到小红书未登录，已弹出网页登录窗口，完成登录后会自动继续采集。",
+                        login_window_opened=True,
+                    )
+                )
+                return build_login_state_payload(
+                    state="ok",
+                    message="登录态正常，样本账号已拿到作品明细能力。",
+                    login_window_opened=True,
+                )
+
+            with patch("xhs_feishu_monitor.local_stats_app.server.load_settings", return_value=settings):
+                with patch(
+                    "xhs_feishu_monitor.local_stats_app.server.wait_for_xiaohongshu_login",
+                    side_effect=fake_wait_for_login,
+                ) as wait_mock:
+                    login_state_store._run_check()
+
+            self.assertTrue(wait_mock.called)
+            payload = login_state_store.get_payload()
+            self.assertEqual(payload["state"], "ok")
+            self.assertTrue(payload["login_window_opened"])
+
+    def test_export_single_account_rankings_writes_like_and_comment_files(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            summary = export_single_account_rankings(
+                payload={
+                    "accounts": [
+                        {
+                            "account_id": "u1",
+                            "account": "账号A",
+                            "profile_url": "https://www.xiaohongshu.com/user/profile/u1",
+                        }
+                    ],
+                    "rankings": {
+                        "单条点赞排行": [
+                            {
+                                "rank": 1,
+                                "account_id": "u1",
+                                "account": "账号A",
+                                "title": "作品1",
+                                "metric": 99,
+                                "summary": "点赞榜",
+                                "note_url": "https://www.xiaohongshu.com/discovery/item/n1",
+                                "profile_url": "https://www.xiaohongshu.com/user/profile/u1",
+                            }
+                        ],
+                        "单条评论排行": [
+                            {
+                                "rank": 1,
+                                "account_id": "u1",
+                                "account": "账号A",
+                                "title": "作品2",
+                                "metric": 12,
+                                "summary": "评论榜",
+                                "comment_basis": "评论预览下限",
+                            }
+                        ],
+                    },
+                },
+                account_id="u1",
+                project="项目A",
+                export_dir=temp_dir,
+            )
+            self.assertEqual(summary["like_count"], 1)
+            self.assertEqual(summary["comment_count"], 1)
+            self.assertTrue((Path(summary["files"]["like_csv"])).exists())
+            self.assertTrue((Path(summary["files"]["comment_csv"])).exists())
+            self.assertTrue((Path(summary["summary_path"])).exists())
+            self.assertTrue((Path(summary["files"]["review_markdown"])).exists())
+            self.assertTrue((Path(summary["latest_summary_path"])).exists())
+            self.assertIn("项目A", summary["export_dir"])
+            self.assertRegex(Path(summary["export_dir"]).name, r"^\d{4}-\d{2}-\d{2}_\d{6}$")
+
+    def test_export_project_rankings_writes_project_snapshot_bundle(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            summary = export_project_rankings(
+                payload={
+                    "accounts": [
+                        {"account_id": "u1", "account": "账号A", "profile_url": "https://www.xiaohongshu.com/user/profile/u1"},
+                        {"account_id": "u2", "account": "账号B", "profile_url": "https://www.xiaohongshu.com/user/profile/u2"},
+                    ],
+                    "rankings": {
+                        "单条点赞排行": [
+                            {"rank": 1, "account_id": "u1", "account": "账号A", "title": "作品1", "metric": 99},
+                            {"rank": 2, "account_id": "u2", "account": "账号B", "title": "作品2", "metric": 88},
+                        ],
+                        "单条评论排行": [
+                            {"rank": 1, "account_id": "u1", "account": "账号A", "title": "作品3", "metric": 12},
+                        ],
+                    },
+                },
+                project="项目A",
+                account_ids=["u1", "u2"],
+                export_dir=temp_dir,
+            )
+            self.assertEqual(summary["account_count"], 2)
+            self.assertEqual(summary["like_count"], 2)
+            self.assertEqual(summary["comment_count"], 1)
+            self.assertTrue(Path(summary["files"]["project_index_csv"]).exists())
+            self.assertTrue(Path(summary["files"]["project_review_markdown"]).exists())
+            self.assertTrue(Path(summary["summary_path"]).exists())
+            self.assertTrue(Path(summary["latest_summary_path"]).exists())
+            self.assertRegex(Path(summary["export_dir"]).name, r"^\d{4}-\d{2}-\d{2}_\d{6}$")
+
+    def test_export_project_rankings_generates_compare_files_on_second_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            export_project_rankings(
+                payload={
+                    "accounts": [{"account_id": "u1", "account": "账号A"}],
+                    "rankings": {
+                        "单条点赞排行": [{"rank": 1, "account_id": "u1", "title": "作品1", "metric": 9}],
+                        "单条评论排行": [{"rank": 1, "account_id": "u1", "title": "评论作品1", "metric": 3}],
+                    },
+                },
+                project="项目A",
+                account_ids=["u1"],
+                export_dir=temp_dir,
+            )
+            time.sleep(1)
+            summary = export_project_rankings(
+                payload={
+                    "accounts": [{"account_id": "u1", "account": "账号A"}],
+                    "rankings": {
+                        "单条点赞排行": [
+                            {"rank": 1, "account_id": "u1", "title": "作品2", "metric": 12},
+                            {"rank": 2, "account_id": "u1", "title": "作品1", "metric": 11},
+                        ],
+                        "单条评论排行": [{"rank": 1, "account_id": "u1", "title": "评论作品1", "metric": 5}],
+                    },
+                },
+                project="项目A",
+                account_ids=["u1"],
+                export_dir=temp_dir,
+            )
+            self.assertIn("compare", summary)
+            self.assertTrue(Path(summary["files"]["project_compare_json"]).exists())
+            self.assertTrue(Path(summary["files"]["project_compare_markdown"]).exists())
+            self.assertEqual(summary["compare"]["like_count_delta"], 1)
+            self.assertEqual(summary["compare"]["comment_count_delta"], 0)
+            self.assertEqual(summary["compare"]["changed_accounts"][0]["account"], "账号A")
+            self.assertEqual(summary["compare"]["changed_accounts"][0]["like_compare"]["new_entries"][0]["title"], "作品2")
+            self.assertEqual(summary["compare"]["changed_accounts"][0]["like_compare"]["moved_down"][0]["title"], "作品1")
+            self.assertEqual(summary["compare"]["changed_accounts"][0]["comment_compare"]["new_entries"], [])
 
     def test_build_sync_progress_calculates_phase_and_overall_percent(self) -> None:
         collect_progress = build_sync_progress(

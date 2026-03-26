@@ -111,10 +111,13 @@ XHS_PROXY_COOLDOWN_SECONDS=300
 ```env
 XHS_BATCH_CONCURRENCY=2
 XHS_BATCH_REQUEST_INTERVAL_SECONDS=2
+XHS_BATCH_ACCOUNT_DELAY_SECONDS=1
+XHS_BATCH_ACCOUNT_JITTER_SECONDS=0.8
 XHS_BATCH_CHUNK_SIZE=8
 XHS_BATCH_CHUNK_COOLDOWN_SECONDS=12
 XHS_BATCH_RETRY_FAILED_ONCE=true
 XHS_BATCH_RETRY_DELAY_SECONDS=20
+XHS_BATCH_RISK_RETRY_DELAY_SECONDS=45
 XHS_BATCH_PROJECT_COOLDOWN_SECONDS=45
 ```
 
@@ -123,9 +126,12 @@ XHS_BATCH_PROJECT_COOLDOWN_SECONDS=45
 - 默认无代理池时，程序会把 `requests` 并发自动收敛到最多 `2`
 - 如果配置了代理池，并发上限会随代理数量小幅放开，但仍会控制在低突发范围
 - `XHS_BATCH_REQUEST_INTERVAL_SECONDS` 是全局起步间隔，不是单账号重试延迟
+- `XHS_BATCH_ACCOUNT_DELAY_SECONDS` 是每个账号采集之间的额外基础延迟
+- `XHS_BATCH_ACCOUNT_JITTER_SECONDS` 会在每个账号之间再附加随机抖动，避免请求节奏过于固定
 - `XHS_BATCH_CHUNK_SIZE / XHS_BATCH_CHUNK_COOLDOWN_SECONDS` 用于每跑完一小段后主动降速，降低连续打点过密的风险
 - `XHS_BATCH_RETRY_FAILED_ONCE` 会把首轮超时、429、风控类失败放到尾部慢速补抓一次
 - `XHS_BATCH_RETRY_DELAY_SECONDS` 是进入尾部重试前的等待时间，避免刚失败就立即再次命中风控
+- `XHS_BATCH_RISK_RETRY_DELAY_SECONDS` 会给 429 / 403 / 风控 / 反爬 / 空结果 这类高风险失败更长的尾部延迟，并放到最后一轮再抓
 - `XHS_BATCH_PROJECT_COOLDOWN_SECONDS` 会在全量 `urls_file` 任务里按项目分组后，给项目与项目之间留出冷却时间，适合 30 到 300 个账号的项目制监控
 
 如果你要让账号主页拿到更准确的“总作品数”，当前版本会优先走 `xhshow` 签名请求访问 `user_posted` 分页接口：
@@ -232,6 +238,23 @@ PLAYWRIGHT_WAIT_MS=7000
 ```
 
 ## 运行
+
+## 长期运维入口
+
+如果后续继续扩项目，优先看这两份文档：
+
+- [飞书视图创建清单](/Users/cc/Documents/New%20project/xhs_feishu_monitor/FEISHU_VIEW_TEMPLATES.md)
+- [项目新增 SOP](/Users/cc/Documents/New%20project/xhs_feishu_monitor/PROJECT_ONBOARDING_SOP.md)
+
+当前长期建议固定为：
+
+- 本地看板负责实时查看
+- 飞书负责日历留底和近 `14` 天复盘
+- 飞书长期只保留 3 张表：
+  - `小红书日历留底`
+  - `每日点赞复盘`
+  - `每日评论复盘`
+- 后续新增项目只复制视图，不新增新表
 
 先做一次不落库预览：
 
@@ -599,6 +622,19 @@ python3 -m xhs_feishu_monitor.local_stats_app \
 - `单条第二天增长排行`：`榜单类型 = 单条第二天增长排行`
 
 其中“第二天增长”按 `今天 14:00` 相比 `昨天 14:00` 的同作品互动增量排序；当前没有昨天基线时，这个视图会暂时为空。
+
+## 飞书视图模板
+
+现在飞书侧建议固定成 3 张表：
+
+- `小红书日历留底`
+- `项目账号排行榜`
+- `项目作品排行榜`
+
+后续新增项目时，不再继续新建数据表，而是在这 3 张表里按 `项目` 和 `榜单类型` 建筛选视图。  
+我已经把推荐视图整理成模板，直接按这份文档配置即可：
+
+- [FEISHU_VIEW_TEMPLATES.md](/Users/cc/Documents/New%20project/xhs_feishu_monitor/FEISHU_VIEW_TEMPLATES.md)
 
 默认会生成：
 

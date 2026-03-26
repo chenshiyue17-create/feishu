@@ -272,6 +272,86 @@ class ProfileReportTest(unittest.TestCase):
         self.assertEqual(enriched["works"][0]["comment_count"], 31)
         self.assertEqual(enriched["works"][0]["comment_count_text"], "31")
 
+    def test_enrich_profile_report_with_note_metrics_derives_note_id_and_token_from_note_url(self) -> None:
+        report = {
+            "captured_at": "2026-03-24T10:00:00+08:00",
+            "profile": {"profile_user_id": "u1"},
+            "works": [
+                {
+                    "title_copy": "作品A",
+                    "note_id": "",
+                    "xsec_token": "",
+                    "note_url": "https://www.xiaohongshu.com/explore/note_123?xsec_token=token_123&xsec_source=pc_user",
+                }
+            ],
+        }
+
+        class FakeCollector:
+            def __init__(self, _settings) -> None:
+                pass
+
+            def collect_note_detail(self, **kwargs):
+                self.last_kwargs = kwargs
+                return NoteSnapshot(note_id="note_123", comment_count=18)
+
+            def fetch_note_comments_preview(self, **_kwargs):
+                return []
+
+            def collect(self, _target):
+                raise AssertionError("signed detail path should be used after deriving note_id from URL")
+
+        fake_collector = FakeCollector(None)
+        with patch("xhs_feishu_monitor.profile_report.XHSCollector", return_value=fake_collector):
+            enriched = enrich_profile_report_with_note_metrics(
+                report=report,
+                settings=SimpleNamespace(xhs_fetch_work_comment_counts=True, xhs_fetch_work_comment_preview=True),
+            )
+
+        self.assertEqual(enriched["works"][0]["note_id"], "note_123")
+        self.assertEqual(enriched["works"][0]["xsec_token"], "token_123")
+        self.assertEqual(enriched["works"][0]["comment_count"], 18)
+
+    def test_enrich_profile_report_uses_comment_preview_count_as_lower_bound(self) -> None:
+        report = {
+            "captured_at": "2026-03-24T10:00:00+08:00",
+            "profile": {"profile_user_id": "u1"},
+            "works": [
+                {
+                    "title_copy": "作品A",
+                    "note_id": "",
+                    "xsec_token": "",
+                    "note_url": "https://www.xiaohongshu.com/explore/note_123?xsec_token=token_123&xsec_source=pc_user",
+                }
+            ],
+        }
+
+        class FakeCollector:
+            def __init__(self, _settings) -> None:
+                pass
+
+            def collect_note_detail(self, **_kwargs):
+                return None
+
+            def fetch_note_comments_preview(self, **_kwargs):
+                return [
+                    {"nickname": "用户A", "content": "第一条评论"},
+                    {"nickname": "用户B", "content": "第二条评论"},
+                    {"nickname": "用户C", "content": "第三条评论"},
+                ]
+
+            def collect(self, _target):
+                return NoteSnapshot(comment_count=None)
+
+        with patch("xhs_feishu_monitor.profile_report.XHSCollector", FakeCollector):
+            enriched = enrich_profile_report_with_note_metrics(
+                report=report,
+                settings=SimpleNamespace(xhs_fetch_work_comment_counts=True, xhs_fetch_work_comment_preview=True),
+            )
+
+        self.assertEqual(enriched["works"][0]["comment_count"], 3)
+        self.assertEqual(enriched["works"][0]["comment_count_text"], "3+")
+        self.assertTrue(enriched["works"][0]["comment_count_is_lower_bound"])
+
     def test_load_profile_report_payload_retries_after_initial_state_failure(self) -> None:
         settings = SimpleNamespace(xhs_retry_attempts=2, xhs_retry_delay_seconds=0)
         html = """

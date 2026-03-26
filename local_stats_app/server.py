@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import copy
 import json
 import os
@@ -26,7 +27,13 @@ from ..chrome_cookies import (
 from ..config import load_settings
 from ..feishu import FeishuBitableClient
 from ..profile_batch_report import normalize_profile_url
-from ..profile_batch_to_feishu import load_reports_for_sync, sync_reports_to_feishu
+from ..profile_batch_to_feishu import (
+    has_cached_project_upload_payload,
+    has_cached_project_rankings,
+    load_reports_for_sync,
+    sync_cached_project_rankings_to_feishu,
+    sync_reports_to_feishu,
+)
 from ..profile_dashboard_to_feishu import (
     build_single_work_ranking_fields,
     build_single_work_rankings,
@@ -36,6 +43,7 @@ from ..profile_dashboard_to_feishu import (
     rank_profile_works,
 )
 from ..project_sync_status import attach_project_sync_statuses, update_project_sync_status
+from ..project_cache import load_cached_dashboard_payload
 from ..profile_report import build_profile_report, load_profile_report_payload
 from ..profile_to_feishu import PROFILE_TABLE_NAME
 from ..profile_works_to_feishu import WORKS_TABLE_NAME
@@ -48,9 +56,9 @@ from .login_state import (
     LOGIN_WAIT_TIMEOUT_SECONDS,
     build_login_state_payload,
     login_state_requires_interactive_login,
-    open_xiaohongshu_login_window,
-    run_login_state_self_check,
-    wait_for_xiaohongshu_login,
+    open_xiaohongshu_login_window as _open_xiaohongshu_login_window_impl,
+    run_login_state_self_check as _run_login_state_self_check_impl,
+    wait_for_xiaohongshu_login as _wait_for_xiaohongshu_login_impl,
 )
 from .monitored_accounts import (
     DEFAULT_PROJECT_NAME,
@@ -83,6 +91,7 @@ RANKING_TABLE_NAME = "小红书单条作品排行"
 ALERT_TABLE_NAME = "小红书评论预警"
 WEB_DIR = Path(__file__).resolve().parent / "web"
 DEFAULT_URLS_FILE = "xhs_feishu_monitor/input/robam_multi_profile_urls.txt"
+DEFAULT_ACCOUNT_RANKING_EXPORT_DIR = "/Users/cc/Downloads/飞书缓存/账号榜单导出"
 
 DASHBOARD_SERIES_META = {
     "mode": "daily",
@@ -110,12 +119,12 @@ def _sync_login_state_module_dependencies() -> None:
 
 def run_login_state_self_check(*, env_file: str, sample_url: str = "") -> Dict[str, Any]:
     _sync_login_state_module_dependencies()
-    return login_state_module.run_login_state_self_check(env_file=env_file, sample_url=sample_url)
+    return _run_login_state_self_check_impl(env_file=env_file, sample_url=sample_url)
 
 
 def open_xiaohongshu_login_window(*, settings, target_url: str = "") -> bool:
     _sync_login_state_module_dependencies()
-    return login_state_module.open_xiaohongshu_login_window(settings=settings, target_url=target_url)
+    return _open_xiaohongshu_login_window_impl(settings=settings, target_url=target_url)
 
 
 def wait_for_xiaohongshu_login(
@@ -128,15 +137,15 @@ def wait_for_xiaohongshu_login(
     poll_seconds: int = LOGIN_WAIT_POLL_SECONDS,
 ) -> Dict[str, Any]:
     _sync_login_state_module_dependencies()
-    login_state_module.run_login_state_self_check = run_login_state_self_check
-    login_state_module.open_xiaohongshu_login_window = open_xiaohongshu_login_window
-    return login_state_module.wait_for_xiaohongshu_login(
+    return _wait_for_xiaohongshu_login_impl(
         env_file=env_file,
         settings=settings,
         sample_url=sample_url,
         on_wait=on_wait,
         timeout_seconds=timeout_seconds,
         poll_seconds=poll_seconds,
+        run_self_check=run_login_state_self_check,
+        open_login_window=open_xiaohongshu_login_window,
     )
 
 
@@ -261,6 +270,7 @@ def rebuild_daily_series_from_account_series(account_series: Dict[str, List[Dict
 
 
 def build_ranking_item_from_fields(fields: Dict[str, Any]) -> Dict[str, Any]:
+    comment_basis = str(fields.get("评论数口径") or fields.get("单选") or "").strip()
     return {
         "rank": int(fields.get("排名") or 0),
         "account_id": str(fields.get("账号ID") or "").strip(),
@@ -268,10 +278,623 @@ def build_ranking_item_from_fields(fields: Dict[str, Any]) -> Dict[str, Any]:
         "title": str(fields.get("标题文案") or "").strip(),
         "metric": fields.get("排序值"),
         "summary": str(fields.get("榜单摘要") or "").strip(),
+        "comment_basis": comment_basis,
+        "comment_is_lower_bound": comment_basis == "评论预览下限",
         "profile_url": extract_link(fields.get("主页链接")),
         "note_url": extract_link(fields.get("作品链接")),
         "cover_url": extract_link(fields.get("封面图")),
     }
+
+
+def _safe_export_name(value: str, fallback: str) -> str:
+    text = str(value or "").strip()
+    cleaned = "".join(char if char.isalnum() or "\u4e00" <= char <= "\u9fff" or char in ("-", "_") else "-" for char in text)
+    cleaned = "-".join(part for part in cleaned.split("-") if part)
+    return cleaned or fallback
+
+
+def _write_rows_to_csv(path: Path, rows: List[Dict[str, Any]]) -> None:
+    fieldnames = sorted({key for row in rows for key in row.keys()}) if rows else []
+    with path.open("w", encoding="utf-8-sig", newline="") as handle:
+        if not fieldnames:
+            handle.write("")
+            return
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def _build_account_ranking_review_markdown(
+    *,
+    project_name: str,
+    account_name: str,
+    account_id: str,
+    snapshot_label: str,
+    like_rows: List[Dict[str, Any]],
+    comment_rows: List[Dict[str, Any]],
+) -> str:
+    lines = [
+        f"# {account_name} 榜单复盘",
+        "",
+        f"- 项目：{project_name}",
+        f"- 账号：{account_name}",
+        f"- 账号ID：{account_id}",
+        f"- 快照时间：{snapshot_label}",
+        f"- 点赞榜条数：{len(like_rows)}",
+        f"- 评论榜条数：{len(comment_rows)}",
+        "",
+        "## 点赞 Top 5",
+    ]
+    if like_rows:
+        for row in like_rows[:5]:
+            lines.append(f"- TOP{row['排名']}：{row['标题']}｜点赞 {row['数值']}")
+    else:
+        lines.append("- 暂无点赞榜数据")
+    lines.extend(["", "## 评论 Top 5"])
+    if comment_rows:
+        for row in comment_rows[:5]:
+            basis = f"｜{row['评论口径']}" if row.get("评论口径") else ""
+            lines.append(f"- TOP{row['排名']}：{row['标题']}｜评论 {row['数值']}{basis}")
+    else:
+        lines.append("- 暂无评论榜数据")
+    return "\n".join(lines) + "\n"
+
+
+def _build_account_export_rows(
+    *,
+    rankings: Dict[str, List[Dict[str, Any]]],
+    account: Dict[str, Any],
+    account_id: str,
+    account_name: str,
+    project_name: str,
+) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    def build_export_rows(items: List[Dict[str, Any]], metric_key: str) -> List[Dict[str, Any]]:
+        rows: List[Dict[str, Any]] = []
+        for item in items:
+            rows.append(
+                {
+                    "项目": project_name,
+                    "账号ID": account_id,
+                    "账号": account_name,
+                    "排名": int(item.get("rank") or 0),
+                    "标题": str(item.get("title") or "").strip(),
+                    "数值": item.get("metric"),
+                    "指标": metric_key,
+                    "摘要": str(item.get("summary") or "").strip(),
+                    "作品链接": str(item.get("note_url") or "").strip(),
+                    "主页链接": str(item.get("profile_url") or account.get("profile_url") or "").strip(),
+                    "封面图": str(item.get("cover_url") or "").strip(),
+                    "评论口径": str(item.get("comment_basis") or "").strip(),
+                }
+            )
+        return rows
+
+    like_rows = build_export_rows(
+        [item for item in (rankings.get("单条点赞排行") or []) if str(item.get("account_id") or "").strip() == account_id],
+        "点赞",
+    )
+    comment_rows = build_export_rows(
+        [item for item in (rankings.get("单条评论排行") or []) if str(item.get("account_id") or "").strip() == account_id],
+        "评论",
+    )
+    return like_rows, comment_rows
+
+
+def _export_account_rankings_to_snapshot(
+    *,
+    rankings: Dict[str, List[Dict[str, Any]]],
+    account: Dict[str, Any],
+    account_id: str,
+    account_name: str,
+    project_name: str,
+    account_dir: Path,
+    target_dir: Path,
+    snapshot_label: str,
+    snapshot_slug: str,
+) -> Dict[str, Any]:
+    like_rows, comment_rows = _build_account_export_rows(
+        rankings=rankings,
+        account=account,
+        account_id=account_id,
+        account_name=account_name,
+        project_name=project_name,
+    )
+    if not like_rows and not comment_rows:
+        raise ValueError("当前账号暂无可导出的点赞或评论榜单数据")
+
+    like_csv_path = target_dir / f"{snapshot_slug}-点赞排行.csv"
+    comment_csv_path = target_dir / f"{snapshot_slug}-评论排行.csv"
+    like_json_path = target_dir / f"{snapshot_slug}-点赞排行.json"
+    comment_json_path = target_dir / f"{snapshot_slug}-评论排行.json"
+    summary_path = target_dir / "导出摘要.json"
+    review_markdown_path = target_dir / "复盘摘要.md"
+    latest_summary_path = account_dir / "最近一次导出.json"
+
+    _write_rows_to_csv(like_csv_path, like_rows)
+    _write_rows_to_csv(comment_csv_path, comment_rows)
+    like_json_path.write_text(json.dumps(like_rows, ensure_ascii=False, indent=2), encoding="utf-8")
+    comment_json_path.write_text(json.dumps(comment_rows, ensure_ascii=False, indent=2), encoding="utf-8")
+    summary = {
+        "project": project_name,
+        "account_id": account_id,
+        "account": account_name,
+        "export_dir": str(target_dir),
+        "account_dir": str(account_dir),
+        "snapshot_time": snapshot_label,
+        "snapshot_slug": snapshot_slug,
+        "like_count": len(like_rows),
+        "comment_count": len(comment_rows),
+        "updated_at": iso_now(),
+        "files": {
+            "like_csv": str(like_csv_path),
+            "comment_csv": str(comment_csv_path),
+            "like_json": str(like_json_path),
+            "comment_json": str(comment_json_path),
+            "review_markdown": str(review_markdown_path),
+        },
+    }
+    summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+    review_markdown_path.write_text(
+        _build_account_ranking_review_markdown(
+            project_name=project_name,
+            account_name=account_name,
+            account_id=account_id,
+            snapshot_label=snapshot_label,
+            like_rows=like_rows,
+            comment_rows=comment_rows,
+        ),
+        encoding="utf-8",
+    )
+    latest_summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+    summary["summary_path"] = str(summary_path)
+    summary["latest_summary_path"] = str(latest_summary_path)
+    return summary
+
+
+def _build_project_review_markdown(
+    *,
+    project_name: str,
+    snapshot_label: str,
+    summaries: List[Dict[str, Any]],
+) -> str:
+    lines = [
+        f"# {project_name} 项目复盘",
+        "",
+        f"- 快照时间：{snapshot_label}",
+        f"- 账号数量：{len(summaries)}",
+        f"- 点赞榜总条数：{sum(int(item.get('like_count') or 0) for item in summaries)}",
+        f"- 评论榜总条数：{sum(int(item.get('comment_count') or 0) for item in summaries)}",
+        "",
+        "## 账号索引",
+    ]
+    if not summaries:
+        lines.append("- 当前项目暂无可导出的账号榜单")
+    else:
+        for item in summaries:
+            lines.append(
+                f"- {item.get('account')}｜点赞 {item.get('like_count')} 条｜评论 {item.get('comment_count')} 条｜目录 {item.get('export_dir')}"
+            )
+    return "\n".join(lines) + "\n"
+
+
+def _load_json_if_exists(path: Path) -> Dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _load_rows_json_if_exists(path_text: str) -> List[Dict[str, Any]]:
+    path = Path(str(path_text or "").strip())
+    if not path.exists():
+        return []
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    return [dict(item) for item in payload if isinstance(item, dict)] if isinstance(payload, list) else []
+
+
+def _build_ranking_compare(current_rows: List[Dict[str, Any]], previous_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+    def row_key(row: Dict[str, Any]) -> str:
+        note_url = str(row.get("作品链接") or "").strip()
+        title = str(row.get("标题") or "").strip()
+        return note_url or title
+
+    current_index = {row_key(item): item for item in current_rows if row_key(item)}
+    previous_index = {row_key(item): item for item in previous_rows if row_key(item)}
+    new_entries: List[Dict[str, Any]] = []
+    dropped_entries: List[Dict[str, Any]] = []
+    moved_up: List[Dict[str, Any]] = []
+    moved_down: List[Dict[str, Any]] = []
+
+    for key, current_item in current_index.items():
+        previous_item = previous_index.get(key)
+        if previous_item is None:
+            new_entries.append(
+                {
+                    "title": str(current_item.get("标题") or "").strip(),
+                    "current_rank": int(current_item.get("排名") or 0),
+                }
+            )
+            continue
+        current_rank = int(current_item.get("排名") or 0)
+        previous_rank = int(previous_item.get("排名") or 0)
+        delta = previous_rank - current_rank
+        if delta > 0:
+            moved_up.append(
+                {
+                    "title": str(current_item.get("标题") or "").strip(),
+                    "current_rank": current_rank,
+                    "previous_rank": previous_rank,
+                    "rank_change": delta,
+                }
+            )
+        elif delta < 0:
+            moved_down.append(
+                {
+                    "title": str(current_item.get("标题") or "").strip(),
+                    "current_rank": current_rank,
+                    "previous_rank": previous_rank,
+                    "rank_change": delta,
+                }
+            )
+
+    for key, previous_item in previous_index.items():
+        if key in current_index:
+            continue
+        dropped_entries.append(
+            {
+                "title": str(previous_item.get("标题") or "").strip(),
+                "previous_rank": int(previous_item.get("排名") or 0),
+            }
+        )
+
+    moved_up.sort(key=lambda item: (int(item.get("current_rank") or 0), str(item.get("title") or "")))
+    moved_down.sort(key=lambda item: (int(item.get("current_rank") or 9999), str(item.get("title") or "")))
+    new_entries.sort(key=lambda item: (int(item.get("current_rank") or 9999), str(item.get("title") or "")))
+    dropped_entries.sort(key=lambda item: (int(item.get("previous_rank") or 9999), str(item.get("title") or "")))
+    return {
+        "current_count": len(current_rows),
+        "previous_count": len(previous_rows),
+        "new_entries": new_entries,
+        "dropped_entries": dropped_entries,
+        "moved_up": moved_up,
+        "moved_down": moved_down,
+    }
+
+
+def _build_project_compare_payload(
+    *,
+    project_name: str,
+    current_summary: Dict[str, Any],
+    previous_summary: Dict[str, Any],
+) -> Dict[str, Any]:
+    previous_accounts = {
+        str(item.get("account_id") or "").strip(): item
+        for item in (previous_summary.get("accounts") or [])
+        if str(item.get("account_id") or "").strip()
+    }
+    current_accounts = {
+        str(item.get("account_id") or "").strip(): item
+        for item in (current_summary.get("accounts") or [])
+        if str(item.get("account_id") or "").strip()
+    }
+    added_account_ids = [account_id for account_id in current_accounts if account_id not in previous_accounts]
+    removed_account_ids = [account_id for account_id in previous_accounts if account_id not in current_accounts]
+    changed_accounts: List[Dict[str, Any]] = []
+    for account_id, current_item in current_accounts.items():
+        previous_item = previous_accounts.get(account_id)
+        if not previous_item:
+            continue
+        like_delta = int(current_item.get("like_count") or 0) - int(previous_item.get("like_count") or 0)
+        comment_delta = int(current_item.get("comment_count") or 0) - int(previous_item.get("comment_count") or 0)
+        like_compare = _build_ranking_compare(
+            _load_rows_json_if_exists(str(((current_item.get("files") or {}).get("like_json") or ""))),
+            _load_rows_json_if_exists(str(((previous_item.get("files") or {}).get("like_json") or ""))),
+        )
+        comment_compare = _build_ranking_compare(
+            _load_rows_json_if_exists(str(((current_item.get("files") or {}).get("comment_json") or ""))),
+            _load_rows_json_if_exists(str(((previous_item.get("files") or {}).get("comment_json") or ""))),
+        )
+        if (
+            like_delta
+            or comment_delta
+            or like_compare["new_entries"]
+            or like_compare["dropped_entries"]
+            or like_compare["moved_up"]
+            or like_compare["moved_down"]
+            or comment_compare["new_entries"]
+            or comment_compare["dropped_entries"]
+            or comment_compare["moved_up"]
+            or comment_compare["moved_down"]
+        ):
+            changed_accounts.append(
+                {
+                    "account_id": account_id,
+                    "account": str(current_item.get("account") or previous_item.get("account") or "").strip(),
+                    "like_delta": like_delta,
+                    "comment_delta": comment_delta,
+                    "like_compare": like_compare,
+                    "comment_compare": comment_compare,
+                    "current_export_dir": str(current_item.get("export_dir") or "").strip(),
+                    "previous_export_dir": str(previous_item.get("export_dir") or "").strip(),
+                }
+            )
+    changed_accounts.sort(
+        key=lambda item: (abs(int(item.get("comment_delta") or 0)), abs(int(item.get("like_delta") or 0)), str(item.get("account") or "")),
+        reverse=True,
+    )
+    return {
+        "project": project_name,
+        "current_snapshot_time": str(current_summary.get("snapshot_time") or "").strip(),
+        "previous_snapshot_time": str(previous_summary.get("snapshot_time") or "").strip(),
+        "current_snapshot_slug": str(current_summary.get("snapshot_slug") or "").strip(),
+        "previous_snapshot_slug": str(previous_summary.get("snapshot_slug") or "").strip(),
+        "current_account_count": int(current_summary.get("account_count") or 0),
+        "previous_account_count": int(previous_summary.get("account_count") or 0),
+        "current_like_count": int(current_summary.get("like_count") or 0),
+        "previous_like_count": int(previous_summary.get("like_count") or 0),
+        "current_comment_count": int(current_summary.get("comment_count") or 0),
+        "previous_comment_count": int(previous_summary.get("comment_count") or 0),
+        "account_count_delta": int(current_summary.get("account_count") or 0) - int(previous_summary.get("account_count") or 0),
+        "like_count_delta": int(current_summary.get("like_count") or 0) - int(previous_summary.get("like_count") or 0),
+        "comment_count_delta": int(current_summary.get("comment_count") or 0) - int(previous_summary.get("comment_count") or 0),
+        "added_accounts": [
+            {
+                "account_id": account_id,
+                "account": str((current_accounts.get(account_id) or {}).get("account") or "").strip(),
+            }
+            for account_id in added_account_ids
+        ],
+        "removed_accounts": [
+            {
+                "account_id": account_id,
+                "account": str((previous_accounts.get(account_id) or {}).get("account") or "").strip(),
+            }
+            for account_id in removed_account_ids
+        ],
+        "changed_accounts": changed_accounts,
+    }
+
+
+def _build_project_compare_markdown(compare_payload: Dict[str, Any]) -> str:
+    lines = [
+        f"# {compare_payload.get('project') or '项目'} 快照对比",
+        "",
+        f"- 当前快照：{compare_payload.get('current_snapshot_time') or '-'}",
+        f"- 对比快照：{compare_payload.get('previous_snapshot_time') or '-'}",
+        f"- 账号数变化：{format_signed_number_for_export(compare_payload.get('account_count_delta'))}",
+        f"- 点赞榜条数变化：{format_signed_number_for_export(compare_payload.get('like_count_delta'))}",
+        f"- 评论榜条数变化：{format_signed_number_for_export(compare_payload.get('comment_count_delta'))}",
+        "",
+        "## 新增账号",
+    ]
+    added_accounts = compare_payload.get("added_accounts") or []
+    if added_accounts:
+        for item in added_accounts:
+            lines.append(f"- {item.get('account')}（{item.get('account_id')}）")
+    else:
+        lines.append("- 无")
+    lines.extend(["", "## 退出快照账号"])
+    removed_accounts = compare_payload.get("removed_accounts") or []
+    if removed_accounts:
+        for item in removed_accounts:
+            lines.append(f"- {item.get('account')}（{item.get('account_id')}）")
+    else:
+        lines.append("- 无")
+    lines.extend(["", "## 变化账号"])
+    changed_accounts = compare_payload.get("changed_accounts") or []
+    if changed_accounts:
+        for item in changed_accounts[:20]:
+            lines.append(
+                f"- {item.get('account')}｜点赞 {format_signed_number_for_export(item.get('like_delta'))}｜评论 {format_signed_number_for_export(item.get('comment_delta'))}"
+            )
+            like_compare = item.get("like_compare") or {}
+            comment_compare = item.get("comment_compare") or {}
+            if like_compare.get("new_entries"):
+                lines.append(f"  点赞新进榜：{', '.join(entry.get('title') or '' for entry in like_compare['new_entries'][:3])}")
+            if like_compare.get("moved_up"):
+                lines.append(f"  点赞升榜：{', '.join(entry.get('title') or '' for entry in like_compare['moved_up'][:3])}")
+            if like_compare.get("moved_down"):
+                lines.append(f"  点赞降榜：{', '.join(entry.get('title') or '' for entry in like_compare['moved_down'][:3])}")
+            if like_compare.get("dropped_entries"):
+                lines.append(f"  点赞掉榜：{', '.join(entry.get('title') or '' for entry in like_compare['dropped_entries'][:3])}")
+            if comment_compare.get("new_entries"):
+                lines.append(f"  评论新进榜：{', '.join(entry.get('title') or '' for entry in comment_compare['new_entries'][:3])}")
+            if comment_compare.get("moved_up"):
+                lines.append(f"  评论升榜：{', '.join(entry.get('title') or '' for entry in comment_compare['moved_up'][:3])}")
+            if comment_compare.get("moved_down"):
+                lines.append(f"  评论降榜：{', '.join(entry.get('title') or '' for entry in comment_compare['moved_down'][:3])}")
+            if comment_compare.get("dropped_entries"):
+                lines.append(f"  评论掉榜：{', '.join(entry.get('title') or '' for entry in comment_compare['dropped_entries'][:3])}")
+    else:
+        lines.append("- 无明显变化")
+    return "\n".join(lines) + "\n"
+
+
+def format_signed_number_for_export(value: Any) -> str:
+    number = int(value or 0)
+    if number > 0:
+        return f"+{number}"
+    return str(number)
+
+
+def load_latest_project_export_summary(*, project_name: str, export_dir: str = "") -> Dict[str, Any]:
+    normalized_project_name = str(project_name or "").strip()
+    if not normalized_project_name:
+        return {}
+    root_dir = Path(str(export_dir or DEFAULT_ACCOUNT_RANKING_EXPORT_DIR).strip() or DEFAULT_ACCOUNT_RANKING_EXPORT_DIR).expanduser().resolve()
+    project_dir = root_dir / _safe_export_name(normalized_project_name, "未分组")
+    summary = _load_json_if_exists(project_dir / "最近一次项目导出.json")
+    return summary if isinstance(summary, dict) else {}
+
+
+def export_single_account_rankings(
+    *,
+    payload: Dict[str, Any],
+    account_id: str,
+    project: str = "",
+    export_dir: str = "",
+) -> Dict[str, Any]:
+    normalized_account_id = str(account_id or "").strip()
+    if not normalized_account_id:
+        raise ValueError("缺少账号ID，无法导出榜单")
+
+    accounts = payload.get("accounts") or []
+    rankings = payload.get("rankings") or {}
+    account = next((item for item in accounts if str(item.get("account_id") or "").strip() == normalized_account_id), {})
+    account_name = str(account.get("account") or normalized_account_id).strip() or normalized_account_id
+    project_name = str(project or "未分组").strip() or "未分组"
+    root_dir = Path(str(export_dir or DEFAULT_ACCOUNT_RANKING_EXPORT_DIR).strip() or DEFAULT_ACCOUNT_RANKING_EXPORT_DIR).expanduser().resolve()
+    account_dir = root_dir / _safe_export_name(project_name, "未分组") / _safe_export_name(account_name, normalized_account_id)
+    snapshot_time = datetime.now().astimezone()
+    snapshot_label = snapshot_time.strftime("%Y-%m-%d %H:%M:%S")
+    snapshot_slug = snapshot_time.strftime("%Y-%m-%d_%H%M%S")
+    target_dir = account_dir / snapshot_slug
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    like_csv_path = target_dir / f"{snapshot_slug}-点赞排行.csv"
+    comment_csv_path = target_dir / f"{snapshot_slug}-评论排行.csv"
+    like_json_path = target_dir / f"{snapshot_slug}-点赞排行.json"
+    comment_json_path = target_dir / f"{snapshot_slug}-评论排行.json"
+    summary_path = target_dir / "导出摘要.json"
+    review_markdown_path = target_dir / "复盘摘要.md"
+    latest_summary_path = account_dir / "最近一次导出.json"
+
+    return _export_account_rankings_to_snapshot(
+        rankings=rankings,
+        account=account,
+        account_id=normalized_account_id,
+        account_name=account_name,
+        project_name=project_name,
+        account_dir=account_dir,
+        target_dir=target_dir,
+        snapshot_label=snapshot_label,
+        snapshot_slug=snapshot_slug,
+    )
+
+
+def export_project_rankings(
+    *,
+    payload: Dict[str, Any],
+    project: str,
+    account_ids: List[str],
+    export_dir: str = "",
+) -> Dict[str, Any]:
+    project_name = str(project or "").strip()
+    if not project_name:
+        raise ValueError("缺少项目名，无法导出项目快照")
+    normalized_account_ids = [str(item or "").strip() for item in account_ids if str(item or "").strip()]
+    if not normalized_account_ids:
+        raise ValueError("当前项目没有可导出的账号")
+
+    accounts = payload.get("accounts") or []
+    account_index = {str(item.get("account_id") or "").strip(): dict(item) for item in accounts if str(item.get("account_id") or "").strip()}
+    rankings = payload.get("rankings") or {}
+    root_dir = Path(str(export_dir or DEFAULT_ACCOUNT_RANKING_EXPORT_DIR).strip() or DEFAULT_ACCOUNT_RANKING_EXPORT_DIR).expanduser().resolve()
+    project_dir = root_dir / _safe_export_name(project_name, "未分组")
+    latest_project_summary_json = project_dir / "最近一次项目导出.json"
+    previous_project_summary = _load_json_if_exists(latest_project_summary_json)
+    snapshot_time = datetime.now().astimezone()
+    snapshot_label = snapshot_time.strftime("%Y-%m-%d %H:%M:%S")
+    snapshot_slug = snapshot_time.strftime("%Y-%m-%d_%H%M%S")
+    snapshot_dir = project_dir / snapshot_slug
+    snapshot_dir.mkdir(parents=True, exist_ok=True)
+
+    exported_summaries: List[Dict[str, Any]] = []
+    index_rows: List[Dict[str, Any]] = []
+    for account_id in normalized_account_ids:
+        account = account_index.get(account_id, {})
+        account_name = str(account.get("account") or account_id).strip() or account_id
+        account_dir = project_dir / _safe_export_name(account_name, account_id)
+        target_dir = snapshot_dir / _safe_export_name(account_name, account_id)
+        account_dir.mkdir(parents=True, exist_ok=True)
+        target_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            summary = _export_account_rankings_to_snapshot(
+                rankings=rankings,
+                account=account,
+                account_id=account_id,
+                account_name=account_name,
+                project_name=project_name,
+                account_dir=account_dir,
+                target_dir=target_dir,
+                snapshot_label=snapshot_label,
+                snapshot_slug=snapshot_slug,
+            )
+        except ValueError:
+            continue
+        exported_summaries.append(summary)
+        index_rows.append(
+            {
+                "项目": project_name,
+                "账号ID": account_id,
+                "账号": account_name,
+                "快照时间": snapshot_label,
+                "点赞榜条数": int(summary.get("like_count") or 0),
+                "评论榜条数": int(summary.get("comment_count") or 0),
+                "快照目录": str(summary.get("export_dir") or ""),
+                "最近一次导出": str(summary.get("latest_summary_path") or ""),
+            }
+        )
+
+    if not exported_summaries:
+        raise ValueError("当前项目暂无可导出的账号榜单数据")
+
+    project_index_csv = snapshot_dir / "项目账号索引.csv"
+    project_index_json = snapshot_dir / "项目账号索引.json"
+    project_review_markdown = snapshot_dir / "项目复盘摘要.md"
+    project_summary_json = snapshot_dir / "项目导出摘要.json"
+    project_compare_json = snapshot_dir / "项目快照对比.json"
+    project_compare_markdown = snapshot_dir / "项目快照对比.md"
+
+    _write_rows_to_csv(project_index_csv, index_rows)
+    project_index_json.write_text(json.dumps(index_rows, ensure_ascii=False, indent=2), encoding="utf-8")
+    project_review_markdown.write_text(
+        _build_project_review_markdown(
+            project_name=project_name,
+            snapshot_label=snapshot_label,
+            summaries=exported_summaries,
+        ),
+        encoding="utf-8",
+    )
+    project_summary = {
+        "project": project_name,
+        "snapshot_time": snapshot_label,
+        "snapshot_slug": snapshot_slug,
+        "project_dir": str(project_dir),
+        "export_dir": str(snapshot_dir),
+        "account_count": len(exported_summaries),
+        "like_count": sum(int(item.get("like_count") or 0) for item in exported_summaries),
+        "comment_count": sum(int(item.get("comment_count") or 0) for item in exported_summaries),
+        "files": {
+            "project_index_csv": str(project_index_csv),
+            "project_index_json": str(project_index_json),
+            "project_review_markdown": str(project_review_markdown),
+        },
+        "accounts": exported_summaries,
+        "updated_at": iso_now(),
+    }
+    if previous_project_summary and str(previous_project_summary.get("snapshot_slug") or "").strip() != snapshot_slug:
+        compare_payload = _build_project_compare_payload(
+            project_name=project_name,
+            current_summary=project_summary,
+            previous_summary=previous_project_summary,
+        )
+        project_compare_json.write_text(json.dumps(compare_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        project_compare_markdown.write_text(_build_project_compare_markdown(compare_payload), encoding="utf-8")
+        project_summary["compare"] = compare_payload
+        project_summary["files"]["project_compare_json"] = str(project_compare_json)
+        project_summary["files"]["project_compare_markdown"] = str(project_compare_markdown)
+    project_summary_json.write_text(json.dumps(project_summary, ensure_ascii=False, indent=2), encoding="utf-8")
+    latest_project_summary_json.write_text(json.dumps(project_summary, ensure_ascii=False, indent=2), encoding="utf-8")
+    project_summary["summary_path"] = str(project_summary_json)
+    project_summary["latest_summary_path"] = str(latest_project_summary_json)
+    return project_summary
 
 
 def build_local_ranking_updates(reports: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
@@ -606,7 +1229,20 @@ class LoginStateStore:
         with self._lock:
             sample_url = self._sample_url
         try:
-            payload = run_login_state_self_check(env_file=self.env_file, sample_url=sample_url)
+            settings = load_settings(self.env_file)
+
+            def on_wait(payload: Dict[str, Any]) -> None:
+                with self._lock:
+                    self._payload = copy.deepcopy(payload or {})
+                    self._cached_at = time.time() if self._payload else 0.0
+                    self._running = True
+
+            payload = wait_for_xiaohongshu_login(
+                env_file=self.env_file,
+                settings=settings,
+                sample_url=sample_url,
+                on_wait=on_wait,
+            )
         except Exception as exc:
             payload = build_login_state_payload(
                 state="error",
@@ -662,7 +1298,7 @@ def build_sync_progress(
         detail_text += f" · {account}"
     if works:
         detail_text += f" · {works} 条作品"
-    if status and phase == "collect":
+    if status and status != detail_text:
         detail_text += f" · {status}"
 
     timing = build_progress_timing(started_at=started_at, overall_percent=overall_percent, now=now)
@@ -748,14 +1384,32 @@ class MonitoringSyncStore:
         self.sync_dashboard = sync_dashboard
         self._lock = threading.Lock()
         self._running = False
+        self._upload_running = False
         self._pending_resync = False
         self._current_sync_urls: List[str] = []
         self._current_sync_project = ""
         self._pending_sync_urls: List[str] = []
+        self._pending_upload_job: Dict[str, Any] = {}
+        self._last_upload_retry_job: Dict[str, Any] = {}
         self._manual_last_requested_at = 0.0
+        self._profile_lookup_cache_rows: List[Dict[str, Any]] = []
+        self._profile_lookup_cache_error = ""
+        self._profile_lookup_cache_loaded_at = 0.0
         self._status: Dict[str, Any] = {
             "state": "idle",
             "message": "待命",
+            "started_at": "",
+            "finished_at": "",
+            "last_success_at": "",
+            "last_error": "",
+            "pending": False,
+            "progress": {},
+            "summary": {},
+        }
+        self._upload_status: Dict[str, Any] = {
+            "state": "idle",
+            "message": "飞书上传待命",
+            "scope": "full",
             "started_at": "",
             "finished_at": "",
             "last_success_at": "",
@@ -770,12 +1424,7 @@ class MonitoringSyncStore:
             entries = parse_monitored_entries(self.urls_file)
             metadata_index = load_monitored_metadata(self.urls_file)
             settings = load_settings(self.env_file)
-            profile_lookup_error = ""
-            try:
-                profile_rows = load_profile_table_rows(self.env_file)
-            except Exception as exc:
-                profile_rows = []
-                profile_lookup_error = str(exc)
+            profile_rows, profile_lookup_error = self._get_profile_lookup_rows_locked()
             dashboard_payload = self.dashboard_store.peek_payload()
             dashboard_account_index = build_dashboard_account_index(dashboard_payload.get("accounts") or [])
             enriched_entries = enrich_monitored_entries(
@@ -797,6 +1446,12 @@ class MonitoringSyncStore:
                 sample_url = str(active_entries[0].get("url") or "")
             elif enriched_entries:
                 sample_url = str(enriched_entries[0].get("url") or "")
+            project_summaries = attach_project_sync_statuses(build_project_summaries(enriched_entries), urls_file=self.urls_file)
+            for item in project_summaries:
+                item["latest_export"] = load_latest_project_export_summary(
+                    project_name=str(item.get("name") or ""),
+                    export_dir="",
+                )
             return {
                 "urls_file": str(resolve_text_path(self.urls_file)),
                 "total": len(enriched_entries),
@@ -804,7 +1459,7 @@ class MonitoringSyncStore:
                 "paused_count": len(enriched_entries) - len(active_entries),
                 "urls": [entry["url"] for entry in active_entries],
                 "entries": enriched_entries,
-                "projects": attach_project_sync_statuses(build_project_summaries(enriched_entries), urls_file=self.urls_file),
+                "projects": project_summaries,
                 "profile_lookup_error": profile_lookup_error,
                 "login_state": (
                     self.login_state_store.get_payload(sample_url=sample_url)
@@ -814,6 +1469,21 @@ class MonitoringSyncStore:
                 "proxy_pool": build_proxy_pool_status(settings),
                 "sync_status": self._status_snapshot_locked(),
             }
+
+    def _get_profile_lookup_rows_locked(self) -> tuple[List[Dict[str, Any]], str]:
+        now = time.time()
+        cache_ttl_seconds = 180
+        if now - self._profile_lookup_cache_loaded_at <= cache_ttl_seconds:
+            return list(self._profile_lookup_cache_rows), str(self._profile_lookup_cache_error or "")
+        try:
+            profile_rows = load_profile_table_rows(self.env_file)
+            self._profile_lookup_cache_rows = list(profile_rows)
+            self._profile_lookup_cache_error = ""
+        except Exception as exc:
+            self._profile_lookup_cache_rows = []
+            self._profile_lookup_cache_error = str(exc)
+        self._profile_lookup_cache_loaded_at = now
+        return list(self._profile_lookup_cache_rows), str(self._profile_lookup_cache_error or "")
 
     def _build_manual_cooldown_locked(self) -> Dict[str, Any]:
         now = time.time()
@@ -838,7 +1508,275 @@ class MonitoringSyncStore:
     def _status_snapshot_locked(self) -> Dict[str, Any]:
         snapshot = dict(self._status)
         snapshot.update(self._build_manual_cooldown_locked())
+        snapshot["upload_status"] = {
+            **copy.deepcopy(self._upload_status),
+            "has_retry_payload": bool(self._last_upload_retry_job),
+            "has_cached_payload": self._has_cached_upload_payload_locked(),
+        }
         return snapshot
+
+    def _has_cached_upload_payload_locked(self) -> bool:
+        try:
+            settings = load_settings(self.env_file)
+        except Exception:
+            return False
+        return has_cached_project_upload_payload(settings=settings, include_calendar=True, include_rankings=True)
+
+    @staticmethod
+    def _normalize_upload_scope(scope: str) -> str:
+        normalized = str(scope or "").strip().lower()
+        if normalized in {"calendar", "rankings", "full"}:
+            return normalized
+        return "full"
+
+    @staticmethod
+    def _describe_upload_scope(scope: str, *, project: str = "") -> str:
+        normalized_scope = MonitoringSyncStore._normalize_upload_scope(scope)
+        project_name = str(project or "").strip()
+        target_text = f"项目「{project_name}」" if project_name else "全部项目"
+        if normalized_scope == "calendar":
+            return f"{target_text}日历留底"
+        if normalized_scope == "rankings":
+            return f"{target_text}排行榜"
+        return f"{target_text}飞书数据"
+
+    def _start_upload_job_locked(self, upload_job: Dict[str, Any]) -> None:
+        reports = [dict(item) for item in (upload_job.get("reports") or []) if isinstance(item, dict)]
+        estimated_total = max(1, int(upload_job.get("estimated_total") or len(reports) or 1))
+        started_at = iso_now()
+        upload_scope = self._normalize_upload_scope(str(upload_job.get("upload_scope") or "full"))
+        upload_project = str(upload_job.get("project") or "").strip()
+        self._upload_running = True
+        self._upload_status = {
+            "state": "running",
+            "message": f"{self._describe_upload_scope(upload_scope, project=upload_project)}上传中",
+            "scope": upload_scope,
+            "started_at": started_at,
+            "finished_at": "",
+            "last_success_at": self._upload_status.get("last_success_at", ""),
+            "last_error": "",
+            "pending": False,
+            "progress": build_sync_progress(
+                phase="sync",
+                current=0,
+                total=estimated_total,
+                success_count=0,
+                failed_count=0,
+                started_at=started_at,
+            ),
+            "summary": {},
+        }
+        threading.Thread(target=self._upload_loop, args=(upload_job,), daemon=True).start()
+
+    def _stage_feishu_upload(self, *, reports: List[Dict[str, Any]], settings, project: str) -> str:
+        upload_job = {
+            "reports": [copy.deepcopy(report) for report in reports],
+            "settings": copy.deepcopy(settings),
+            "project": str(project or "").strip(),
+        }
+        with self._lock:
+            self._last_upload_retry_job = copy.deepcopy(upload_job)
+            if self._upload_running:
+                self._pending_upload_job = upload_job
+                self._upload_status["pending"] = True
+                self._upload_status["message"] = "已准备新的飞书上传任务，当前上传完成后可手动再次上传"
+                return "staged_pending"
+            self._upload_status.update(
+                {
+                    "state": "idle",
+                    "message": "本地看板已更新，可手动上传飞书",
+                    "finished_at": iso_now(),
+                    "last_error": "",
+                    "pending": False,
+                    "progress": {},
+                    "summary": {},
+                }
+            )
+        return "staged"
+
+    def retry_feishu_upload(self, *, project: str = "", scope: str = "full") -> Dict[str, Any]:
+        normalized_project = normalize_project_name(project)
+        project_specified = bool(str(project or "").strip())
+        upload_scope = self._normalize_upload_scope(scope)
+        include_calendar = upload_scope in {"full", "calendar"}
+        include_rankings = upload_scope in {"full", "rankings"}
+        with self._lock:
+            if project_specified:
+                try:
+                    settings = load_settings(self.env_file)
+                except Exception as exc:
+                    return {
+                        "ok": False,
+                        "message": f"无法加载上传配置：{exc}",
+                        "sync_status": self._status_snapshot_locked(),
+                    }
+                if not has_cached_project_upload_payload(
+                    settings=settings,
+                    project=normalized_project,
+                    include_calendar=include_calendar,
+                    include_rankings=include_rankings,
+                ):
+                    return {
+                        "ok": False,
+                        "message": f"当前项目“{normalized_project}”没有可上传的本地缓存。",
+                        "sync_status": self._status_snapshot_locked(),
+                    }
+                self._last_upload_retry_job = {
+                    "mode": "cache",
+                    "reports": [],
+                    "settings": copy.deepcopy(settings),
+                    "project": normalized_project,
+                    "upload_scope": upload_scope,
+                    "estimated_total": 1,
+                }
+            elif not self._last_upload_retry_job or upload_scope != "full":
+                try:
+                    settings = load_settings(self.env_file)
+                except Exception as exc:
+                    return {
+                        "ok": False,
+                        "message": f"无法加载上传配置：{exc}",
+                        "sync_status": self._status_snapshot_locked(),
+                    }
+                if not has_cached_project_upload_payload(
+                    settings=settings,
+                    include_calendar=include_calendar,
+                    include_rankings=include_rankings,
+                ):
+                    return {
+                        "ok": False,
+                        "message": "当前没有可上传的飞书任务，也没有本地缓存。",
+                        "sync_status": self._status_snapshot_locked(),
+                    }
+                self._last_upload_retry_job = {
+                    "mode": "cache",
+                    "reports": [],
+                    "settings": copy.deepcopy(settings),
+                    "project": "",
+                    "upload_scope": upload_scope,
+                    "estimated_total": 1 if upload_scope != "full" else 2,
+                }
+            if self._upload_running:
+                self._pending_upload_job = copy.deepcopy(self._last_upload_retry_job)
+                self._upload_status["pending"] = True
+                self._upload_status["message"] = "飞书上传已加入队列，当前上传完成后自动接力"
+                return {
+                    "ok": True,
+                    "message": "已加入飞书上传队列，当前上传完成后自动接力。",
+                    "sync_status": self._status_snapshot_locked(),
+                }
+            self._start_upload_job_locked(copy.deepcopy(self._last_upload_retry_job))
+            return {
+                "ok": True,
+                "message": f"已开始上传{self._describe_upload_scope(upload_scope, project=normalized_project if project_specified else '')}。",
+                "sync_status": self._status_snapshot_locked(),
+            }
+
+    def _handle_upload_progress_update(self, payload: Dict[str, Any]) -> None:
+        progress = build_sync_progress(
+            phase="sync",
+            current=int(payload.get("current") or 0),
+            total=int(payload.get("total") or 0),
+            account=str(payload.get("account") or payload.get("url") or ""),
+            works=int(payload.get("works") or 0),
+            status=str(payload.get("status") or ""),
+            success_count=int(payload.get("success_count") or 0),
+            failed_count=int(payload.get("failed_count") or 0),
+            started_at=str(self._upload_status.get("started_at") or ""),
+        )
+        with self._lock:
+            if self._upload_status.get("state") not in {"running", "queued"}:
+                return
+            self._upload_status["state"] = "running"
+            self._upload_status["progress"] = progress
+            self._upload_status["message"] = progress.get("detail_text") or self._upload_status.get("message", "")
+
+    def _upload_loop(self, upload_job: Dict[str, Any]) -> None:
+        finished_at = iso_now()
+        try:
+            reports = [dict(item) for item in (upload_job.get("reports") or []) if isinstance(item, dict)]
+            settings = upload_job.get("settings")
+            upload_mode = str(upload_job.get("mode") or "").strip()
+            upload_scope = self._normalize_upload_scope(str(upload_job.get("upload_scope") or "full"))
+            upload_project = str(upload_job.get("project") or "").strip()
+            if upload_mode == "cache":
+                summary = sync_cached_project_rankings_to_feishu(
+                    settings=settings,
+                    project=upload_project,
+                    progress_callback=self._handle_upload_progress_update,
+                    upload_calendar=upload_scope in {"full", "calendar"},
+                    upload_rankings=upload_scope in {"full", "rankings"},
+                )
+            else:
+                summary = sync_reports_to_feishu(
+                    reports=reports,
+                    settings=settings,
+                    profile_table_name=self.profile_table_name,
+                    works_table_name=self.works_table_name,
+                    ensure_fields=self.ensure_fields,
+                    sync_dashboard=self.sync_dashboard,
+                    progress_callback=self._handle_upload_progress_update,
+                )
+            finished_at = iso_now()
+            timing = build_progress_timing(
+                started_at=str(self._upload_status.get("started_at") or ""),
+                overall_percent=100,
+            )
+            success_count = int(summary.get("successful_accounts") or summary.get("project_count") or 0)
+            total_count = int(summary.get("total_accounts") or summary.get("project_count") or upload_job.get("estimated_total") or len(reports) or 1)
+            total_works = int(summary.get("total_works") or 0)
+            result = {
+                "state": "success",
+                "message": f"{self._describe_upload_scope(upload_scope, project=upload_project)}上传完成，账号 {success_count} 个，作品 {total_works} 条",
+                "scope": upload_scope,
+                "started_at": "",
+                "finished_at": finished_at,
+                "last_success_at": finished_at,
+                "last_error": "",
+                "pending": False,
+                "progress": {
+                    "phase": "done",
+                    "phase_label": "飞书上传完成",
+                    "current": success_count,
+                    "total": total_count,
+                    "phase_percent": 100,
+                    "overall_percent": 100,
+                    "account": "",
+                    "works": total_works,
+                    "status": "success",
+                    "success_count": success_count,
+                    "failed_count": int(summary.get("failed_accounts") or 0),
+                    "detail_text": f"已完成 {success_count} 个账号飞书上传",
+                    "elapsed_seconds": timing["elapsed_seconds"],
+                    "elapsed_text": timing["elapsed_text"],
+                    "eta_seconds": 0,
+                    "eta_text": "",
+                },
+                "summary": {**summary, "project": upload_project},
+            }
+        except Exception as exc:
+            result = {
+                "state": "error",
+                "message": f"飞书上传失败：{exc}",
+                "scope": self._normalize_upload_scope(str(upload_job.get("upload_scope") or "full")),
+                "started_at": "",
+                "finished_at": finished_at,
+                "last_success_at": self._upload_status.get("last_success_at", ""),
+                "last_error": str(exc),
+                "pending": False,
+                "progress": dict(self._upload_status.get("progress") or {}),
+                "summary": {},
+            }
+
+        next_job: Dict[str, Any] = {}
+        with self._lock:
+            self._upload_status = result
+            next_job = dict(self._pending_upload_job)
+            self._pending_upload_job = {}
+            if next_job:
+                self._start_upload_job_locked(next_job)
+            else:
+                self._upload_running = False
 
     def bulk_update_account_state(self, *, urls: List[str], active: bool) -> Dict[str, Any]:
         normalized_urls: List[str] = []
@@ -1348,24 +2286,30 @@ class MonitoringSyncStore:
                     )
                 except Exception:
                     pass
-                summary = sync_reports_to_feishu(
-                    reports=reports,
-                    settings=settings,
-                    profile_table_name=self.profile_table_name,
-                    works_table_name=self.works_table_name,
-                    ensure_fields=self.ensure_fields,
-                    sync_dashboard=self.sync_dashboard,
-                    progress_callback=self._handle_progress_update,
-                )
                 if not self.dashboard_store.commit_local_override():
                     self.dashboard_store.invalidate()
+                local_summary = {
+                    "total_accounts": len(reports),
+                    "successful_accounts": len(reports),
+                    "failed_accounts": 0,
+                    "total_works": sum(len(report.get("works") or []) for report in reports),
+                }
+                upload_state = self._stage_feishu_upload(
+                    reports=reports,
+                    settings=settings,
+                    project=self._current_sync_project,
+                )
                 finished_progress = build_progress_timing(
                     started_at=self._status.get("started_at", ""),
                     overall_percent=100,
                 )
                 result = {
                     "state": "success",
-                    "message": f"同步完成，账号 {summary.get('total_accounts', 0)} 个，作品 {summary.get('total_works', 0)} 条",
+                    "message": (
+                        f"看板已更新，飞书上传任务已准备好，账号 {local_summary.get('total_accounts', 0)} 个，作品 {local_summary.get('total_works', 0)} 条"
+                        if upload_state == "staged"
+                        else f"看板已更新，新的飞书上传任务已准备好，账号 {local_summary.get('total_accounts', 0)} 个，作品 {local_summary.get('total_works', 0)} 条"
+                    ),
                     "started_at": "",
                     "finished_at": finished_at,
                     "last_success_at": finished_at,
@@ -1374,22 +2318,25 @@ class MonitoringSyncStore:
                     "progress": {
                         "phase": "done",
                         "phase_label": "同步完成",
-                        "current": summary.get("total_accounts", 0),
-                        "total": summary.get("total_accounts", 0),
+                        "current": local_summary.get("total_accounts", 0),
+                        "total": local_summary.get("total_accounts", 0),
                         "phase_percent": 100,
                         "overall_percent": 100,
                         "account": "",
-                        "works": summary.get("total_works", 0),
+                        "works": local_summary.get("total_works", 0),
                         "status": "success",
-                        "success_count": summary.get("total_accounts", 0),
+                        "success_count": local_summary.get("successful_accounts", 0),
                         "failed_count": 0,
-                        "detail_text": f"已完成 {summary.get('total_accounts', 0)} 个账号同步",
+                        "detail_text": f"已完成 {local_summary.get('total_accounts', 0)} 个账号看板更新",
                         "elapsed_seconds": finished_progress["elapsed_seconds"],
                         "elapsed_text": finished_progress["elapsed_text"],
                         "eta_seconds": 0,
                         "eta_text": "",
                     },
-                    "summary": summary,
+                    "summary": {
+                        **local_summary,
+                        "feishu_upload_state": upload_state,
+                    },
                 }
             except Exception as exc:
                 result = {
@@ -1527,6 +2474,9 @@ class MonitoringSyncStore:
 
 def load_dashboard_payload(env_file: str) -> Dict[str, Any]:
     settings = load_settings(env_file)
+    cached_payload = load_cached_dashboard_payload(settings)
+    if cached_payload:
+        return cached_payload
     base_client = FeishuBitableClient(settings)
     table_ids = list_table_ids(base_client)
 
@@ -1713,6 +2663,36 @@ def build_handler(
                     payload = self.read_json_body()
                     result = monitoring_store.retry_account(url=str(payload.get("url") or ""))
                     self.send_json_response(HTTPStatus.OK, result)
+                    return
+                if path == "/api/monitored-accounts/retry-upload":
+                    payload = self.read_json_body()
+                    result = monitoring_store.retry_feishu_upload(
+                        project=str(payload.get("project") or ""),
+                        scope=str(payload.get("scope") or "full"),
+                    )
+                    self.send_json_response(HTTPStatus.OK, result)
+                    return
+                if path == "/api/account-rankings/export":
+                    payload = self.read_json_body()
+                    dashboard_payload = dashboard_store.peek_payload() or dashboard_store.get_payload(force=False)
+                    result = export_single_account_rankings(
+                        payload=dashboard_payload,
+                        account_id=str(payload.get("account_id") or ""),
+                        project=str(payload.get("project") or ""),
+                        export_dir=str(payload.get("export_dir") or ""),
+                    )
+                    self.send_json_response(HTTPStatus.OK, {"ok": True, **result})
+                    return
+                if path == "/api/project-rankings/export":
+                    payload = self.read_json_body()
+                    dashboard_payload = dashboard_store.peek_payload() or dashboard_store.get_payload(force=False)
+                    result = export_project_rankings(
+                        payload=dashboard_payload,
+                        project=str(payload.get("project") or ""),
+                        account_ids=[str(item) for item in (payload.get("account_ids") or []) if str(item).strip()],
+                        export_dir=str(payload.get("export_dir") or ""),
+                    )
+                    self.send_json_response(HTTPStatus.OK, {"ok": True, **result})
                     return
                 if path == "/api/monitored-accounts/sync":
                     result = monitoring_store.request_sync()

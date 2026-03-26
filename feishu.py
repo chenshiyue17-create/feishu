@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from typing import Any, Dict, Optional, Tuple
 
 import requests
@@ -14,6 +15,7 @@ class FeishuBitableClient:
         self.settings = settings
         self.session = requests.Session()
         self._tenant_access_token: Optional[str] = None
+        self._request_retry_attempts = 3
 
     def sync_snapshot(self, snapshot: NoteSnapshot) -> Tuple[str, str]:
         fields = self._build_fields(snapshot)
@@ -115,6 +117,51 @@ class FeishuBitableClient:
                 break
         return items
 
+    def list_views(self, *, table_id: Optional[str] = None) -> list[Dict[str, Any]]:
+        items: list[Dict[str, Any]] = []
+        page_token = ""
+        while True:
+            params: Dict[str, Any] = {"page_size": 100}
+            if page_token:
+                params["page_token"] = page_token
+            data = self._request("GET", self._views_url(table_id=table_id), params=params)
+            inner = data.get("data") or {}
+            batch = inner.get("items") or []
+            items.extend(item for item in batch if isinstance(item, dict))
+            if not inner.get("has_more"):
+                break
+            page_token = str(inner.get("page_token") or "")
+            if not page_token:
+                break
+        return items
+
+    def create_view(
+        self,
+        *,
+        view_name: str,
+        view_type: str = "grid",
+        table_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        data = self._request(
+            "POST",
+            self._views_url(table_id=table_id),
+            json={"view_name": view_name, "view_type": view_type},
+        )
+        return (data.get("data") or {}).get("view") or {}
+
+    def ensure_view(
+        self,
+        *,
+        view_name: str,
+        view_type: str = "grid",
+        table_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        target_name = str(view_name or "").strip()
+        for item in self.list_views(table_id=table_id):
+            if str(item.get("view_name") or "").strip() == target_name:
+                return item
+        return self.create_view(view_name=target_name, view_type=view_type, table_id=table_id)
+
     def create_table(
         self,
         *,
@@ -174,6 +221,9 @@ class FeishuBitableClient:
     def delete_record(self, record_id: str) -> None:
         self._request("DELETE", f"{self._records_url()}/{record_id}")
 
+    def delete_table(self, table_id: str) -> None:
+        self._request("DELETE", f"{self._tables_url()}/{table_id}")
+
     def upsert_record(self, unique_field: str, unique_value: Any, fields: Dict[str, Any]) -> Tuple[str, str]:
         record_id = self.find_record_id(unique_field, unique_value)
         if record_id:
@@ -202,31 +252,71 @@ class FeishuBitableClient:
         headers = kwargs.pop("headers", {})
         headers["Authorization"] = f"Bearer {self._get_tenant_access_token()}"
         headers["Content-Type"] = "application/json; charset=utf-8"
-        response = self.session.request(method, url, headers=headers, timeout=20, **kwargs)
-        response.raise_for_status()
-        payload = response.json()
-        if payload.get("code") not in (None, 0):
-            raise ValueError(f"飞书接口错误 {payload.get('code')}: {payload.get('msg')}")
-        return payload
+        headers["Connection"] = "close"
+        last_error: Optional[Exception] = None
+        method_upper = str(method or "GET").upper()
+        for attempt in range(1, self._request_retry_attempts + 1):
+            try:
+                response = self.session.request(method_upper, url, headers=headers, timeout=20, **kwargs)
+                response.raise_for_status()
+                payload = response.json()
+                if payload.get("code") not in (None, 0):
+                    raise ValueError(f"飞书接口错误 {payload.get('code')}: {payload.get('msg')}")
+                return payload
+            except requests.RequestException as exc:
+                last_error = exc
+                if attempt >= self._request_retry_attempts:
+                    raise
+                self._reset_session()
+                time.sleep(0.8 * attempt)
+            except ValueError:
+                raise
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError("飞书请求失败")
 
     def _get_tenant_access_token(self) -> str:
         if self._tenant_access_token:
             return self._tenant_access_token
-        response = self.session.post(
-            "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal",
-            headers={"Content-Type": "application/json; charset=utf-8"},
-            json={
-                "app_id": self.settings.feishu_app_id,
-                "app_secret": self.settings.feishu_app_secret,
-            },
-            timeout=20,
-        )
-        response.raise_for_status()
-        payload = response.json()
-        if payload.get("code") != 0:
-            raise ValueError(f"获取 tenant_access_token 失败: {payload.get('msg')}")
-        self._tenant_access_token = str(payload["tenant_access_token"])
-        return self._tenant_access_token
+        last_error: Optional[Exception] = None
+        for attempt in range(1, self._request_retry_attempts + 1):
+            try:
+                response = self.session.post(
+                    "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal",
+                    headers={
+                        "Content-Type": "application/json; charset=utf-8",
+                        "Connection": "close",
+                    },
+                    json={
+                        "app_id": self.settings.feishu_app_id,
+                        "app_secret": self.settings.feishu_app_secret,
+                    },
+                    timeout=20,
+                )
+                response.raise_for_status()
+                payload = response.json()
+                if payload.get("code") != 0:
+                    raise ValueError(f"获取 tenant_access_token 失败: {payload.get('msg')}")
+                self._tenant_access_token = str(payload["tenant_access_token"])
+                return self._tenant_access_token
+            except requests.RequestException as exc:
+                last_error = exc
+                if attempt >= self._request_retry_attempts:
+                    raise
+                self._reset_session(clear_token=False)
+                time.sleep(0.8 * attempt)
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError("获取 tenant_access_token 失败")
+
+    def _reset_session(self, *, clear_token: bool = False) -> None:
+        try:
+            self.session.close()
+        except Exception:
+            pass
+        self.session = requests.Session()
+        if clear_token:
+            self._tenant_access_token = None
 
     def _records_url(self) -> str:
         return (
@@ -244,6 +334,13 @@ class FeishuBitableClient:
         return (
             "https://open.feishu.cn/open-apis/bitable/v1/apps/"
             f"{self.settings.feishu_bitable_app_token}/tables"
+        )
+
+    def _views_url(self, *, table_id: Optional[str] = None) -> str:
+        target_table_id = str(table_id or self.settings.feishu_table_id or "").strip()
+        return (
+            "https://open.feishu.cn/open-apis/bitable/v1/apps/"
+            f"{self.settings.feishu_bitable_app_token}/tables/{target_table_id}/views"
         )
 
 

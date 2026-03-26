@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import random
 import re
 import sys
 import threading
@@ -42,10 +43,14 @@ class BatchThrottle:
         self,
         *,
         request_interval_seconds: float,
+        account_delay_seconds: float,
+        account_jitter_seconds: float,
         chunk_size: int,
         chunk_cooldown_seconds: float,
     ) -> None:
         self.request_interval_seconds = max(0.0, float(request_interval_seconds or 0.0))
+        self.account_delay_seconds = max(0.0, float(account_delay_seconds or 0.0))
+        self.account_jitter_seconds = max(0.0, float(account_jitter_seconds or 0.0))
         self.chunk_size = max(0, int(chunk_size or 0))
         self.chunk_cooldown_seconds = max(0.0, float(chunk_cooldown_seconds or 0.0))
         self._lock = threading.Lock()
@@ -66,8 +71,11 @@ class BatchThrottle:
                 and (self._started_count - 1) % self.chunk_size == 0
             ):
                 release_at += self.chunk_cooldown_seconds
-            if self.request_interval_seconds > 0:
-                release_at += self.request_interval_seconds
+            per_account_delay = self.request_interval_seconds + self.account_delay_seconds
+            if self.account_jitter_seconds > 0:
+                per_account_delay += random.uniform(0.0, self.account_jitter_seconds)
+            if per_account_delay > 0:
+                release_at += per_account_delay
             self._next_available_at = release_at
         if sleep_seconds > 0:
             time.sleep(sleep_seconds)
@@ -92,6 +100,25 @@ def is_retryable_batch_error(error_text: Any) -> bool:
             "403",
             "429",
             "超时",
+            "风控",
+            "反爬",
+            "空结果",
+        )
+    )
+
+
+def is_slow_tail_retry_error(error_text: Any) -> bool:
+    text = str(error_text or "").strip().lower()
+    if not text:
+        return False
+    return any(
+        keyword in text
+        for keyword in (
+            "rate limit",
+            "too many requests",
+            "403",
+            "429",
+            "temporarily unavailable",
             "风控",
             "反爬",
             "空结果",
@@ -274,28 +301,35 @@ def collect_profile_reports_with_progress(
     throttle = build_batch_throttle(settings)
     retry_failed_once = bool(getattr(settings, "xhs_batch_retry_failed_once", True))
     retry_delay_seconds = max(0.0, float(getattr(settings, "xhs_batch_retry_delay_seconds", 20.0) or 0.0))
+    risk_retry_delay_seconds = max(0.0, float(getattr(settings, "xhs_batch_risk_retry_delay_seconds", 45.0) or 0.0))
     project_cooldown_seconds = max(0.0, float(getattr(settings, "xhs_batch_project_cooldown_seconds", 45.0) or 0.0))
+    url_to_project = {item["url"]: str(item.get("project") or "").strip() for item in normalized_entries}
     if max_workers == 1 or len(ordered_urls) <= 1:
-        results = []
+        indexed_results: Dict[int, Dict[str, Any]] = {}
+        normal_retry_indexes: List[int] = []
+        slow_retry_indexes: List[int] = []
         total = len(ordered_urls)
         success_count = 0
         failed_count = 0
         current = 0
+        url_to_index = {item["url"]: index for index, item in enumerate(normalized_entries)}
         project_batches = build_project_batches(normalized_entries)
         for group_index, group in enumerate(project_batches):
             for entry in group:
-                current += 1
                 url = entry["url"]
-                item = _collect_single_profile_report_with_throttle(url=url, settings=settings, throttle=throttle)
-                item = _retry_failed_item_if_needed(
-                    item=item,
-                    url=url,
-                    settings=settings,
-                    throttle=throttle,
-                    retry_failed_once=retry_failed_once,
-                    retry_delay_seconds=retry_delay_seconds,
+                item = _attach_project_to_item(
+                    _collect_single_profile_report_with_throttle(url=url, settings=settings, throttle=throttle),
+                    project=str(entry.get("project") or "").strip(),
                 )
-                results.append(item)
+                index = url_to_index[url]
+                indexed_results[index] = item
+                if retry_failed_once and item.get("status") != "success" and is_retryable_batch_error(item.get("error")):
+                    if is_slow_tail_retry_error(item.get("error")):
+                        slow_retry_indexes.append(index)
+                    else:
+                        normal_retry_indexes.append(index)
+                    continue
+                current += 1
                 if item.get("status") == "success":
                     success_count += 1
                 else:
@@ -310,10 +344,39 @@ def collect_profile_reports_with_progress(
                 )
             if group_index < len(project_batches) - 1:
                 _sleep_between_project_batches(project_cooldown_seconds=project_cooldown_seconds)
-        return results
+        for retry_indexes in (sorted(normal_retry_indexes), sorted(slow_retry_indexes)):
+            for index in retry_indexes:
+                retried = _attach_project_to_item(
+                    _retry_failed_item_if_needed(
+                        item=indexed_results[index],
+                        url=ordered_urls[index],
+                        settings=settings,
+                        throttle=throttle,
+                        retry_failed_once=retry_failed_once,
+                        retry_delay_seconds=retry_delay_seconds,
+                        risk_retry_delay_seconds=risk_retry_delay_seconds,
+                    ),
+                    project=url_to_project.get(ordered_urls[index], ""),
+                )
+                indexed_results[index] = retried
+                current += 1
+                if retried.get("status") == "success":
+                    success_count += 1
+                else:
+                    failed_count += 1
+                _emit_collect_progress(
+                    progress_callback=progress_callback,
+                    current=current,
+                    total=total,
+                    item=retried,
+                    success_count=success_count,
+                    failed_count=failed_count,
+                )
+        return [indexed_results[index] for index in range(len(ordered_urls))]
 
     indexed_results: Dict[int, Dict[str, Any]] = {}
-    pending_retry_indexes: List[int] = []
+    normal_retry_indexes: List[int] = []
+    slow_retry_indexes: List[int] = []
     completed = 0
     total = len(ordered_urls)
     success_count = 0
@@ -321,18 +384,26 @@ def collect_profile_reports_with_progress(
     url_to_index = {item["url"]: index for index, item in enumerate(normalized_entries)}
     project_batches = build_project_batches(normalized_entries)
     for group_index, group in enumerate(project_batches):
-        group_urls = [item["url"] for item in group]
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_map = {
-                executor.submit(_collect_single_profile_report_with_throttle, url=url, settings=settings, throttle=throttle): url
-                for url in group_urls
+                executor.submit(
+                    _collect_single_profile_report_with_throttle,
+                    url=item["url"],
+                    settings=settings,
+                    throttle=throttle,
+                ): {"url": item["url"], "project": str(item.get("project") or "").strip()}
+                for item in group
             }
             for future in as_completed(future_map):
-                item = future.result()
-                index = url_to_index[future_map[future]]
+                future_entry = future_map[future]
+                item = _attach_project_to_item(future.result(), project=future_entry["project"])
+                index = url_to_index[future_entry["url"]]
                 indexed_results[index] = item
                 if retry_failed_once and item.get("status") != "success" and is_retryable_batch_error(item.get("error")):
-                    pending_retry_indexes.append(index)
+                    if is_slow_tail_retry_error(item.get("error")):
+                        slow_retry_indexes.append(index)
+                    else:
+                        normal_retry_indexes.append(index)
                     continue
                 completed += 1
                 if item.get("status") == "success":
@@ -349,29 +420,34 @@ def collect_profile_reports_with_progress(
                 )
         if group_index < len(project_batches) - 1:
             _sleep_between_project_batches(project_cooldown_seconds=project_cooldown_seconds)
-    for index in sorted(pending_retry_indexes):
-        retried = _retry_failed_item_if_needed(
-            item=indexed_results[index],
-            url=ordered_urls[index],
-            settings=settings,
-            throttle=throttle,
-            retry_failed_once=retry_failed_once,
-            retry_delay_seconds=retry_delay_seconds,
-        )
-        indexed_results[index] = retried
-        completed += 1
-        if retried.get("status") == "success":
-            success_count += 1
-        else:
-            failed_count += 1
-        _emit_collect_progress(
-            progress_callback=progress_callback,
-            current=completed,
-            total=total,
-            item=retried,
-            success_count=success_count,
-            failed_count=failed_count,
-        )
+    for retry_indexes in (sorted(normal_retry_indexes), sorted(slow_retry_indexes)):
+        for index in retry_indexes:
+            retried = _attach_project_to_item(
+                _retry_failed_item_if_needed(
+                    item=indexed_results[index],
+                    url=ordered_urls[index],
+                    settings=settings,
+                    throttle=throttle,
+                    retry_failed_once=retry_failed_once,
+                    retry_delay_seconds=retry_delay_seconds,
+                    risk_retry_delay_seconds=risk_retry_delay_seconds,
+                ),
+                project=url_to_project.get(ordered_urls[index], ""),
+            )
+            indexed_results[index] = retried
+            completed += 1
+            if retried.get("status") == "success":
+                success_count += 1
+            else:
+                failed_count += 1
+            _emit_collect_progress(
+                progress_callback=progress_callback,
+                current=completed,
+                total=total,
+                item=retried,
+                success_count=success_count,
+                failed_count=failed_count,
+            )
     return [indexed_results[index] for index in range(len(ordered_urls))]
 
 
@@ -457,6 +533,8 @@ def resolve_batch_concurrency(settings) -> int:
 def build_batch_throttle(settings) -> BatchThrottle:
     return BatchThrottle(
         request_interval_seconds=float(getattr(settings, "xhs_batch_request_interval_seconds", 2.0) or 0.0),
+        account_delay_seconds=float(getattr(settings, "xhs_batch_account_delay_seconds", 1.0) or 0.0),
+        account_jitter_seconds=float(getattr(settings, "xhs_batch_account_jitter_seconds", 0.8) or 0.0),
         chunk_size=int(getattr(settings, "xhs_batch_chunk_size", 8) or 0),
         chunk_cooldown_seconds=float(getattr(settings, "xhs_batch_chunk_cooldown_seconds", 12.0) or 0.0),
     )
@@ -468,6 +546,12 @@ def _collect_single_profile_report_with_throttle(*, url: str, settings, throttle
     return _collect_single_profile_report(url=url, settings=settings)
 
 
+def _attach_project_to_item(item: Dict[str, Any], *, project: str) -> Dict[str, Any]:
+    enriched = dict(item)
+    enriched["project"] = str(project or "").strip()
+    return enriched
+
+
 def _retry_failed_item_if_needed(
     *,
     item: Dict[str, Any],
@@ -476,15 +560,20 @@ def _retry_failed_item_if_needed(
     throttle: Optional[BatchThrottle],
     retry_failed_once: bool,
     retry_delay_seconds: float,
+    risk_retry_delay_seconds: float,
 ) -> Dict[str, Any]:
     if not retry_failed_once or item.get("status") == "success" or not is_retryable_batch_error(item.get("error")):
         return item
-    if retry_delay_seconds > 0:
-        time.sleep(retry_delay_seconds)
+    retry_tier = "slow_tail" if is_slow_tail_retry_error(item.get("error")) else "normal_tail"
+    delay_seconds = risk_retry_delay_seconds if retry_tier == "slow_tail" else retry_delay_seconds
+    if delay_seconds > 0:
+        time.sleep(delay_seconds)
     retried = _collect_single_profile_report_with_throttle(url=url, settings=settings, throttle=throttle)
     retried["retried"] = True
     retried["retry_error"] = str(item.get("error") or "")
     retried["retry_status"] = "success" if retried.get("status") == "success" else "failed"
+    retried["retry_tier"] = retry_tier
+    retried["retry_delay_seconds"] = delay_seconds
     return retried
 
 
@@ -513,6 +602,7 @@ def write_batch_csv(path_text: str, reports: List[Dict[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fieldnames = [
         "status",
+        "project",
         "requested_url",
         "final_url",
         "nickname",
@@ -537,6 +627,7 @@ def write_batch_csv(path_text: str, reports: List[Dict[str, Any]]) -> None:
             writer.writerow(
                 {
                     "status": item.get("status"),
+                    "project": item.get("project", ""),
                     "requested_url": item.get("requested_url", ""),
                     "final_url": item.get("final_url", ""),
                     "nickname": profile.get("nickname", ""),

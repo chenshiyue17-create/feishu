@@ -93,6 +93,7 @@ DASHBOARD_RANKING_FIELDS: List[Dict[str, Any]] = [
 
 DASHBOARD_SINGLE_WORK_RANKING_FIELDS: List[Dict[str, Any]] = [
     {"field_name": "榜单键", "type": 1},
+    {"field_name": "项目", "type": 1},
     {"field_name": "榜单类型", "type": 1},
     {"field_name": "排名", "type": 2, "property": {"formatter": "0"}},
     {"field_name": "卡片标签", "type": 1},
@@ -104,6 +105,7 @@ DASHBOARD_SINGLE_WORK_RANKING_FIELDS: List[Dict[str, Any]] = [
     {"field_name": "作品类型", "type": 1},
     {"field_name": "点赞数", "type": 2, "property": {"formatter": "0"}},
     {"field_name": "评论数", "type": 2, "property": {"formatter": "0"}},
+    {"field_name": "评论数口径", "type": 1},
     {"field_name": "对比日期文本", "type": 1},
     {"field_name": "昨日点赞数", "type": 2, "property": {"formatter": "0"}},
     {"field_name": "昨日评论数", "type": 2, "property": {"formatter": "0"}},
@@ -397,6 +399,8 @@ def sync_single_work_ranking_table(
     reports: List[Dict[str, Any]],
     settings: Settings,
     table_name: str = DASHBOARD_SINGLE_WORK_RANKING_TABLE_NAME,
+    history_index: Optional[Dict[str, List[Any]]] = None,
+    included_rank_types: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     tables_client = FeishuBitableClient(settings)
     ranking_table_id = ensure_named_table(
@@ -407,23 +411,28 @@ def sync_single_work_ranking_table(
     )
     ranking_client = FeishuBitableClient(replace(settings, feishu_table_id=ranking_table_id))
     ranking_client.ensure_fields(DASHBOARD_SINGLE_WORK_RANKING_FIELDS)
-
-    works_calendar_table_id = ensure_named_table(
-        tables_client=tables_client,
-        table_name=WORKS_CALENDAR_TABLE_NAME,
-        default_view_name="作品日历留底",
-        fields=WORKS_CALENDAR_FIELDS,
-    )
-    works_calendar_client = FeishuBitableClient(replace(settings, feishu_table_id=works_calendar_table_id))
-    history_index = build_work_calendar_history_index(
-        works_calendar_client.list_records(
-            page_size=500,
-            field_names=["日期文本", "日历日期", "作品指纹", "点赞数", "评论数"],
+    works_calendar_table_id = ""
+    ranking_history_index = history_index or {}
+    if history_index is None:
+        works_calendar_table_id = ensure_named_table(
+            tables_client=tables_client,
+            table_name=WORKS_CALENDAR_TABLE_NAME,
+            default_view_name="作品日历留底",
+            fields=WORKS_CALENDAR_FIELDS,
         )
-    )
+        works_calendar_client = FeishuBitableClient(replace(settings, feishu_table_id=works_calendar_table_id))
+        ranking_history_index = build_work_calendar_history_index(
+            works_calendar_client.list_records(
+                page_size=500,
+                field_names=["日期文本", "日历日期", "作品指纹", "点赞数", "评论数"],
+            )
+        )
 
+    allowed_rank_types = {str(item or "").strip() for item in (included_rank_types or []) if str(item or "").strip()}
     desired_fields: Dict[str, Dict[str, Any]] = {}
-    for rank_type, ranked_items in build_single_work_rankings(reports=reports, history_index=history_index).items():
+    for rank_type, ranked_items in build_single_work_rankings(reports=reports, history_index=ranking_history_index).items():
+        if allowed_rank_types and rank_type not in allowed_rank_types:
+            continue
         for rank, item in enumerate(ranked_items, start=1):
             fields = build_single_work_ranking_fields(item=item, rank_type=rank_type, rank=rank)
             desired_fields[str(fields["榜单键"])] = fields
@@ -1114,6 +1123,7 @@ def build_single_work_items(reports: List[Dict[str, Any]]) -> List[Dict[str, Any
                     "note_url": work.get("note_url") or "",
                     "like_count": work_numeric_like(work),
                     "comment_count": work_numeric_comment(work),
+                    "comment_count_is_lower_bound": bool(work.get("comment_count_is_lower_bound")),
                     "xsec_token": work.get("xsec_token") or "",
                 }
             )
@@ -1152,6 +1162,10 @@ def build_single_work_ranking_fields(*, item: Dict[str, Any], rank_type: str, ra
     }
     if item.get("comment_count") is not None:
         fields["评论数"] = item["comment_count"]
+        comment_basis = "评论预览下限" if item.get("comment_count_is_lower_bound") else "精确值"
+        fields["评论数口径"] = comment_basis
+        # 当前排行榜单表没有新增字段权限时，复用现有空闲列承载这条信息。
+        fields["单选"] = comment_basis
     if rank_type == "单条点赞排行":
         fields["排序值"] = item["like_count"]
         fields["榜单摘要"] = f"点赞 {item['like_count']}"

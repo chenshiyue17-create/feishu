@@ -14,3 +14,4 @@ local_stats_app/__pycache__/
 *.pid
 input/robam_multi_profile_urls.txt
 input/robam_multi_profile_urls.txt.meta.json
+input/robam_multi_profile_urls.txt.project_status.json

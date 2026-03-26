@@ -45,10 +45,13 @@ class Settings:
     xhs_retry_delay_seconds: int = 2
     xhs_batch_concurrency: int = 2
     xhs_batch_request_interval_seconds: float = 2.0
+    xhs_batch_account_delay_seconds: float = 1.0
+    xhs_batch_account_jitter_seconds: float = 0.8
     xhs_batch_chunk_size: int = 8
     xhs_batch_chunk_cooldown_seconds: float = 12.0
     xhs_batch_retry_failed_once: bool = True
     xhs_batch_retry_delay_seconds: float = 20.0
+    xhs_batch_risk_retry_delay_seconds: float = 45.0
     xhs_batch_project_cooldown_seconds: float = 45.0
     xhs_manual_sync_cooldown_minutes: int = 20
     xhs_fetch_work_comment_counts: bool = True
@@ -71,6 +74,7 @@ class Settings:
     feishu_app_id: str = ""
     feishu_app_secret: str = ""
     feishu_bitable_app_token: str = ""
+    feishu_ranking_bitable_app_token: str = ""
     feishu_table_id: str = ""
     feishu_sync_mode: str = "upsert"
     feishu_unique_field: str = DEFAULT_FIELD_MAP["note_id"]
@@ -78,10 +82,15 @@ class Settings:
     include_raw_json: bool = False
     feishu_notify_webhook: str = ""
     feishu_notify_secret: str = ""
+    feishu_ranking_upload_limit: int = 30
+    feishu_review_upload_days: int = 14
+    feishu_review_per_account_limit: int = 10
+    interaction_alert_delta_threshold: int = 10
     comment_alert_growth_threshold_percent: float = 10.0
     comment_alert_min_previous_count: int = 0
     verify_tls: bool = True
     state_file: str = "xhs_feishu_monitor/.state.json"
+    project_cache_dir: str = "/Users/cc/Downloads/飞书缓存"
 
     def validate_for_sync(self) -> None:
         missing = []
@@ -131,10 +140,13 @@ def load_settings(env_file: Optional[str] = None) -> Settings:
         xhs_retry_delay_seconds=_env_int("XHS_RETRY_DELAY_SECONDS", env_values, default=2),
         xhs_batch_concurrency=_env_int("XHS_BATCH_CONCURRENCY", env_values, default=2),
         xhs_batch_request_interval_seconds=_env_float("XHS_BATCH_REQUEST_INTERVAL_SECONDS", env_values, default=2.0),
+        xhs_batch_account_delay_seconds=_env_float("XHS_BATCH_ACCOUNT_DELAY_SECONDS", env_values, default=1.0),
+        xhs_batch_account_jitter_seconds=_env_float("XHS_BATCH_ACCOUNT_JITTER_SECONDS", env_values, default=0.8),
         xhs_batch_chunk_size=_env_int("XHS_BATCH_CHUNK_SIZE", env_values, default=8),
         xhs_batch_chunk_cooldown_seconds=_env_float("XHS_BATCH_CHUNK_COOLDOWN_SECONDS", env_values, default=12.0),
         xhs_batch_retry_failed_once=_env_bool("XHS_BATCH_RETRY_FAILED_ONCE", env_values, default=True),
         xhs_batch_retry_delay_seconds=_env_float("XHS_BATCH_RETRY_DELAY_SECONDS", env_values, default=20.0),
+        xhs_batch_risk_retry_delay_seconds=_env_float("XHS_BATCH_RISK_RETRY_DELAY_SECONDS", env_values, default=45.0),
         xhs_batch_project_cooldown_seconds=_env_float("XHS_BATCH_PROJECT_COOLDOWN_SECONDS", env_values, default=45.0),
         xhs_manual_sync_cooldown_minutes=_env_int("XHS_MANUAL_SYNC_COOLDOWN_MINUTES", env_values, default=20),
         xhs_fetch_work_comment_counts=_env_bool("XHS_FETCH_WORK_COMMENT_COUNTS", env_values, default=True),
@@ -157,6 +169,7 @@ def load_settings(env_file: Optional[str] = None) -> Settings:
         feishu_app_id=_env("FEISHU_APP_ID", env_values),
         feishu_app_secret=_env("FEISHU_APP_SECRET", env_values),
         feishu_bitable_app_token=_env("FEISHU_BITABLE_APP_TOKEN", env_values),
+        feishu_ranking_bitable_app_token=_env("FEISHU_RANKING_BITABLE_APP_TOKEN", env_values),
         feishu_table_id=_env("FEISHU_TABLE_ID", env_values),
         feishu_sync_mode=(_env("FEISHU_SYNC_MODE", env_values) or "upsert").strip().lower(),
         feishu_unique_field=_env("FEISHU_UNIQUE_FIELD", env_values) or DEFAULT_FIELD_MAP["note_id"],
@@ -164,10 +177,15 @@ def load_settings(env_file: Optional[str] = None) -> Settings:
         include_raw_json=_env_bool("FEISHU_INCLUDE_RAW_JSON", env_values, default=False),
         feishu_notify_webhook=_env("FEISHU_NOTIFY_WEBHOOK", env_values),
         feishu_notify_secret=_env("FEISHU_NOTIFY_SECRET", env_values),
+        feishu_ranking_upload_limit=_env_int("FEISHU_RANKING_UPLOAD_LIMIT", env_values, default=30),
+        feishu_review_upload_days=_env_int("FEISHU_REVIEW_UPLOAD_DAYS", env_values, default=14),
+        feishu_review_per_account_limit=_env_int("FEISHU_REVIEW_PER_ACCOUNT_LIMIT", env_values, default=10),
+        interaction_alert_delta_threshold=_env_int("INTERACTION_ALERT_DELTA_THRESHOLD", env_values, default=10),
         comment_alert_growth_threshold_percent=_env_float("COMMENT_ALERT_GROWTH_THRESHOLD_PERCENT", env_values, default=10.0),
         comment_alert_min_previous_count=_env_int("COMMENT_ALERT_MIN_PREVIOUS_COUNT", env_values, default=0),
         verify_tls=_env_bool("VERIFY_TLS", env_values, default=True),
         state_file=_resolve_path(_env("STATE_FILE", env_values) or default_state_file, base_dir),
+        project_cache_dir=_resolve_path(_env("PROJECT_CACHE_DIR", env_values) or "/Users/cc/Downloads/飞书缓存", base_dir),
     )
     return settings
 

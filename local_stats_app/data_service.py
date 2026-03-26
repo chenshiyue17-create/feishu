@@ -174,6 +174,7 @@ def build_rankings(ranking_rows: List[Dict[str, Any]]) -> Dict[str, List[Dict[st
         rank_type = str(row.get("榜单类型") or "").strip()
         if not rank_type:
             continue
+        comment_basis = str(row.get("评论数口径") or row.get("单选") or "").strip()
         grouped[rank_type].append(
             {
                 "rank": to_int(row.get("排名")),
@@ -182,6 +183,8 @@ def build_rankings(ranking_rows: List[Dict[str, Any]]) -> Dict[str, List[Dict[st
                 "title": str(row.get("标题文案") or "").strip(),
                 "metric": row.get("排序值"),
                 "summary": str(row.get("榜单摘要") or "").strip(),
+                "comment_basis": comment_basis,
+                "comment_is_lower_bound": comment_basis == "评论预览下限",
                 "profile_url": extract_link(row.get("主页链接")),
                 "note_url": extract_link(row.get("作品链接")),
                 "cover_url": extract_link(row.get("封面图")),
@@ -197,22 +200,29 @@ def build_rankings(ranking_rows: List[Dict[str, Any]]) -> Dict[str, List[Dict[st
 def build_alerts(alert_rows: List[Dict[str, Any]], *, top_n: int = 10) -> List[Dict[str, Any]]:
     alerts = []
     for row in alert_rows:
+        like_delta = to_int(row.get("点赞增量"))
+        comment_delta = to_int(row.get("评论增量"))
         alerts.append(
             {
                 "date": str(row.get("预警日期") or "").strip(),
+                "alert_type": str(row.get("预警类型") or "互动预警").strip(),
                 "account_id": str(row.get("账号ID") or "").strip(),
                 "account": str(row.get("账号") or "").strip(),
                 "title": str(row.get("标题文案") or "").strip(),
+                "current_likes": to_int(row.get("当前点赞数")),
+                "previous_likes": to_int(row.get("基准点赞数")),
+                "like_delta": like_delta,
                 "current_comments": to_int(row.get("当前评论数")),
                 "previous_comments": to_int(row.get("基准评论数")),
-                "delta": to_int(row.get("评论增量")),
+                "delta": max(like_delta, comment_delta),
+                "comment_delta": comment_delta,
                 "rate": to_float(row.get("评论增长率")),
                 "status": str(row.get("通知状态") or "").strip(),
                 "profile_url": extract_link(row.get("主页链接")),
                 "note_url": extract_link(row.get("作品链接")),
             }
         )
-    alerts.sort(key=lambda item: (item["date"], item["rate"], item["delta"]), reverse=True)
+    alerts.sort(key=lambda item: (item["date"], item["delta"], item["comment_delta"], item["like_delta"]), reverse=True)
     return alerts[:top_n]
 
 

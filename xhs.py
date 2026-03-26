@@ -62,6 +62,17 @@ PROXY_RUNTIME_META: Dict[str, Any] = {
     "last_error": "",
     "updated_at": "",
 }
+PUBLIC_IP_STATUS: Dict[str, Any] = {
+    "ip": "",
+    "checked_at": "",
+    "error": "",
+    "cached_at_monotonic": 0.0,
+}
+PUBLIC_IP_CACHE_SECONDS = 600
+PUBLIC_IP_LOOKUP_URLS = (
+    "https://api64.ipify.org",
+    "https://api.ipify.org",
+)
 
 
 class XHSCollector:
@@ -643,6 +654,7 @@ def build_proxy_pool_status(settings: Settings) -> Dict[str, Any]:
     now = time.monotonic()
     entries: List[Dict[str, Any]] = []
     latest_error = ""
+    public_ip_status = _get_public_ip_status(now=now)
     with PROXY_STATUS_LOCK:
         for proxy_url in pool:
             runtime = dict(PROXY_RUNTIME_STATE.get(proxy_url) or {})
@@ -681,8 +693,40 @@ def build_proxy_pool_status(settings: Settings) -> Dict[str, Any]:
         "last_selected_proxy": last_selected_proxy,
         "last_error": latest_error,
         "updated_at": updated_at,
+        "current_ip": str(public_ip_status.get("ip") or ""),
+        "current_ip_checked_at": str(public_ip_status.get("checked_at") or ""),
+        "current_ip_error": str(public_ip_status.get("error") or ""),
         "entries": entries,
     }
+
+
+def _get_public_ip_status(*, now: Optional[float] = None) -> Dict[str, Any]:
+    current_now = float(now if now is not None else time.monotonic())
+    with PROXY_STATUS_LOCK:
+        cached_at = float(PUBLIC_IP_STATUS.get("cached_at_monotonic") or 0.0)
+        if cached_at and (current_now - cached_at) < PUBLIC_IP_CACHE_SECONDS:
+            return dict(PUBLIC_IP_STATUS)
+    ip_value = ""
+    error_text = ""
+    for lookup_url in PUBLIC_IP_LOOKUP_URLS:
+        try:
+            response = requests.get(lookup_url, timeout=3)
+            response.raise_for_status()
+            ip_value = str(response.text or "").strip()
+            if ip_value:
+                error_text = ""
+                break
+        except requests.RequestException as exc:
+            error_text = str(exc)
+    status = {
+        "ip": ip_value,
+        "checked_at": _iso_now(),
+        "error": "" if ip_value else error_text,
+        "cached_at_monotonic": current_now,
+    }
+    with PROXY_STATUS_LOCK:
+        PUBLIC_IP_STATUS.update(status)
+        return dict(PUBLIC_IP_STATUS)
 
 
 def _record_proxy_selected(proxy_url: str) -> None:

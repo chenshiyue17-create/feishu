@@ -2,11 +2,13 @@ const state = {
   payload: null,
   monitoring: null,
   activeAccountId: "",
-  rankingScope: "account",
+  rankingScope: "all",
   trendWindow: 7,
   monitorQuery: "",
   monitorFilter: "all",
   monitorProjectFilter: "all",
+  monitorViewMode: "table",
+  collapseStableProjects: true,
   monitorPage: 1,
   monitorPageSize: 30,
   pollTimer: null,
@@ -34,6 +36,20 @@ function formatSignedNumber(value) {
   return "0";
 }
 
+function buildCompareSummaryLine(compare = {}) {
+  const pieces = [];
+  if (compare.account_count_delta || compare.account_count_delta === 0) {
+    pieces.push(`账号 ${formatSignedNumber(compare.account_count_delta)}`);
+  }
+  if (compare.like_count_delta || compare.like_count_delta === 0) {
+    pieces.push(`点赞榜 ${formatSignedNumber(compare.like_count_delta)}`);
+  }
+  if (compare.comment_count_delta || compare.comment_count_delta === 0) {
+    pieces.push(`评论榜 ${formatSignedNumber(compare.comment_count_delta)}`);
+  }
+  return pieces.join(" · ");
+}
+
 function formatDurationShort(seconds) {
   const totalSeconds = Math.max(0, Number(seconds || 0));
   if (totalSeconds < 60) return `${Math.ceil(totalSeconds)}秒`;
@@ -45,6 +61,37 @@ function formatDurationShort(seconds) {
   const hours = Math.floor(minutes / 60);
   const remainMinutes = minutes % 60;
   return remainMinutes ? `${hours}小时${remainMinutes}分` : `${hours}小时`;
+}
+
+function getUploadScopeLabel(scope, projectName = "") {
+  const normalized = String(scope || "full").toLowerCase();
+  const projectText = projectName ? `项目「${projectName}」` : "全部项目";
+  if (normalized === "calendar") return `${projectText}日历`;
+  if (normalized === "rankings") return `${projectText}排行榜`;
+  return `${projectText}飞书数据`;
+}
+
+function buildUploadSummaryItems(uploadStatus) {
+  const summary = uploadStatus?.summary || {};
+  const calendarCount = Number(summary.calendar_created || 0) + Number(summary.calendar_updated || 0);
+  const accountRankingCount =
+    Number(summary.project_account_ranking_created || 0) + Number(summary.project_account_ranking_updated || 0);
+  const workRankingCount =
+    Number(summary.single_work_ranking_created || 0) + Number(summary.single_work_ranking_updated || 0);
+  const skippedCount =
+    Number(summary.calendar_skipped || 0) +
+    Number(summary.project_account_ranking_skipped || 0) +
+    Number(summary.single_work_ranking_skipped || 0);
+  const deletedCount =
+    Number(summary.project_account_ranking_deleted || 0) +
+    Number(summary.single_work_ranking_deleted || 0);
+  return [
+    { label: "日历留底", value: calendarCount },
+    { label: "账号榜", value: accountRankingCount },
+    { label: "作品榜", value: workRankingCount },
+    { label: "跳过", value: skippedCount },
+    { label: "清理", value: deletedCount },
+  ];
 }
 
 function getProjectSyncStateText(status) {
@@ -129,6 +176,89 @@ function buildWindowGrowth(fullSeries, requestedWindow = state.trendWindow) {
   };
 }
 
+function buildSeriesWindowContext(fullSeries, requestedWindow = state.trendWindow) {
+  if (!fullSeries.length || fullSeries.length < 2) {
+    return null;
+  }
+  const latest = fullSeries[fullSeries.length - 1];
+  let baseline = null;
+  let label = "";
+
+  if (requestedWindow <= 1) {
+    baseline = fullSeries[fullSeries.length - 2];
+    label = "较前1天";
+  } else {
+    const windowSize = Math.max(2, Math.min(requestedWindow, fullSeries.length));
+    baseline = fullSeries[fullSeries.length - windowSize];
+    label = fullSeries.length < requestedWindow ? `已积累${windowSize}天` : `近${requestedWindow}天`;
+  }
+  if (!baseline || baseline.date === latest.date) {
+    return null;
+  }
+  return {
+    label,
+    start_date: baseline.date,
+    end_date: latest.date,
+  };
+}
+
+function buildProjectComparableGrowth(projectName = getSelectedProjectName(), requestedWindow = 7) {
+  const accountSeries = state.payload?.account_series || {};
+  const fullSeries = getProjectSeries(projectName);
+  const windowContext = buildSeriesWindowContext(fullSeries, requestedWindow);
+  if (!windowContext) {
+    return null;
+  }
+
+  const projectAccountIds =
+    projectName === "all"
+      ? new Set(Object.keys(accountSeries))
+      : getProjectAccountIds(projectName);
+
+  const latestByAccount = new Map();
+  const baselineByAccount = new Map();
+  projectAccountIds.forEach((accountId) => {
+    const series = accountSeries[accountId] || [];
+    const latestPoint = series.find((item) => String(item.date || "") === windowContext.end_date);
+    const baselinePoint = series.find((item) => String(item.date || "") === windowContext.start_date);
+    if (latestPoint) latestByAccount.set(accountId, latestPoint);
+    if (baselinePoint) baselineByAccount.set(accountId, baselinePoint);
+  });
+
+  const comparableAccountIds = [...latestByAccount.keys()].filter((accountId) => baselineByAccount.has(accountId));
+  const newAccountIds = [...latestByAccount.keys()].filter((accountId) => !baselineByAccount.has(accountId));
+  const lostAccountIds = [...baselineByAccount.keys()].filter((accountId) => !latestByAccount.has(accountId));
+
+  const sumMetric = (collection, key) =>
+    comparableAccountIds.reduce((sum, accountId) => sum + Number((collection.get(accountId) || {})[key] || 0), 0);
+
+  const latestFans = sumMetric(latestByAccount, "fans");
+  const baselineFans = sumMetric(baselineByAccount, "fans");
+  const latestInteraction = sumMetric(latestByAccount, "interaction");
+  const baselineInteraction = sumMetric(baselineByAccount, "interaction");
+  const latestLikes = sumMetric(latestByAccount, "likes");
+  const baselineLikes = sumMetric(baselineByAccount, "likes");
+  const latestComments = sumMetric(latestByAccount, "comments");
+  const baselineComments = sumMetric(baselineByAccount, "comments");
+  const latestWorks = sumMetric(latestByAccount, "works");
+  const baselineWorks = sumMetric(baselineByAccount, "works");
+
+  return {
+    ...windowContext,
+    comparable_ready: comparableAccountIds.length > 0,
+    comparable_account_count: comparableAccountIds.length,
+    latest_account_count: latestByAccount.size,
+    baseline_account_count: baselineByAccount.size,
+    new_account_count: newAccountIds.length,
+    lost_account_count: lostAccountIds.length,
+    fans: latestFans - baselineFans,
+    interaction: latestInteraction - baselineInteraction,
+    likes: latestLikes - baselineLikes,
+    comments: latestComments - baselineComments,
+    works: latestWorks - baselineWorks,
+  };
+}
+
 function buildCoverMarkup(item, { size = "hero", rank = 1 } = {}) {
   const wrapperClass = size === "hero" ? "ranking-hero-cover" : "ranking-mini-cover";
   const imageClass = size === "hero" ? "ranking-hero-cover-image" : "ranking-mini-cover-image";
@@ -140,13 +270,19 @@ function buildCoverMarkup(item, { size = "hero", rank = 1 } = {}) {
     ? `<img class="${imageClass}" src="${buildCoverSrc(item.cover_url)}" alt="作品封面" loading="lazy" referrerpolicy="no-referrer" onerror="this.hidden=true;this.nextElementSibling.hidden=false;" />`
     : "";
   const placeholderMarkup = `<div class="ranking-cover-placeholder"${item.cover_url ? " hidden" : ""}>暂无封面</div>`;
+  const rankMarkup = rank === "" || rank === null || rank === undefined ? "" : `<div class="rank-badge">${rank}</div>`;
   return `
     ${openTag}
       ${imageMarkup}
       ${placeholderMarkup}
-      <div class="rank-badge">${rank}</div>
+      ${rankMarkup}
     ${closeTag}
   `;
+}
+
+function renderCommentBasisChip(item) {
+  if (!item?.comment_is_lower_bound) return "";
+  return `<span class="ranking-basis-chip">评论下限</span>`;
 }
 
 async function loadDashboard(force = false) {
@@ -166,6 +302,8 @@ async function loadMonitoring() {
     throw new Error(`监测账号加载失败: ${response.status}`);
   }
   state.monitoring = await response.json();
+  ensureProjectSelection();
+  ensureActiveAccount();
   renderMonitoring();
   schedulePolling();
 }
@@ -191,6 +329,7 @@ function schedulePolling() {
 
 function renderApp() {
   renderMeta();
+  renderProjectHome();
   renderAccountFocus();
   renderPortalCards();
   renderTrendWindowTabs();
@@ -208,14 +347,15 @@ function ensureActiveAccount() {
     return;
   }
   const exists = accounts.some((item) => item.account_id === state.activeAccountId);
-  if (!state.activeAccountId || !exists) {
-    state.activeAccountId = accounts[0].account_id;
+  if (state.activeAccountId && !exists) {
+    state.activeAccountId = "";
   }
 }
 
 function getActiveAccount() {
   const accounts = getVisibleAccounts();
-  return accounts.find((item) => item.account_id === state.activeAccountId) || accounts[0] || null;
+  if (!state.activeAccountId) return null;
+  return accounts.find((item) => item.account_id === state.activeAccountId) || null;
 }
 
 function getActiveSeries() {
@@ -230,6 +370,15 @@ function getMonitoringEntries() {
 
 function getSelectedProjectName() {
   return state.monitorProjectFilter || "all";
+}
+
+function ensureProjectSelection() {
+  if (state.monitorProjectFilter !== "all") return;
+  const projects = state.monitoring?.projects || [];
+  const preferred = projects.find((item) => Number(item.active || item.total || 0) > 0) || projects[0];
+  if (preferred?.name) {
+    state.monitorProjectFilter = preferred.name;
+  }
 }
 
 function getProjectEntries(projectName = getSelectedProjectName()) {
@@ -248,6 +397,14 @@ function getProjectAccountIds(projectName = getSelectedProjectName()) {
   );
 }
 
+function getProjectStatus(projectName = getSelectedProjectName()) {
+  const projects = state.monitoring?.projects || [];
+  if (projectName === "all") {
+    return state.monitoring?.sync_status || {};
+  }
+  return projects.find((item) => item.name === projectName)?.sync_status || {};
+}
+
 function getVisibleAccounts() {
   const accounts = state.payload?.accounts || [];
   const projectName = getSelectedProjectName();
@@ -256,6 +413,117 @@ function getVisibleAccounts() {
   }
   const accountIds = getProjectAccountIds(projectName);
   return accounts.filter((item) => accountIds.has(item.account_id));
+}
+
+function getVisibleAlerts() {
+  const allAlerts = state.payload?.alerts || [];
+  const projectName = getSelectedProjectName();
+  if (projectName === "all") {
+    return allAlerts;
+  }
+  const projectAccountIds = getProjectAccountIds(projectName);
+  return allAlerts.filter((item) => projectAccountIds.has(item.account_id));
+}
+
+function getProjectSeries(projectName = getSelectedProjectName()) {
+  const accountSeries = state.payload?.account_series || {};
+  const grouped = new Map();
+  const accountIds =
+    projectName === "all"
+      ? new Set(Object.keys(accountSeries))
+      : getProjectAccountIds(projectName);
+  accountIds.forEach((accountId) => {
+    const series = accountSeries[accountId] || [];
+    series.forEach((point) => {
+      const date = String(point.date || "");
+      if (!date) return;
+      if (!grouped.has(date)) {
+        grouped.set(date, {
+          date,
+          fans: 0,
+          interaction: 0,
+          likes: 0,
+          comments: 0,
+          works: 0,
+        });
+      }
+      const bucket = grouped.get(date);
+      bucket.fans += Number(point.fans || 0);
+      bucket.interaction += Number(point.interaction || 0);
+      bucket.likes += Number(point.likes || 0);
+      bucket.comments += Number(point.comments || 0);
+      bucket.works += Number(point.works || 0);
+    });
+  });
+  return Array.from(grouped.values()).sort((a, b) => String(a.date).localeCompare(String(b.date)));
+}
+
+function getProjectTopContentRows(limit = 5) {
+  const rankings = state.payload?.rankings || {};
+  const sourceRows = rankings["单条点赞排行"] || [];
+  const projectName = getSelectedProjectName();
+  if (projectName === "all") {
+    return sourceRows.slice(0, limit);
+  }
+  const projectAccountIds = getProjectAccountIds(projectName);
+  return sourceRows.filter((item) => projectAccountIds.has(item.account_id)).slice(0, limit);
+}
+
+function getProjectAlertCount(projectName) {
+  if (!projectName || projectName === "all") {
+    return (state.payload?.alerts || []).length;
+  }
+  const projectAccountIds = getProjectAccountIds(projectName);
+  return (state.payload?.alerts || []).filter((item) => projectAccountIds.has(item.account_id)).length;
+}
+
+function getProjectHealth(project) {
+  const projectName = String(project?.name || "");
+  const syncStatus = project?.sync_status || {};
+  const alertCount = getProjectAlertCount(projectName);
+  const syncedAccounts = getProjectEntries(projectName).filter((entry) => entry.account_id).length;
+  if (String(syncStatus.state || "") === "error") {
+    return { level: "risk", label: "高风险", order: 0, alertCount, syncedAccounts };
+  }
+  if (alertCount > 0) {
+    return { level: "warning", label: "预警中", order: 1, alertCount, syncedAccounts };
+  }
+  if (String(syncStatus.state || "") === "running") {
+    return { level: "running", label: "同步中", order: 2, alertCount, syncedAccounts };
+  }
+  if (syncedAccounts === 0) {
+    return { level: "idle", label: "待补数", order: 3, alertCount, syncedAccounts };
+  }
+  return { level: "healthy", label: "稳定", order: 4, alertCount, syncedAccounts };
+}
+
+function getProjectFailureStage(projectSync = {}) {
+  const message = String(projectSync.message || "").trim();
+  const lastError = String(projectSync.last_error || "").trim();
+  const text = `${message} ${lastError}`;
+  if (!text) return "";
+  if (text.includes("登录态") || text.includes("登录页")) return "登录态异常";
+  if (text.includes("抓取失败") || text.includes("没有成功账号")) return "抓取失败";
+  if (text.includes("飞书上传失败") || text.includes("FieldNameNotFound") || text.includes("RolePermNotAllow")) return "飞书上传失败";
+  if (text.includes("网络") || text.includes("Connection aborted") || text.includes("RemoteDisconnected") || text.includes("timed out")) return "网络异常";
+  return "同步失败";
+}
+
+function getProjectFailureTime(projectSync = {}) {
+  return projectSync.finished_at || projectSync.updated_at || "";
+}
+
+function getScopedRankingRows(allRows, active, rankingScope = state.rankingScope, projectName = getSelectedProjectName()) {
+  const projectAccountIds = getProjectAccountIds(projectName);
+  if (rankingScope === "all") {
+    return projectName === "all"
+      ? allRows
+      : allRows.filter((item) => projectAccountIds.has(item.account_id));
+  }
+  if (active) {
+    return allRows.filter((item) => item.account_id === active.account_id);
+  }
+  return [];
 }
 
 function buildMonitorSearchText(entry) {
@@ -326,13 +594,50 @@ function renderAccountFocus() {
   const root = document.getElementById("accountFilterBar");
   const titleNode = document.getElementById("activeAccountTitle");
   const summaryNode = document.getElementById("activeAccountSummary");
+  const exportButton = document.getElementById("exportAccountRankingButton");
+  const exportProjectButton = document.getElementById("exportProjectRankingButton");
+  const projectName = getSelectedProjectName();
+  if (exportButton) {
+    exportButton.disabled = projectName === "all" || !getActiveAccount();
+  }
+  if (exportProjectButton) {
+    exportProjectButton.disabled = projectName === "all" || !getVisibleAccounts().length;
+  }
+  if (projectName === "all") {
+    titleNode.textContent = "当前账号";
+    summaryNode.textContent = "请选择单个项目后再进入账号视角，不再混合跨项目数据。";
+    root.innerHTML = `<div class="empty-state">先在上方项目卡中进入一个项目，再查看该项目内的账号。</div>`;
+    return;
+  }
   const accounts = getVisibleAccounts();
   const active = getActiveAccount();
   if (!accounts.length || !active) {
-    const projectName = getSelectedProjectName();
-    titleNode.textContent = projectName === "all" ? "当前账号" : `项目：${projectName}`;
-    summaryNode.textContent = projectName === "all" ? "暂无账号快照" : "当前项目下暂无已同步账号";
-    root.innerHTML = `<div class="empty-state">${projectName === "all" ? "暂无可切换账号。" : "当前项目下暂无可切换账号。"}</div>`;
+    titleNode.textContent = `项目：${projectName}`;
+    summaryNode.textContent =
+      `当前默认展示项目「${projectName}」总览，点一个账号进入单账号视角。`;
+    root.innerHTML = `
+      <button class="account-filter-button is-active" data-account-id="">
+        ${projectName} 总览
+      </button>
+      ${
+        accounts
+          .map(
+            (item) => `
+              <button class="account-filter-button" data-account-id="${item.account_id}">
+                ${item.account}
+              </button>
+            `,
+          )
+          .join("")
+      }
+    `;
+    root.querySelectorAll(".account-filter-button").forEach((button) => {
+      button.addEventListener("click", () => {
+        state.activeAccountId = button.dataset.accountId || "";
+        state.rankingScope = state.activeAccountId ? "account" : "all";
+        renderApp();
+      });
+    });
     return;
   }
   titleNode.textContent = active.account;
@@ -352,14 +657,394 @@ function renderAccountFocus() {
   root.querySelectorAll(".account-filter-button").forEach((button) => {
     button.addEventListener("click", () => {
       state.activeAccountId = button.dataset.accountId || "";
+      state.rankingScope = state.activeAccountId ? "account" : "all";
       renderApp();
     });
   });
 }
 
+async function exportCurrentAccountRankings() {
+  const resultNode = document.getElementById("accountExportResult");
+  const exportDirNode = document.getElementById("accountRankingExportDir");
+  const active = getActiveAccount();
+  const projectName = getSelectedProjectName();
+  if (!active || !active.account_id) {
+    throw new Error("请先选择一个账号后再导出");
+  }
+  if (projectName === "all") {
+    throw new Error("请先进入单个项目后再导出");
+  }
+  resultNode.textContent = "正在导出当前账号点赞/评论榜单...";
+  const response = await fetch("/api/account-rankings/export", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      account_id: active.account_id,
+      project: projectName,
+      export_dir: String(exportDirNode?.value || "").trim(),
+    }),
+  });
+  const payload = await response.json();
+  if (!response.ok || !payload.ok) {
+    throw new Error(payload.message || `导出失败: ${response.status}`);
+  }
+  if (exportDirNode && !exportDirNode.value && payload.export_dir) {
+    exportDirNode.value = payload.account_dir || payload.export_dir;
+  }
+  resultNode.textContent = `已导出快照 ${payload.snapshot_time} · 点赞 ${payload.like_count} 条 · 评论 ${payload.comment_count} 条 · 目录 ${payload.export_dir}`;
+}
+
+async function exportCurrentProjectRankings() {
+  const resultNode = document.getElementById("accountExportResult");
+  const exportDirNode = document.getElementById("accountRankingExportDir");
+  const projectName = getSelectedProjectName();
+  const accounts = getVisibleAccounts();
+  if (projectName === "all") {
+    throw new Error("请先进入单个项目后再导出");
+  }
+  if (!accounts.length) {
+    throw new Error("当前项目没有可导出的账号");
+  }
+  resultNode.textContent = `正在导出项目「${projectName}」复盘快照...`;
+  const response = await fetch("/api/project-rankings/export", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      project: projectName,
+      account_ids: accounts.map((item) => item.account_id).filter(Boolean),
+      export_dir: String(exportDirNode?.value || "").trim(),
+    }),
+  });
+  const payload = await response.json();
+  if (!response.ok || !payload.ok) {
+    throw new Error(payload.message || `项目导出失败: ${response.status}`);
+  }
+  if (exportDirNode && !exportDirNode.value && payload.project_dir) {
+    exportDirNode.value = payload.project_dir;
+  }
+  resultNode.textContent = `已导出项目快照 ${payload.snapshot_time} · 账号 ${payload.account_count} 个 · 点赞 ${payload.like_count} 条 · 评论 ${payload.comment_count} 条 · 目录 ${payload.export_dir}${payload.compare ? " · 已生成快照对比" : ""}`;
+}
+
+function renderProjectHome() {
+  const projectName = getSelectedProjectName();
+  const projects = state.monitoring?.projects || [];
+  const entries = getProjectEntries(projectName);
+  const accounts = getVisibleAccounts();
+  const alerts = getVisibleAlerts();
+  const topAccounts = [...accounts]
+    .sort((a, b) => (b.fans - a.fans) || (b.interaction - a.interaction) || (b.likes - a.likes))
+    .slice(0, 5);
+  const topContents = getProjectTopContentRows(5);
+  const projectStatus = getProjectStatus(projectName);
+  const projectSeries = getProjectSeries(projectName);
+  const projectGrowth = buildProjectComparableGrowth(projectName, 7);
+
+  const titleNode = document.getElementById("projectHomeTitle");
+  const summaryNode = document.getElementById("projectHomeSummary");
+  const statsNode = document.getElementById("projectHomeStats");
+  const topAccountsNode = document.getElementById("projectTopAccounts");
+  const topContentsNode = document.getElementById("projectTopContents");
+  const trendTitleNode = document.getElementById("projectHomeTrendTitle");
+  const trendSummaryNode = document.getElementById("projectHomeTrendSummary");
+  const trendChartNode = document.getElementById("projectHomeTrendChart");
+  const comparePanelNode = document.getElementById("projectComparePanel");
+
+  if (projectName === "all") {
+    titleNode.textContent = "请选择单个项目";
+    summaryNode.textContent = "项目首页默认只展示单项目运营数据，请先从上方项目卡进入一个项目。";
+    statsNode.innerHTML = `<div class="empty-state">请选择单个项目后查看该项目的总览指标。</div>`;
+    topAccountsNode.innerHTML = `<div class="empty-state">请选择单个项目后查看项目内 Top 账号。</div>`;
+    topContentsNode.innerHTML = `<div class="empty-state">请选择单个项目后查看项目内 Top 内容。</div>`;
+    trendTitleNode.textContent = "项目近 7 天成长";
+    trendSummaryNode.textContent = "请选择单个项目后查看项目趋势。";
+    trendChartNode.innerHTML = `<div class="empty-state">当前不再显示全部项目的混合趋势。</div>`;
+    comparePanelNode.innerHTML = `<div class="empty-state">请选择单个项目后查看最近一次项目快照对比。</div>`;
+    return;
+  }
+  titleNode.textContent = `项目：${projectName}`;
+  const latestExport = (projects.find((item) => item.name === projectName) || {}).latest_export || {};
+  const latestCompare = latestExport.compare || {};
+
+  const totalFans = accounts.reduce((sum, item) => sum + Number(item.fans || 0), 0);
+  const totalInteraction = accounts.reduce((sum, item) => sum + Number(item.interaction || 0), 0);
+  const totalComments = accounts.reduce((sum, item) => sum + Number(item.comments || 0), 0);
+  const summaryParts = [];
+  summaryParts.push(`监测 ${formatNumber(entries.length)} 个账号`);
+  summaryParts.push(`已同步 ${formatNumber(accounts.length)} 个账号`);
+  if (projectStatus.last_success_at || projectStatus.finished_at) {
+    summaryParts.push(`最近成功 ${formatDateTime(projectStatus.last_success_at || projectStatus.finished_at)}`);
+  } else if (projectStatus.updated_at) {
+    summaryParts.push(`最近状态 ${formatDateTime(projectStatus.updated_at)}`);
+  }
+  if (projectGrowth) {
+    if (projectGrowth.comparable_ready) {
+      summaryParts.push(
+        `${projectGrowth.label} 可比账号 ${formatNumber(projectGrowth.comparable_account_count)} 个 · 粉丝 ${formatSignedNumber(projectGrowth.fans)} / 点赞 ${formatSignedNumber(projectGrowth.likes)} / 评论 ${formatSignedNumber(projectGrowth.comments)}`,
+      );
+    } else {
+      summaryParts.push(`${projectGrowth.label} 暂无可比账号`);
+    }
+    if (projectGrowth.new_account_count) {
+      summaryParts.push(`新增账号 ${formatNumber(projectGrowth.new_account_count)} 个`);
+    }
+  }
+  summaryParts.push("作品口径按每个账号前 30 条作品统计");
+  summaryParts.push("飞书仅做留底与协作展示");
+  summaryNode.textContent = summaryParts.join(" · ");
+
+  const statCards = [
+    ["监测账号数", formatNumber(entries.length), "当前项目监测账号总数"],
+    ["已同步账号数", formatNumber(accounts.length), "当前已有快照数据的账号数"],
+    [
+      "可比账号数",
+      projectGrowth ? formatNumber(projectGrowth.comparable_account_count || 0) : "-",
+      projectGrowth ? `${projectGrowth.start_date} → ${projectGrowth.end_date} 连续留底账号` : "历史不足，暂不显示可比账号",
+    ],
+    [
+      "新增账号数",
+      projectGrowth ? formatNumber(projectGrowth.new_account_count || 0) : "-",
+      projectGrowth ? `${projectGrowth.start_date} → ${projectGrowth.end_date} 新进入统计窗口的账号` : "历史不足，暂不显示新增账号",
+    ],
+    ["项目粉丝总量", formatNumber(totalFans), "项目内账号当前粉丝总量"],
+    ["项目获赞收藏", formatNumber(totalInteraction), "项目内账号当前获赞收藏总量"],
+    ["项目评论总量", formatNumber(totalComments), "项目内账号首页可见作品评论合计"],
+    [
+      "近7天可比作品增量",
+      projectGrowth && projectGrowth.comparable_ready ? formatSignedNumber(projectGrowth.works) : "-",
+      projectGrowth
+        ? `${projectGrowth.start_date} → ${projectGrowth.end_date} · 仅统计 ${formatNumber(projectGrowth.comparable_account_count)} 个可比账号`
+        : "历史不足，暂不显示作品增长",
+    ],
+    ["评论预警数", formatNumber(alerts.length), "当前项目命中的评论预警条数"],
+  ];
+  if (projectGrowth) {
+    const comparableHint = projectGrowth.comparable_ready
+      ? `${projectGrowth.start_date} → ${projectGrowth.end_date} · 仅统计 ${formatNumber(projectGrowth.comparable_account_count)} 个可比账号`
+      : `${projectGrowth.start_date} → ${projectGrowth.end_date} · 暂无可比账号`;
+    statCards.push(["近7天可比粉丝增量", projectGrowth.comparable_ready ? formatSignedNumber(projectGrowth.fans) : "-", comparableHint]);
+    statCards.push(["近7天可比点赞增量", projectGrowth.comparable_ready ? formatSignedNumber(projectGrowth.likes) : "-", comparableHint]);
+    statCards.push(["近7天可比评论增量", projectGrowth.comparable_ready ? formatSignedNumber(projectGrowth.comments) : "-", comparableHint]);
+  }
+  statsNode.innerHTML = statCards
+    .map(
+      ([label, value, hint]) => `
+        <article class="portal-card project-home-stat-card">
+          <div class="label">${label}</div>
+          <div class="value">${value}</div>
+          <div class="hint">${hint}</div>
+        </article>
+      `,
+    )
+    .join("");
+
+  if (!latestExport.snapshot_time) {
+    comparePanelNode.innerHTML = `<div class="empty-state">当前项目还没有导出快照，先点“导出当前项目快照”。</div>`;
+  } else if (!latestCompare || !latestCompare.current_snapshot_time) {
+    comparePanelNode.innerHTML = `
+      <article class="project-compare-card">
+        <div class="project-compare-title">最近一次项目快照</div>
+        <div class="project-compare-meta">快照 ${latestExport.snapshot_time}</div>
+        <div class="project-compare-empty">当前还没有可对比的上一版快照。再导出一次就会自动生成对比。</div>
+      </article>
+    `;
+  } else {
+    const changedAccounts = latestCompare.changed_accounts || [];
+    comparePanelNode.innerHTML = `
+      <article class="project-compare-card">
+        <div class="project-compare-title">最近一次项目快照对比</div>
+        <div class="project-compare-meta">${latestCompare.previous_snapshot_time} → ${latestCompare.current_snapshot_time}</div>
+        <div class="project-compare-summary">${buildCompareSummaryLine(latestCompare)}</div>
+        <div class="project-compare-grid">
+          <div class="project-compare-chip">新增账号 ${formatNumber((latestCompare.added_accounts || []).length)}</div>
+          <div class="project-compare-chip">退出账号 ${formatNumber((latestCompare.removed_accounts || []).length)}</div>
+          <div class="project-compare-chip">变化账号 ${formatNumber(changedAccounts.length)}</div>
+        </div>
+        <div class="project-compare-list">
+          ${
+            changedAccounts.length
+              ? changedAccounts
+                  .slice(0, 5)
+                  .map(
+                    (item) => {
+                      const likeCompare = item.like_compare || {};
+                      const commentCompare = item.comment_compare || {};
+                      const detailParts = [];
+                      if (likeCompare.new_entries?.length) {
+                        detailParts.push(`点赞新进榜 ${likeCompare.new_entries.slice(0, 2).map((entry) => entry.title).join(" / ")}`);
+                      }
+                      if (likeCompare.moved_up?.length) {
+                        detailParts.push(`点赞升榜 ${likeCompare.moved_up.slice(0, 2).map((entry) => entry.title).join(" / ")}`);
+                      }
+                      if (likeCompare.dropped_entries?.length) {
+                        detailParts.push(`点赞掉榜 ${likeCompare.dropped_entries.slice(0, 2).map((entry) => entry.title).join(" / ")}`);
+                      }
+                      if (commentCompare.new_entries?.length) {
+                        detailParts.push(`评论新进榜 ${commentCompare.new_entries.slice(0, 2).map((entry) => entry.title).join(" / ")}`);
+                      }
+                      if (commentCompare.moved_up?.length) {
+                        detailParts.push(`评论升榜 ${commentCompare.moved_up.slice(0, 2).map((entry) => entry.title).join(" / ")}`);
+                      }
+                      if (commentCompare.dropped_entries?.length) {
+                        detailParts.push(`评论掉榜 ${commentCompare.dropped_entries.slice(0, 2).map((entry) => entry.title).join(" / ")}`);
+                      }
+                      return `
+                      <div class="project-compare-item">
+                        <div class="project-compare-item-title">${item.account}</div>
+                        <div class="project-compare-item-meta">点赞 ${formatSignedNumber(item.like_delta)} · 评论 ${formatSignedNumber(item.comment_delta)}</div>
+                        <div class="project-compare-item-detail">
+                          ${detailParts.join(" · ")}
+                        </div>
+                      </div>
+                    `;
+                    },
+                  )
+                  .join("")
+              : '<div class="project-compare-empty">本次快照和上次相比没有明显榜单变化。</div>'
+          }
+        </div>
+      </article>
+    `;
+  }
+
+  if (!topAccounts.length) {
+    topAccountsNode.innerHTML = `<div class="empty-state">${projectName === "all" ? "暂无项目账号快照。" : "当前项目下暂无已同步账号。"}</div>`;
+  } else {
+    topAccountsNode.innerHTML = topAccounts
+      .map(
+        (item, index) => `
+          <article class="project-home-item">
+            <div class="project-home-rank">${index + 1}</div>
+            <div class="project-home-item-body">
+              <div class="project-home-item-title">${item.profile_url ? `<a class="note-link" href="${item.profile_url}" target="_blank" rel="noreferrer">${item.account}</a>` : item.account}</div>
+              <div class="project-home-item-meta">粉丝 ${formatNumber(item.fans)} · 获赞 ${formatNumber(item.interaction)} · 作品 ${item.works_display || formatNumber(item.works)}</div>
+            </div>
+          </article>
+        `,
+      )
+      .join("");
+  }
+
+  if (!topContents.length) {
+    topContentsNode.innerHTML = `<div class="empty-state">${projectName === "all" ? "暂无项目内容排行。" : "当前项目下暂无内容排行。"}</div>`;
+  } else {
+    topContentsNode.innerHTML = topContents
+      .map(
+        (item, index) => `
+          <article class="project-home-item is-content">
+            <div class="project-home-rank">${index + 1}</div>
+            <div class="project-home-cover-shell">
+              ${buildCoverMarkup(item, { size: "mini", rank: "" })}
+            </div>
+            <div class="project-home-item-body">
+              <div class="project-home-item-title">${item.note_url ? `<a class="note-link" href="${item.note_url}" target="_blank" rel="noreferrer">${item.title}</a>` : item.title}</div>
+              <div class="project-home-item-meta">${item.account} · 点赞 ${formatNumber(item.metric)}</div>
+            </div>
+          </article>
+        `,
+      )
+      .join("");
+  }
+
+  trendTitleNode.textContent = `${projectName} · 近 7 天成长`;
+  trendSummaryNode.textContent = projectGrowth
+    ? projectGrowth.comparable_ready
+      ? `${projectGrowth.start_date} → ${projectGrowth.end_date} · 可比账号 ${formatNumber(projectGrowth.comparable_account_count)} 个 · 粉丝 ${formatSignedNumber(projectGrowth.fans)} / 点赞 ${formatSignedNumber(projectGrowth.likes)} / 评论 ${formatSignedNumber(projectGrowth.comments)}${projectGrowth.new_account_count ? ` · 新增账号 ${formatNumber(projectGrowth.new_account_count)} 个` : ""}`
+      : `${projectGrowth.start_date} → ${projectGrowth.end_date} · 暂无可比账号${projectGrowth.new_account_count ? ` · 新增账号 ${formatNumber(projectGrowth.new_account_count)} 个` : ""}`
+    : "历史不足，暂不显示项目级周对比";
+  trendChartNode.innerHTML = buildProjectTrendMarkup(projectSeries, projectGrowth, projectName);
+}
+
+function buildProjectTrendMarkup(series, delta, projectName) {
+  if (!series.length) {
+    return `<div class="empty-state">${projectName === "all" ? "暂无项目趋势数据。" : "当前项目下暂无趋势数据。"}</div>`;
+  }
+
+  const width = 1000;
+  const height = 280;
+  const pad = { top: 20, right: 30, bottom: 34, left: 46 };
+  const innerWidth = width - pad.left - pad.right;
+  const innerHeight = height - pad.top - pad.bottom;
+  const fans = series.map((item) => Number(item.fans || 0));
+  const comments = series.map((item) => Number(item.comments || 0));
+  const step = series.length > 1 ? innerWidth / (series.length - 1) : 0;
+  const pointX = (index) => (series.length > 1 ? pad.left + step * index : pad.left + innerWidth / 2);
+  const buildPointY = (values) => {
+    const minValue = Math.min(...values);
+    const maxValue = Math.max(...values);
+    const span = maxValue - minValue;
+    return (value) => {
+      if (!span) {
+        return pad.top + innerHeight / 2;
+      }
+      return pad.top + innerHeight - ((value - minValue) / span) * innerHeight;
+    };
+  };
+  const pointYFans = buildPointY(fans);
+  const pointYComments = buildPointY(comments);
+  const linePath = (values, pointY) =>
+    values
+      .map((value, index) => {
+        const x = pointX(index);
+        const y = pointY(value);
+        return `${index === 0 ? "M" : "L"} ${x.toFixed(2)} ${y.toFixed(2)}`;
+      })
+      .join(" ");
+  const points = (values, color, pointY) =>
+    values
+      .map((value, index) => `<circle cx="${pointX(index)}" cy="${pointY(value)}" r="5" fill="${color}" />`)
+      .join("");
+  const labels = series
+    .map((item, index) => `<text class="chart-label" x="${pointX(index)}" y="${height - 10}" text-anchor="middle">${String(item.date).slice(5)}</text>`)
+    .join("");
+
+  return `
+    <svg class="chart-svg" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none">
+      <defs>
+        <linearGradient id="projectFansStroke" x1="0%" y1="0%" x2="100%" y2="0%">
+          <stop offset="0%" stop-color="#ffd166" />
+          <stop offset="100%" stop-color="#ff9f1c" />
+        </linearGradient>
+        <linearGradient id="projectCommentsStroke" x1="0%" y1="0%" x2="100%" y2="0%">
+          <stop offset="0%" stop-color="#7fdcc2" />
+          <stop offset="100%" stop-color="#52c3a1" />
+        </linearGradient>
+      </defs>
+      <path d="${linePath(fans, pointYFans)}" fill="none" stroke="url(#projectFansStroke)" stroke-width="4" stroke-linecap="round" />
+      <path d="${linePath(comments, pointYComments)}" fill="none" stroke="url(#projectCommentsStroke)" stroke-width="4" stroke-linecap="round" />
+      ${points(fans, "#ffb347", pointYFans)}
+      ${points(comments, "#52c3a1", pointYComments)}
+      ${labels}
+    </svg>
+    <div class="chart-legend">
+      <span><span class="legend-dot" style="background:#ff9f1c"></span>项目粉丝 ${formatNumber(fans[0])} → ${formatNumber(fans[fans.length - 1])}</span>
+      <span><span class="legend-dot" style="background:#52c3a1"></span>项目评论 ${formatNumber(comments[0])} → ${formatNumber(comments[comments.length - 1])}</span>
+    </div>
+    ${
+      delta
+        ? delta.comparable_ready
+          ? `<div class="chart-delta-row">
+              <span class="delta-chip">${delta.label}</span>
+              <span class="delta-chip">可比账号 ${formatNumber(delta.comparable_account_count)} 个</span>
+              <span class="delta-chip">粉丝 ${formatSignedNumber(delta.fans)}</span>
+              <span class="delta-chip">点赞 ${formatSignedNumber(delta.likes)}</span>
+              <span class="delta-chip">评论 ${formatSignedNumber(delta.comments)}</span>
+              ${delta.new_account_count ? `<span class="delta-chip">新增账号 ${formatNumber(delta.new_account_count)} 个</span>` : ""}
+            </div>`
+          : `<div class="chart-delta-row">
+              <span class="delta-chip">${delta.label}</span>
+              <span class="delta-chip">暂无可比账号</span>
+              ${delta.new_account_count ? `<span class="delta-chip">新增账号 ${formatNumber(delta.new_account_count)} 个</span>` : ""}
+            </div>`
+        : `<div class="chart-delta-row"><span class="delta-chip">历史不足，暂不显示项目级涨跌</span></div>`
+    }
+    <div class="chart-caption">折线展示项目当前总量趋势，含新增账号；下方涨跌仅统计窗口内连续留底的可比账号，避免新增账号导致增量失真。</div>
+  `;
+}
+
 function renderMonitoring() {
   const monitoring = state.monitoring || {};
   const syncStatus = monitoring.sync_status || {};
+  const uploadStatus = syncStatus.upload_status || {};
   const profileLookupError = monitoring.profile_lookup_error || "";
   const loginState = monitoring.login_state || {};
   const proxyPool = monitoring.proxy_pool || {};
@@ -390,6 +1075,8 @@ function renderMonitoring() {
   document.getElementById("monitorPageSize").value = String(state.monitorPageSize);
   renderMonitorProjectFilterOptions(projects);
   renderProjectCards(projects, syncStatus);
+  document.getElementById("monitorViewTable").classList.toggle("is-active", state.monitorViewMode === "table");
+  document.getElementById("monitorViewCards").classList.toggle("is-active", state.monitorViewMode === "cards");
   document.querySelectorAll(".monitor-filter-button").forEach((button) => {
     button.classList.toggle("is-active", (button.dataset.monitorFilter || "all") === state.monitorFilter);
   });
@@ -416,6 +1103,15 @@ function renderMonitoring() {
   if (syncStatus.summary?.total_accounts) {
     summaryChips.push(`最近同步 ${formatNumber(syncStatus.summary.total_accounts)} 账号 / ${formatNumber(syncStatus.summary.total_works || 0)} 作品`);
   }
+  if (uploadStatus.state === "running") {
+    summaryChips.push(`飞书上传中 · ${getUploadScopeLabel(uploadStatus.scope, uploadStatus.summary?.project || "")}`);
+  } else if (uploadStatus.state === "queued") {
+    summaryChips.push(`飞书上传排队中 · ${getUploadScopeLabel(uploadStatus.scope, uploadStatus.summary?.project || "")}`);
+  } else if (uploadStatus.state === "error") {
+    summaryChips.push(`飞书上传失败 · ${getUploadScopeLabel(uploadStatus.scope, uploadStatus.summary?.project || "")}`);
+  } else if (uploadStatus.state === "success" && uploadStatus.summary?.successful_accounts) {
+    summaryChips.push(`${getUploadScopeLabel(uploadStatus.scope, uploadStatus.summary?.project || "")}已上传 ${formatNumber(uploadStatus.summary.successful_accounts)} 账号`);
+  }
   if (profileLookupError) {
     summaryChips.push("账号摘要读取失败，已回退本地清单");
   }
@@ -434,42 +1130,93 @@ function renderMonitoring() {
     listNode.innerHTML = `<div class="empty-state">当前筛选条件下没有账号，换个关键词或状态再试。</div>`;
     return;
   }
-
-  listNode.innerHTML = page.items
-    .map(
-      (entry) => `
-        <article class="monitor-item ${entry.active ? "" : "is-paused"}">
-          <div class="monitor-main">
-            <div class="monitor-title-row">
-              <a class="monitor-chip" href="${entry.profile_url || entry.url}" target="_blank" rel="noreferrer" title="${entry.url}">
-                ${entry.display_name || truncateMiddle(entry.url, 82)}
-              </a>
-              <span class="monitor-project-pill">${entry.project || "默认项目"}</span>
-              <span class="monitor-state-pill ${entry.active ? "is-active" : "is-paused"}">${entry.active ? "监测中" : "已暂停"}</span>
-              <span class="monitor-fetch-pill is-${entry.fetch_state || "checking"}">${getFetchStateText(entry.fetch_state)}</span>
+  if (state.monitorViewMode === "table") {
+    listNode.className = "monitor-table";
+    listNode.innerHTML = `
+      <div class="monitor-table-head">
+        <span>账号</span>
+        <span>项目 / 状态</span>
+        <span>摘要</span>
+        <span>操作</span>
+      </div>
+      ${page.items
+        .map(
+          (entry) => `
+            <article class="monitor-table-row ${entry.active ? "" : "is-paused"}">
+              <div class="monitor-table-account">
+                <a class="monitor-chip" href="${entry.profile_url || entry.url}" target="_blank" rel="noreferrer" title="${entry.url}">
+                  ${entry.display_name || truncateMiddle(entry.url, 64)}
+                </a>
+                <div class="monitor-link-text" title="${entry.url}">${truncateMiddle(entry.url, 56)}</div>
+              </div>
+              <div class="monitor-table-status">
+                <span class="monitor-project-pill">${entry.project || "默认项目"}</span>
+                <span class="monitor-state-pill ${entry.active ? "is-active" : "is-paused"}">${entry.active ? "监测中" : "已暂停"}</span>
+                <span class="monitor-fetch-pill is-${entry.fetch_state || "checking"}">${getFetchStateText(entry.fetch_state)}</span>
+              </div>
+              <div class="monitor-table-summary">
+                <div class="monitor-summary-row">
+                  <span class="monitor-summary-chip">ID ${entry.account_id || "-"}</span>
+                  <span class="monitor-summary-chip">${entry.summary_text || "暂无快照摘要"}</span>
+                  <span class="monitor-summary-chip is-time" title="${entry.fetch_checked_at || ""}">采集 ${formatDateTime(entry.fetch_checked_at)}</span>
+                </div>
+                <div class="monitor-link-text">${entry.fetch_message || "等待首次同步"}</div>
+              </div>
+              <div class="monitor-item-actions is-table">
+                <button class="monitor-inline-button monitor-toggle-button" data-url="${entry.url}" data-active="${entry.active ? "0" : "1"}">
+                  ${entry.active ? "暂停" : "恢复"}
+                </button>
+                <button class="monitor-inline-button monitor-retry-button" data-url="${entry.url}">
+                  重试
+                </button>
+                <button class="monitor-inline-button danger-button monitor-remove-button" data-url="${entry.url}">
+                  删除
+                </button>
+              </div>
+            </article>
+          `,
+        )
+        .join("")}
+    `;
+  } else {
+    listNode.className = "monitor-list";
+    listNode.innerHTML = page.items
+      .map(
+        (entry) => `
+          <article class="monitor-item ${entry.active ? "" : "is-paused"}">
+            <div class="monitor-main">
+              <div class="monitor-title-row">
+                <a class="monitor-chip" href="${entry.profile_url || entry.url}" target="_blank" rel="noreferrer" title="${entry.url}">
+                  ${entry.display_name || truncateMiddle(entry.url, 82)}
+                </a>
+                <span class="monitor-project-pill">${entry.project || "默认项目"}</span>
+                <span class="monitor-state-pill ${entry.active ? "is-active" : "is-paused"}">${entry.active ? "监测中" : "已暂停"}</span>
+                <span class="monitor-fetch-pill is-${entry.fetch_state || "checking"}">${getFetchStateText(entry.fetch_state)}</span>
+              </div>
+              <div class="monitor-summary-row">
+                <span class="monitor-summary-chip">账号ID ${entry.account_id || "-"}</span>
+                <span class="monitor-summary-chip">${entry.summary_text || "暂无快照摘要"}</span>
+                <span class="monitor-summary-chip is-time" title="${entry.fetch_checked_at || ""}">采集 ${formatDateTime(entry.fetch_checked_at)}</span>
+                <span class="monitor-summary-chip ${entry.fetch_state === "error" ? "is-error" : entry.fetch_state === "ok" ? "is-success" : ""}">${entry.fetch_message || "等待首次同步"}</span>
+              </div>
+              <div class="monitor-link-text" title="${entry.url}">主页 ${truncateMiddle(entry.url, 72)}</div>
             </div>
-            <div class="monitor-summary-row">
-              <span class="monitor-summary-chip">账号ID ${entry.account_id || "-"}</span>
-              <span class="monitor-summary-chip">${entry.summary_text || "暂无快照摘要"}</span>
-              <span class="monitor-summary-chip ${entry.fetch_state === "error" ? "is-error" : entry.fetch_state === "ok" ? "is-success" : ""}">${entry.fetch_message || "等待首次同步"}</span>
+            <div class="monitor-item-actions">
+              <button class="monitor-inline-button monitor-toggle-button" data-url="${entry.url}" data-active="${entry.active ? "0" : "1"}">
+                ${entry.active ? "暂停" : "恢复"}
+              </button>
+              <button class="monitor-inline-button monitor-retry-button" data-url="${entry.url}">
+                重试
+              </button>
+              <button class="monitor-inline-button danger-button monitor-remove-button" data-url="${entry.url}">
+                删除
+              </button>
             </div>
-            <div class="monitor-link-text">${truncateMiddle(entry.url, 96)}</div>
-          </div>
-          <div class="monitor-item-actions">
-            <button class="monitor-inline-button monitor-toggle-button" data-url="${entry.url}" data-active="${entry.active ? "0" : "1"}">
-              ${entry.active ? "暂停" : "恢复"}
-            </button>
-            <button class="monitor-inline-button monitor-retry-button" data-url="${entry.url}">
-              重试
-            </button>
-            <button class="monitor-inline-button danger-button monitor-remove-button" data-url="${entry.url}">
-              删除
-            </button>
-          </div>
-        </article>
-      `,
-    )
-    .join("");
+          </article>
+        `,
+      )
+      .join("");
+  }
   listNode.querySelectorAll(".monitor-toggle-button").forEach((button) => {
     button.addEventListener("click", () => {
       toggleMonitoredAccount(button.dataset.url, button.dataset.active === "1").catch((error) => {
@@ -497,14 +1244,51 @@ function renderSyncProgress(syncStatus) {
   const root = document.getElementById("syncProgressCard");
   if (!root) return;
   const progress = syncStatus?.progress || {};
+  const uploadStatus = syncStatus?.upload_status || {};
+  const uploadProgress = uploadStatus?.progress || {};
   const percent = Math.max(0, Math.min(100, Number(progress.overall_percent || 0)));
   const phasePercent = Math.max(0, Math.min(100, Number(progress.phase_percent || 0)));
   const detailText = progress.detail_text || syncStatus?.message || "当前未开始同步";
   const elapsedText = progress.elapsed_text ? `已用 ${progress.elapsed_text}` : "";
   const etaText = progress.eta_text ? `预计剩余 ${progress.eta_text}` : syncStatus?.state === "running" ? "预计剩余计算中" : "";
+  const uploadPercent = Math.max(0, Math.min(100, Number(uploadProgress.overall_percent || 0)));
+  const uploadElapsedText = uploadProgress.elapsed_text ? `已用 ${uploadProgress.elapsed_text}` : "";
+  const uploadEtaText =
+    uploadProgress.eta_text ? `预计剩余 ${uploadProgress.eta_text}` : uploadStatus?.state === "running" ? "预计剩余计算中" : "";
+  const uploadScopeLabel = getUploadScopeLabel(uploadStatus?.scope, uploadStatus?.summary?.project || "");
+  const syncLastSuccessAt = syncStatus?.last_success_at ? formatDateTime(syncStatus.last_success_at) : "";
+  const syncLastFinishedAt = syncStatus?.finished_at ? formatDateTime(syncStatus.finished_at) : "";
+  const syncLastError = String(syncStatus?.last_error || "").trim();
+  const uploadLastSuccessAt = uploadStatus?.last_success_at ? formatDateTime(uploadStatus.last_success_at) : "";
+  const uploadLastFinishedAt = uploadStatus?.finished_at ? formatDateTime(uploadStatus.finished_at) : "";
+  const uploadLastError = String(uploadStatus?.last_error || "").trim();
 
-  if (syncStatus?.state !== "running" && !progress.phase) {
-    root.innerHTML = `<div class="sync-progress-empty">当前没有进行中的同步任务。</div>`;
+  if (syncStatus?.state !== "running" && !progress.phase && (!uploadStatus?.state || uploadStatus.state === "idle")) {
+    root.innerHTML = `
+      <div class="sync-progress-idle-grid">
+        <section class="sync-progress-idle-block">
+          <div class="sync-progress-title">看板同步</div>
+          <div class="sync-progress-subtitle">当前无活动同步任务</div>
+          <div class="sync-progress-meta">
+            <span class="sync-progress-chip">状态 待命</span>
+            ${syncLastSuccessAt ? `<span class="sync-progress-chip is-success">最近成功 ${syncLastSuccessAt}</span>` : ""}
+            ${syncLastFinishedAt && !syncLastSuccessAt ? `<span class="sync-progress-chip">最近结束 ${syncLastFinishedAt}</span>` : ""}
+            ${syncLastError ? `<span class="sync-progress-chip is-error">${truncateMiddle(syncLastError, 72)}</span>` : ""}
+          </div>
+        </section>
+        <section class="sync-progress-idle-block">
+          <div class="sync-progress-title">飞书上传</div>
+          <div class="sync-progress-subtitle">当前无活动上传任务 · 默认目标 ${uploadScopeLabel}</div>
+          <div class="sync-progress-meta">
+            <span class="sync-progress-chip">状态 待命</span>
+            <span class="sync-progress-chip">${uploadScopeLabel}</span>
+            ${uploadLastSuccessAt ? `<span class="sync-progress-chip is-success">最近成功 ${uploadLastSuccessAt}</span>` : ""}
+            ${uploadLastFinishedAt && !uploadLastSuccessAt ? `<span class="sync-progress-chip">最近结束 ${uploadLastFinishedAt}</span>` : ""}
+            ${uploadLastError ? `<span class="sync-progress-chip is-error">${truncateMiddle(uploadLastError, 72)}</span>` : ""}
+          </div>
+        </section>
+      </div>
+    `;
     return;
   }
 
@@ -517,10 +1301,35 @@ function renderSyncProgress(syncStatus) {
     { text: progress.works ? `${formatNumber(progress.works)} 条作品` : "", tone: "" },
   ].filter((item) => item.text);
 
+  const uploadChips = [
+    { text: uploadProgress.phase_label || (uploadStatus?.state === "success" ? "飞书上传完成" : uploadStatus?.state === "error" ? "飞书上传失败" : uploadStatus?.state === "running" ? "飞书后台上传" : uploadStatus?.state === "queued" ? "飞书上传排队中" : ""), tone: "" },
+    { text: uploadScopeLabel, tone: "" },
+    { text: uploadProgress.total ? `${formatNumber(uploadProgress.current || 0)} / ${formatNumber(uploadProgress.total || 0)}` : "", tone: "" },
+    { text: `成功 ${formatNumber(uploadProgress.success_count || uploadStatus?.summary?.successful_accounts || 0)}`, tone: "success" },
+    { text: `失败 ${formatNumber(uploadProgress.failed_count || uploadStatus?.summary?.failed_accounts || 0)}`, tone: (uploadProgress.failed_count || uploadStatus?.summary?.failed_accounts) ? "error" : "" },
+    { text: uploadProgress.account ? truncateMiddle(uploadProgress.account, 26) : "", tone: "" },
+  ].filter((item) => item.text);
+
+  const showUploadSection =
+    uploadStatus?.state && (uploadStatus.state !== "idle" || uploadProgress.phase || uploadStatus.message || uploadStatus.last_success_at || uploadStatus.last_error);
+  const uploadMessage =
+    uploadProgress.detail_text ||
+    uploadStatus?.message ||
+    "飞书上传待命";
+  const uploadMeta = [
+    uploadProgress.phase_percent ? `阶段进度 ${formatNumber(uploadProgress.phase_percent)}%` : "",
+    uploadElapsedText,
+    uploadEtaText,
+  ].filter(Boolean);
+  const uploadSummaryItems = buildUploadSummaryItems(uploadStatus);
+  const showUploadSummary =
+    uploadStatus?.state === "success" &&
+    uploadSummaryItems.some((item) => Number(item.value || 0) > 0);
+
   root.innerHTML = `
     <div class="sync-progress-top">
       <div>
-        <div class="sync-progress-title">同步进度</div>
+        <div class="sync-progress-title">看板同步</div>
         <div class="sync-progress-subtitle">${detailText}</div>
       </div>
       <div class="sync-progress-percent">${formatNumber(percent)}%</div>
@@ -534,6 +1343,36 @@ function renderSyncProgress(syncStatus) {
       ${etaText ? `<span>${etaText}</span>` : ""}
       ${chips.map((item) => `<span class="sync-progress-chip ${item.tone ? `is-${item.tone}` : ""}">${item.text}</span>`).join("")}
     </div>
+    ${
+      showUploadSection
+        ? `
+    <div class="sync-progress-secondary">
+      <div class="sync-progress-top sync-progress-top-secondary">
+        <div>
+          <div class="sync-progress-title">飞书上传</div>
+          <div class="sync-progress-subtitle">${uploadMessage}</div>
+        </div>
+        <div class="sync-progress-percent">${formatNumber(uploadPercent)}%</div>
+      </div>
+      <div class="sync-progress-bar-shell is-secondary">
+        <div class="sync-progress-bar is-secondary" style="width:${uploadPercent}%"></div>
+      </div>
+      <div class="sync-progress-meta">
+        ${uploadMeta.map((text) => `<span>${text}</span>`).join("")}
+        ${uploadChips.map((item) => `<span class="sync-progress-chip ${item.tone ? `is-${item.tone}` : ""}">${item.text}</span>`).join("")}
+      </div>
+      ${
+        showUploadSummary
+          ? `<div class="sync-progress-meta">
+              ${uploadSummaryItems
+                .map((item) => `<span class="sync-progress-chip">${item.label} ${formatNumber(item.value)}</span>`)
+                .join("")}
+            </div>`
+          : ""
+      }
+    </div>`
+        : ""
+    }
   `;
 }
 
@@ -572,7 +1411,18 @@ function renderProxyPool(proxyPool) {
   const root = document.getElementById("proxyPoolCard");
   if (!root) return;
   if (!proxyPool?.enabled) {
-    root.innerHTML = `<div class="proxy-pool-empty">当前未启用 IP 池，采集请求将直接使用本机网络。</div>`;
+    const chips = [
+      proxyPool?.current_ip ? `当前 IP ${proxyPool.current_ip}` : "",
+      proxyPool?.current_ip_checked_at ? `检测 ${formatDateTime(proxyPool.current_ip_checked_at)}` : "",
+    ].filter(Boolean);
+    root.innerHTML = `
+      <div class="proxy-pool-top">
+        <div class="proxy-pool-title">IP 池状态</div>
+        <div class="proxy-pool-subtitle">${proxyPool?.current_ip_error ? `IP 检测失败：${proxyPool.current_ip_error}` : "当前未启用 IP 池，采集请求将直接使用本机网络。"}</div>
+      </div>
+      ${chips.length ? `<div class="proxy-pool-chip-row">${chips.map((text) => `<span class="proxy-pool-chip">${text}</span>`).join("")}</div>` : ""}
+      <div class="proxy-pool-empty">当前未启用 IP 池，采集请求将直接使用本机网络。</div>
+    `;
     return;
   }
   const chips = [
@@ -623,14 +1473,29 @@ function renderProjectCards(projects, syncStatus) {
     return;
   }
   const manualUpdateState = getManualUpdateState(syncStatus);
-  root.innerHTML = projects
-    .map((project) => {
+  const sortedProjects = [...projects].sort((left, right) => {
+    const leftSelected = getSelectedProjectName() === left.name ? 1 : 0;
+    const rightSelected = getSelectedProjectName() === right.name ? 1 : 0;
+    if (leftSelected !== rightSelected) return rightSelected - leftSelected;
+    const leftHealth = getProjectHealth(left);
+    const rightHealth = getProjectHealth(right);
+    if (leftHealth.order !== rightHealth.order) return leftHealth.order - rightHealth.order;
+    if (leftHealth.alertCount !== rightHealth.alertCount) return rightHealth.alertCount - leftHealth.alertCount;
+    if (left.active_count !== right.active_count) return Number(right.active_count || 0) - Number(left.active_count || 0);
+    if (left.total !== right.total) return Number(right.total || 0) - Number(left.total || 0);
+    return String(left.name || "").localeCompare(String(right.name || ""), "zh-CN");
+  });
+  const urgentProjects = [];
+  const stableProjects = [];
+
+  const buildProjectCardMarkup = (project) => {
       const entries = getProjectEntries(project.name);
       const previewNames = entries
         .map((entry) => entry.display_name)
         .filter(Boolean)
         .slice(0, 3);
       const isActive = getSelectedProjectName() === project.name;
+      const projectHealth = getProjectHealth(project);
       const projectSync = project.sync_status || {};
       const projectSyncState = String(projectSync.state || "");
       const projectSyncBadgeClass = getProjectSyncBadgeClass(projectSyncState);
@@ -638,17 +1503,38 @@ function renderProjectCards(projects, syncStatus) {
       const projectSyncUpdatedAt = projectSync.last_success_at || projectSync.finished_at || projectSync.updated_at || "";
       const projectSyncMessage = String(projectSync.message || "").trim();
       const projectSyncError = String(projectSync.last_error || "").trim();
+      const projectFailureStage = getProjectFailureStage(projectSync);
+      const projectFailureTime = getProjectFailureTime(projectSync);
       const projectSyncResult = projectSync.total_accounts
         ? `${formatNumber(projectSync.total_accounts)} 账号 / ${formatNumber(projectSync.total_works || 0)} 作品`
         : "";
+      const projectAlertCount = projectHealth.alertCount;
+      const projectSyncedAccounts = projectHealth.syncedAccounts;
       return `
-        <article class="project-card ${isActive ? "is-active" : ""}">
+        <article class="project-card ${isActive ? "is-active" : ""} is-${projectHealth.level}">
           <div class="project-card-top">
             <div>
               <div class="project-card-name">${project.name}</div>
               <div class="project-card-meta">${formatNumber(project.total)} 个账号 · 监测中 ${formatNumber(project.active_count)} · 暂停 ${formatNumber(project.paused_count)}</div>
             </div>
-            <span class="project-card-badge">${isActive ? "当前项目" : "项目"}</span>
+            <div class="project-card-badge-group">
+              <span class="project-card-health-pill is-${projectHealth.level}">${projectHealth.label}</span>
+              <span class="project-card-badge">${isActive ? "当前项目" : "项目"}</span>
+            </div>
+          </div>
+          <div class="project-card-metrics">
+            <span class="project-card-metric-chip">已同步 ${formatNumber(projectSyncedAccounts)}</span>
+            <span class="project-card-metric-chip ${projectAlertCount ? "is-warning" : ""}">预警 ${formatNumber(projectAlertCount)}</span>
+            ${
+              projectSyncState === "error" && projectFailureStage
+                ? `<span class="project-card-metric-chip is-danger">阶段 ${projectFailureStage}</span>`
+                : ""
+            }
+            ${
+              projectSyncState === "error" && projectFailureTime
+                ? `<span class="project-card-metric-chip">失败于 ${formatDateTime(projectFailureTime)}</span>`
+                : ""
+            }
           </div>
           <div class="project-card-status-row">
             <span class="sync-badge ${projectSyncBadgeClass}">${projectSyncBadgeText}</span>
@@ -682,13 +1568,65 @@ function renderProjectCards(projects, syncStatus) {
           <div class="project-card-foot subtle">点击后切换到该项目的账号、榜单和同步范围</div>
         </article>
       `;
-    })
-    .join("");
+  };
+
+  sortedProjects.forEach((project) => {
+    const markup = buildProjectCardMarkup(project);
+    const projectHealth = getProjectHealth(project);
+    if (projectHealth.level === "healthy" || projectHealth.level === "idle") {
+      stableProjects.push(markup);
+    } else {
+      urgentProjects.push(markup);
+    }
+  });
+
+  root.innerHTML = `
+    ${
+      urgentProjects.length
+        ? `
+      <section class="project-card-group">
+        <div class="project-card-group-header">
+          <div class="project-card-group-title">优先处理项目</div>
+          <div class="project-card-group-meta">${formatNumber(urgentProjects.length)} 个</div>
+        </div>
+        <div class="project-card-grid">
+          ${urgentProjects.join("")}
+        </div>
+      </section>
+    `
+        : ""
+    }
+    ${
+      stableProjects.length
+        ? `
+      <section class="project-card-group">
+        <button class="project-group-toggle" id="stableProjectToggle" type="button">
+          <span class="project-card-group-title">稳定项目</span>
+          <span class="project-card-group-meta">${formatNumber(stableProjects.length)} 个 · ${state.collapseStableProjects ? "展开" : "收起"}</span>
+        </button>
+        <div class="project-card-grid ${state.collapseStableProjects ? "is-collapsed" : ""}" id="stableProjectGrid">
+          ${stableProjects.join("")}
+        </div>
+      </section>
+    `
+        : ""
+    }
+  `;
+
+  const stableToggle = document.getElementById("stableProjectToggle");
+  if (stableToggle) {
+    stableToggle.addEventListener("click", () => {
+      state.collapseStableProjects = !state.collapseStableProjects;
+      renderProjectCards(projects, syncStatus);
+    });
+  }
 
   root.querySelectorAll(".project-open-button").forEach((button) => {
     button.addEventListener("click", () => {
       const nextProject = button.dataset.project || "all";
       state.monitorProjectFilter = getSelectedProjectName() === nextProject ? "all" : nextProject;
+      state.activeAccountId = "";
+      state.rankingScope = "all";
       resetMonitoringPage();
       ensureActiveAccount();
       renderMonitoring();
@@ -714,13 +1652,13 @@ function getManualUpdateState(syncStatus) {
     }
   }
   const disabled = running || cooldownSeconds > 0;
-  const buttonText = running ? "更新中..." : cooldownSeconds > 0 ? `冷却 ${formatDurationShort(cooldownSeconds)}` : "立即更新数据";
-  const projectButtonText = running ? "更新中" : cooldownSeconds > 0 ? "冷却中" : "更新项目";
+  const buttonText = running ? "采集中..." : cooldownSeconds > 0 ? `冷却 ${formatDurationShort(cooldownSeconds)}` : "更新本地看板";
+  const projectButtonText = running ? "采集中" : cooldownSeconds > 0 ? "冷却中" : "更新项目看板";
   const helperText = running
-    ? "当前正在更新数据，为避免重复请求，手动更新按钮已临时锁定。"
+    ? "当前正在采集并更新本地看板，为避免重复请求，采集按钮已临时锁定。"
     : cooldownSeconds > 0
-      ? `为降低小红书风控，手动更新冷却中，剩余 ${formatDurationShort(cooldownSeconds)}。每天 14:00 自动更新不受影响。`
-      : "手动更新有冷却保护，避免过于频繁触发小红书检测。每天 14:00 自动更新保持不变。";
+      ? `为降低小红书风控，本地采集冷却中，剩余 ${formatDurationShort(cooldownSeconds)}。每天 14:00 自动更新不受影响。`
+      : "采集和飞书上传已拆开：先更新本地看板，再按需上传当前项目、全部项目、日历或排行榜。每天 14:00 自动更新保持不变。";
   return { disabled, buttonText, projectButtonText, helperText, cooldownSeconds };
 }
 
@@ -728,7 +1666,12 @@ function renderManualUpdateState(syncStatus) {
   const { disabled, buttonText, projectButtonText, helperText } = getManualUpdateState(syncStatus);
   const syncButton = document.getElementById("syncNowButton");
   const heroButton = document.getElementById("manualUpdateButton");
+  const retryUploadButton = document.getElementById("retryUploadButton");
+  const uploadAllButton = document.getElementById("uploadAllButton");
+  const uploadCalendarButton = document.getElementById("uploadCalendarButton");
+  const uploadRankingButton = document.getElementById("uploadRankingButton");
   const hintNode = document.getElementById("syncCooldownText");
+  const uploadStatus = syncStatus?.upload_status || {};
   if (syncButton) {
     syncButton.disabled = disabled;
     syncButton.textContent = buttonText;
@@ -741,6 +1684,34 @@ function renderManualUpdateState(syncStatus) {
     button.disabled = disabled;
     button.textContent = projectButtonText;
   });
+  if (retryUploadButton) {
+    const canUpload =
+      (Boolean(uploadStatus?.has_retry_payload) || Boolean(uploadStatus?.has_cached_payload)) &&
+      uploadStatus?.state !== "running";
+    const selectedProjectName = getSelectedProjectName();
+    const uploadCurrentProject = selectedProjectName !== "all";
+    retryUploadButton.disabled = !canUpload;
+    retryUploadButton.textContent =
+      uploadStatus?.state === "running"
+        ? "飞书上传中"
+        : uploadStatus?.state === "queued"
+          ? "上传已排队"
+          : uploadStatus?.last_error
+            ? (uploadCurrentProject ? "重试当前项目上传" : "重试飞书上传")
+            : (uploadCurrentProject ? "上传当前项目到飞书" : "上传飞书");
+  }
+  if (uploadAllButton) {
+    uploadAllButton.disabled = !(Boolean(uploadStatus?.has_retry_payload) || Boolean(uploadStatus?.has_cached_payload)) || uploadStatus?.state === "running";
+    uploadAllButton.textContent = uploadStatus?.state === "running" ? "飞书上传中" : "上传全部项目";
+  }
+  if (uploadCalendarButton) {
+    uploadCalendarButton.disabled = !(Boolean(uploadStatus?.has_retry_payload) || Boolean(uploadStatus?.has_cached_payload)) || uploadStatus?.state === "running";
+    uploadCalendarButton.textContent = uploadStatus?.state === "running" ? "飞书上传中" : "仅上传日历";
+  }
+  if (uploadRankingButton) {
+    uploadRankingButton.disabled = !(Boolean(uploadStatus?.has_retry_payload) || Boolean(uploadStatus?.has_cached_payload)) || uploadStatus?.state === "running";
+    uploadRankingButton.textContent = uploadStatus?.state === "running" ? "飞书上传中" : "仅上传排行榜";
+  }
   if (hintNode) {
     hintNode.textContent = helperText;
   }
@@ -750,6 +1721,7 @@ function renderMeta() {
   const payload = state.payload;
   document.getElementById("updatedAt").textContent = `数据更新时间：${formatDateTime(payload.updated_at || payload.generated_at)}${payload.stale ? " · 当前显示缓存" : ""}`;
   document.getElementById("latestDate").textContent = `最新留底：${payload.latest_date || "-"}`;
+  document.getElementById("samplingNote").textContent = "口径说明：每个账号最多采集前 30 条作品；项目增长默认按可比账号计算；飞书上传只做留底和协作展示。";
   const active = getActiveAccount();
   document.getElementById("weeklySummary").textContent = active?.weekly_summary || "暂无周对比摘要";
   const seriesMeta = payload.series_meta || {};
@@ -771,30 +1743,64 @@ function renderRankingScopeTabs() {
 
 function renderPortalCards() {
   const active = getActiveAccount();
-  const fullSeries = getActiveSeries();
-  const windowGrowth = buildWindowGrowth(fullSeries, state.trendWindow);
+  const projectName = getSelectedProjectName();
+  if (projectName === "all") {
+    document.getElementById("portalCards").innerHTML = `<div class="empty-state">请选择单个项目后查看该项目或项目内账号的数据卡。</div>`;
+    return;
+  }
+  const fullSeries = active ? getActiveSeries() : getProjectSeries(projectName);
+  const windowGrowth = buildWindowGrowth(fullSeries, active ? state.trendWindow : 7);
   if (!active) {
-    document.getElementById("portalCards").innerHTML = `<div class="empty-state">暂无账号指标。</div>`;
+    const accounts = getVisibleAccounts();
+    if (!accounts.length) {
+      document.getElementById("portalCards").innerHTML = `<div class="empty-state">当前项目下暂无项目指标。</div>`;
+      return;
+    }
+    const totalFans = accounts.reduce((sum, item) => sum + Number(item.fans || 0), 0);
+    const totalInteraction = accounts.reduce((sum, item) => sum + Number(item.interaction || 0), 0);
+    const totalComments = accounts.reduce((sum, item) => sum + Number(item.comments || 0), 0);
+    const projectGrowth = buildProjectComparableGrowth(projectName, 7);
+    const comparableHint = projectGrowth
+      ? projectGrowth.comparable_ready
+        ? `${projectGrowth.start_date} → ${projectGrowth.end_date} · 仅统计 ${formatNumber(projectGrowth.comparable_account_count)} 个可比账号`
+        : `${projectGrowth.start_date} → ${projectGrowth.end_date} · 暂无可比账号`
+      : "历史不足，暂不显示增长";
+    const cards = [
+      ["项目粉丝总量", formatNumber(totalFans), "当前范围下账号粉丝总量"],
+      ["项目获赞收藏", formatNumber(totalInteraction), "当前范围下账号获赞收藏总量"],
+      ["项目评论总量", formatNumber(totalComments), "当前范围下首页可见作品评论合计"],
+      ["可比账号数", projectGrowth ? formatNumber(projectGrowth.comparable_account_count || 0) : "-", comparableHint],
+      ["新增账号数", projectGrowth ? formatNumber(projectGrowth.new_account_count || 0) : "-", projectGrowth ? `${projectGrowth.start_date} → ${projectGrowth.end_date} 新进入统计窗口的账号` : "历史不足，暂不显示新增账号"],
+      ["近7天可比粉丝增量", projectGrowth && projectGrowth.comparable_ready ? formatSignedNumber(projectGrowth.fans) : "-", comparableHint],
+      ["近7天可比点赞增量", projectGrowth && projectGrowth.comparable_ready ? formatSignedNumber(projectGrowth.likes) : "-", comparableHint],
+      ["近7天可比评论增量", projectGrowth && projectGrowth.comparable_ready ? formatSignedNumber(projectGrowth.comments) : "-", comparableHint],
+      ["近7天可比作品增量", projectGrowth && projectGrowth.comparable_ready ? formatSignedNumber(projectGrowth.works) : "-", comparableHint],
+    ];
+    document.getElementById("portalCards").innerHTML = cards
+      .map(
+        ([label, value, hint]) => `
+          <article class="portal-card">
+            <div class="label">${label}</div>
+            <div class="value">${value}</div>
+            <div class="hint">${hint}</div>
+          </article>
+        `,
+      )
+      .join("");
     return;
   }
   const growthLabel = windowGrowth?.label || "成长窗口";
   const rangeText = windowGrowth ? `${windowGrowth.start_date} → ${windowGrowth.end_date}` : "历史不足，暂不显示增长";
-  const worksDisplay = active.works_display || formatNumber(active.works);
-  const worksHint =
-    active.works_exact === false
-      ? "当前账号已抓取作品下限，账号总量尚未完全展开"
-      : "当前账号总作品数";
   const cards = [
     ["当前粉丝", formatNumber(active.fans), "当前账号粉丝规模"],
     ["当前获赞收藏", formatNumber(active.interaction), "当前账号公开页获赞收藏"],
-    ["当前作品数", worksDisplay, worksHint],
     ["当前评论总数", formatNumber(active.comments), "当前账号首页可见作品评论合计"],
     [`${growthLabel}粉丝增量`, windowGrowth ? formatSignedNumber(windowGrowth.fans) : "-", rangeText],
     [`${growthLabel}获赞增量`, windowGrowth ? formatSignedNumber(windowGrowth.interaction) : "-", rangeText],
     [
       `${growthLabel}作品增量`,
-      windowGrowth && active.works_exact !== false ? formatSignedNumber(windowGrowth.works) : "-",
-      active.works_exact === false ? "当前账号作品总数未完全展开，暂不显示作品增长" : rangeText,
+      windowGrowth ? formatSignedNumber(windowGrowth.works) : "-",
+      active.works_exact === false ? `${rangeText} · 当前账号作品总量未完全展开，仅看增长变化` : rangeText,
     ],
   ];
   const root = document.getElementById("portalCards");
@@ -813,6 +1819,19 @@ function renderPortalCards() {
 
 function renderTrendChart() {
   const active = getActiveAccount();
+  const projectName = getSelectedProjectName();
+  if (projectName === "all") {
+    document.getElementById("trendTitle").textContent = "账号趋势";
+    document.getElementById("trendChart").innerHTML = `<div class="empty-state">请选择单个项目后查看趋势，不再显示跨项目混合走势。</div>`;
+    return;
+  }
+  if (!active) {
+    const projectSeries = getProjectSeries(projectName);
+    const projectDelta = buildWindowGrowth(projectSeries, 7);
+    document.getElementById("trendTitle").textContent = projectName === "all" ? "项目成长趋势" : `${projectName} 项目成长趋势`;
+    document.getElementById("trendChart").innerHTML = buildProjectTrendMarkup(projectSeries, projectDelta, projectName);
+    return;
+  }
   const fullSeries = getActiveSeries();
   const displayCount = state.trendWindow === 1 ? 2 : state.trendWindow;
   const series = fullSeries.slice(-displayCount);
@@ -920,11 +1939,44 @@ function renderRankingList() {
   const active = getActiveAccount();
   const root = document.getElementById("rankingList");
   const rankingTitle = document.getElementById("rankingTitle");
+  const rankingSummaryText = document.getElementById("rankingSummaryText");
+  const rankingSummaryBar = document.getElementById("rankingSummaryBar");
   const projectName = getSelectedProjectName();
+  if (projectName === "all") {
+    rankingTitle.textContent = "榜单中心";
+    rankingSummaryText.textContent = "请选择单个项目后查看该项目内的榜单，不再显示跨项目混合榜单。";
+    rankingSummaryBar.innerHTML = `<div class="empty-state">请选择单个项目后查看榜单摘要。</div>`;
+    root.innerHTML = `<div class="empty-state">请选择单个项目后查看项目榜单。</div>`;
+    return;
+  }
   rankingTitle.textContent =
     state.rankingScope === "all"
-      ? `榜单中心 · ${projectName === "all" ? "所有账号" : `项目 ${projectName}`}`
-      : `榜单中心 · ${active ? active.account : projectName === "all" ? "当前账号" : `项目 ${projectName} 暂无已同步账号`}`;
+      ? `榜单中心 · 项目 ${projectName}`
+      : `榜单中心 · ${active ? active.account : `项目 ${projectName} 暂无已同步账号`}`;
+  rankingSummaryText.textContent =
+    state.rankingScope === "all"
+      ? `当前查看项目「${projectName}」内的内容榜单。`
+      : active
+        ? `当前查看账号「${active.account}」在项目「${projectName}」范围下的内容表现。`
+        : `项目「${projectName}」下暂无已同步账号，暂时无法切换到账号维度。`;
+
+  const summaryItems = rankingConfigs
+    .map((config) => {
+      const scopedRows = getScopedRankingRows(rankings[config.type] || [], active, state.rankingScope, projectName);
+      const top = scopedRows[0];
+      if (!top) return "";
+      return `
+        <div class="ranking-summary-chip">
+          <div class="ranking-summary-chip-label">${config.title} Top1</div>
+          <div class="ranking-summary-chip-title">${top.title}</div>
+          <div class="ranking-summary-chip-meta">${top.account} · ${config.metricLabel} ${formatNumber(top.metric)}</div>
+        </div>
+      `;
+    })
+    .filter(Boolean);
+  rankingSummaryBar.innerHTML = summaryItems.length
+    ? summaryItems.join("")
+    : `<div class="empty-state">当前范围下暂无榜单数据。</div>`;
   root.innerHTML = rankingConfigs
     .map((config) => renderRankingColumn(config, rankings[config.type] || [], active))
     .join("");
@@ -932,23 +1984,14 @@ function renderRankingList() {
 
 function renderRankingColumn(config, allRows, active) {
   const projectName = getSelectedProjectName();
-  const projectAccountIds = getProjectAccountIds(projectName);
-  let filteredRows = [];
-  if (state.rankingScope === "all") {
-    filteredRows =
-      projectName === "all"
-        ? allRows
-        : allRows.filter((item) => projectAccountIds.has(item.account_id));
-  } else if (active) {
-    filteredRows = allRows.filter((item) => item.account_id === active.account_id);
-  }
+  const filteredRows = getScopedRankingRows(allRows, active, state.rankingScope, projectName);
   const rows = filteredRows.slice(0, 10);
   if (!rows.length) {
     return `
       <section class="ranking-column">
         <div class="ranking-column-header">
           <h3>${config.title}</h3>
-          <span class="ranking-column-meta">Top 10</span>
+          <span class="ranking-column-meta">${state.rankingScope === "all" ? (projectName === "all" ? "全局 Top 10" : "项目 Top 10") : "账号 Top 10"}</span>
         </div>
         <div class="empty-state">暂无数据</div>
       </section>
@@ -958,7 +2001,7 @@ function renderRankingColumn(config, allRows, active) {
     <section class="ranking-column">
       <div class="ranking-column-header">
         <h3>${config.title}</h3>
-        <span class="ranking-column-meta">Top 10</span>
+        <span class="ranking-column-meta">${state.rankingScope === "all" ? (projectName === "all" ? "全局 Top 10" : "项目 Top 10") : "账号 Top 10"}</span>
       </div>
       ${renderRankingHero(config, rows[0])}
       ${
@@ -993,6 +2036,7 @@ function renderRankingHero(config, item) {
           </div>
         </div>
         <div class="subtle">${item.summary || "当前榜单头部内容"}</div>
+        ${item.comment_is_lower_bound ? `<div class="ranking-basis-row">${renderCommentBasisChip(item)}<span class="subtle">该评论数来自评论预览下限，不是精确总数</span></div>` : ""}
         <div class="action-row">
           ${buildActionLink(item.profile_url, "账号主页")}
           ${buildActionLink(item.note_url, "作品详情")}
@@ -1010,6 +2054,7 @@ function renderRankingMiniItem(config, item, rank) {
         <p class="title">${item.note_url ? `<a class="note-link" href="${item.note_url}" target="_blank" rel="noreferrer">${item.title}</a>` : item.title}</p>
         <div class="subtle">${item.profile_url ? `<a class="note-link subtle-link" href="${item.profile_url}" target="_blank" rel="noreferrer">${item.account}</a>` : item.account}</div>
         <div class="ranking-mini-summary">${item.summary || ""}</div>
+        ${renderCommentBasisChip(item)}
       </div>
       <div class="ranking-mini-metric">
         <div class="metric-label">${config.metricLabel}</div>
@@ -1035,6 +2080,7 @@ function renderAccounts() {
         <article class="account-card ${active && item.account_id === active.account_id ? "is-active" : ""}" data-account-id="${item.account_id}">
           <p class="title">${item.profile_url ? `<a class="note-link" href="${item.profile_url}" target="_blank" rel="noreferrer">${item.account}</a>` : item.account}</p>
           <div class="subtle">${item.weekly_summary || "暂无周对比摘要"}</div>
+          ${item.comments_note ? `<div class="ranking-basis-row"><span class="ranking-basis-chip">评论下限</span><span class="subtle">${item.comments_note}</span></div>` : ""}
           <div class="action-row">
             ${buildActionLink(item.profile_url, "打开主页")}
             ${buildActionLink(item.top_url, "头部作品")}
@@ -1056,6 +2102,7 @@ function renderAccounts() {
         return;
       }
       state.activeAccountId = card.dataset.accountId || "";
+      state.rankingScope = state.activeAccountId ? "account" : "all";
       renderApp();
     });
   });
@@ -1064,16 +2111,38 @@ function renderAccounts() {
 function renderAlerts() {
   const active = getActiveAccount();
   const projectName = getSelectedProjectName();
-  const projectAccountIds = getProjectAccountIds(projectName);
-  const allAlerts = state.payload?.alerts || [];
+  if (projectName === "all") {
+    document.getElementById("alertsSummaryText").textContent = "请选择单个项目后查看该项目的互动预警，不再显示跨项目汇总。";
+    document.getElementById("alertsSummaryBar").innerHTML = `<div class="empty-state">请选择单个项目后查看预警摘要。</div>`;
+    document.getElementById("alertsList").innerHTML = `<div class="empty-state">请选择单个项目后查看项目预警明细。</div>`;
+    return;
+  }
+  const allAlerts = getVisibleAlerts();
   const alerts = active
     ? allAlerts.filter((item) => item.account_id === active.account_id)
-    : projectName === "all"
-      ? allAlerts
-      : allAlerts.filter((item) => projectAccountIds.has(item.account_id));
+    : allAlerts;
+  const summaryNode = document.getElementById("alertsSummaryText");
+  const summaryBarNode = document.getElementById("alertsSummaryBar");
   const root = document.getElementById("alertsList");
+  const totalDelta = alerts.reduce((sum, item) => sum + Number(item.delta || 0), 0);
+  summaryNode.textContent = active
+    ? `当前账号命中 ${formatNumber(alerts.length)} 条互动预警，累计最高增量 ${formatNumber(totalDelta)}，规则为点赞或评论增加至少 10。`
+    : `当前项目「${projectName}」命中 ${formatNumber(alerts.length)} 条互动预警，累计最高增量 ${formatNumber(totalDelta)}，规则为点赞或评论增加至少 10。`;
+
+  const summaryItems = alerts.slice(0, 3).map(
+    (item, index) => `
+      <div class="alert-summary-chip">
+        <div class="alert-summary-chip-label">高危 ${index + 1}</div>
+        <div class="alert-summary-chip-title">${item.note_url ? `<a class="note-link" href="${item.note_url}" target="_blank" rel="noreferrer">${item.title}</a>` : item.title}</div>
+        <div class="alert-summary-chip-meta">${item.account} · ${item.alert_type} · 点赞 +${formatNumber(item.like_delta)} · 评论 +${formatNumber(item.comment_delta)}</div>
+      </div>
+    `,
+  );
+  summaryBarNode.innerHTML = summaryItems.length
+    ? summaryItems.join("")
+    : `<div class="empty-state">${active ? "当前账号没有互动预警。" : projectName === "all" ? "暂无互动预警。" : "当前项目下暂无互动预警。"}</div>`;
   if (!alerts.length) {
-    root.innerHTML = `<div class="empty-state">${active ? "当前账号没有评论预警。" : projectName === "all" ? "暂无评论预警。" : "当前项目下暂无评论预警。"}</div>`;
+    root.innerHTML = `<div class="empty-state">${active ? "当前账号没有互动预警。" : projectName === "all" ? "暂无互动预警。" : "当前项目下暂无互动预警。"}</div>`;
     return;
   }
   root.innerHTML = alerts
@@ -1081,8 +2150,8 @@ function renderAlerts() {
       (item) => `
         <article class="alert-item">
           <p class="title">${item.note_url ? `<a class="note-link" href="${item.note_url}" target="_blank" rel="noreferrer">${item.title}</a>` : item.title}</p>
-          <div class="subtle">${item.profile_url ? `<a class="note-link subtle-link" href="${item.profile_url}" target="_blank" rel="noreferrer">${item.account}</a>` : item.account} · ${item.date} · ${item.status || "未发送"}</div>
-          <div class="subtle">评论 ${formatNumber(item.previous_comments)} → ${formatNumber(item.current_comments)}，+${formatNumber(item.delta)}，${item.rate || 0}%</div>
+          <div class="subtle">${item.profile_url ? `<a class="note-link subtle-link" href="${item.profile_url}" target="_blank" rel="noreferrer">${item.account}</a>` : item.account} · ${item.date} · ${item.status || "未发送"} · ${item.alert_type}</div>
+          <div class="subtle">点赞 ${formatNumber(item.previous_likes)} → ${formatNumber(item.current_likes)}，+${formatNumber(item.like_delta)}；评论 ${formatNumber(item.previous_comments)} → ${formatNumber(item.current_comments)}，+${formatNumber(item.comment_delta)}</div>
           <div class="action-row">
             ${buildActionLink(item.profile_url, "账号主页")}
             ${buildActionLink(item.note_url, "作品详情")}
@@ -1116,6 +2185,8 @@ async function addMonitoredAccounts() {
   textarea.value = "";
   if (project) {
     state.monitorProjectFilter = project;
+    state.activeAccountId = "";
+    state.rankingScope = "all";
   }
   if (!project) {
     projectInput.value = "";
@@ -1157,6 +2228,8 @@ async function syncProject(project) {
     throw new Error(payload.message || `项目同步失败: ${response.status}`);
   }
   state.monitorProjectFilter = project || "all";
+  state.activeAccountId = "";
+  state.rankingScope = "all";
   resultNode.textContent = payload.message || `已开始同步项目「${project}」。`;
   await loadMonitoring();
 }
@@ -1229,6 +2302,8 @@ async function assignProjectToFilteredAccounts() {
     throw new Error(payload.message || `项目调整失败: ${response.status}`);
   }
   state.monitorProjectFilter = project;
+  state.activeAccountId = "";
+  state.rankingScope = "all";
   projectInput.value = project;
   resultNode.textContent = payload.message || `已移动到项目「${project}」。`;
   await Promise.all([loadMonitoring(), loadDashboard(true)]);
@@ -1285,6 +2360,36 @@ async function checkLoginState() {
   await loadMonitoring();
 }
 
+async function retryFeishuUpload({ scope = "full", useSelectedProject = true } = {}) {
+  const resultNode = document.getElementById("addResult");
+  const projectName = getSelectedProjectName();
+  const project = useSelectedProject && projectName !== "all" ? projectName : "";
+  const actionText =
+    scope === "calendar"
+      ? project
+        ? `正在上传项目「${project}」日历到飞书...`
+        : "正在上传全部项目日历到飞书..."
+      : scope === "rankings"
+        ? project
+          ? `正在上传项目「${project}」排行榜到飞书...`
+          : "正在上传全部项目排行榜到飞书..."
+        : project
+          ? `正在上传项目「${project}」到飞书...`
+          : "正在上传全部项目到飞书...";
+  resultNode.textContent = actionText;
+  const response = await fetch("/api/monitored-accounts/retry-upload", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ project, scope }),
+  });
+  const payload = await response.json();
+  if (!response.ok || !payload.ok) {
+    throw new Error(payload.message || `飞书上传重试失败: ${response.status}`);
+  }
+  resultNode.textContent = payload.message || "已开始重试飞书上传。";
+  await loadMonitoring();
+}
+
 document.getElementById("refreshButton").addEventListener("click", () => loadDashboard(true));
 document.getElementById("manualUpdateButton").addEventListener("click", () => {
   syncCurrentList().catch((error) => {
@@ -1306,6 +2411,36 @@ document.getElementById("checkLoginStateButton").addEventListener("click", () =>
     document.getElementById("addResult").textContent = error.message;
   });
 });
+document.getElementById("retryUploadButton").addEventListener("click", () => {
+  retryFeishuUpload({ scope: "full", useSelectedProject: true }).catch((error) => {
+    document.getElementById("addResult").textContent = error.message;
+  });
+});
+document.getElementById("uploadAllButton").addEventListener("click", () => {
+  retryFeishuUpload({ scope: "full", useSelectedProject: false }).catch((error) => {
+    document.getElementById("addResult").textContent = error.message;
+  });
+});
+document.getElementById("uploadCalendarButton").addEventListener("click", () => {
+  retryFeishuUpload({ scope: "calendar", useSelectedProject: true }).catch((error) => {
+    document.getElementById("addResult").textContent = error.message;
+  });
+});
+document.getElementById("uploadRankingButton").addEventListener("click", () => {
+  retryFeishuUpload({ scope: "rankings", useSelectedProject: true }).catch((error) => {
+    document.getElementById("addResult").textContent = error.message;
+  });
+});
+document.getElementById("exportAccountRankingButton").addEventListener("click", () => {
+  exportCurrentAccountRankings().catch((error) => {
+    document.getElementById("accountExportResult").textContent = error.message;
+  });
+});
+document.getElementById("exportProjectRankingButton").addEventListener("click", () => {
+  exportCurrentProjectRankings().catch((error) => {
+    document.getElementById("accountExportResult").textContent = error.message;
+  });
+});
 document.getElementById("monitorSearchInput").addEventListener("input", (event) => {
   state.monitorQuery = event.target.value || "";
   resetMonitoringPage();
@@ -1313,6 +2448,8 @@ document.getElementById("monitorSearchInput").addEventListener("input", (event) 
 });
 document.getElementById("monitorProjectFilter").addEventListener("change", (event) => {
   state.monitorProjectFilter = event.target.value || "all";
+  state.activeAccountId = "";
+  state.rankingScope = "all";
   resetMonitoringPage();
   ensureActiveAccount();
   renderMonitoring();
@@ -1329,6 +2466,14 @@ document.querySelectorAll(".monitor-filter-button").forEach((button) => {
     resetMonitoringPage();
     renderMonitoring();
   });
+});
+document.getElementById("monitorViewTable").addEventListener("click", () => {
+  state.monitorViewMode = "table";
+  renderMonitoring();
+});
+document.getElementById("monitorViewCards").addEventListener("click", () => {
+  state.monitorViewMode = "cards";
+  renderMonitoring();
 });
 document.getElementById("monitorPrevPage").addEventListener("click", () => {
   state.monitorPage = Math.max(1, state.monitorPage - 1);

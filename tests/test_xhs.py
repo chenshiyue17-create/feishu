@@ -7,6 +7,7 @@ from unittest.mock import patch
 from xhs_feishu_monitor.config import Settings, load_settings
 from xhs_feishu_monitor.models import Target
 from xhs_feishu_monitor.xhs import (
+    PUBLIC_IP_STATUS,
     build_proxy_pool_status,
     _merge_profile_runtime_pages,
     _normalize_snapshot,
@@ -217,6 +218,17 @@ class NormalizeSnapshotTest(unittest.TestCase):
         self.assertEqual(status["cooling_count"], 1)
         self.assertEqual(status["ready_count"], 1)
         self.assertIn("proxy timeout", status["last_error"])
+
+    def test_build_proxy_pool_status_reports_current_ip_when_pool_disabled(self) -> None:
+        with patch("xhs_feishu_monitor.xhs.requests.get") as get_mock:
+            get_mock.return_value.status_code = 200
+            get_mock.return_value.text = "1.2.3.4"
+            get_mock.return_value.raise_for_status.return_value = None
+            PUBLIC_IP_STATUS.update({"ip": "", "checked_at": "", "error": "", "cached_at_monotonic": 0.0})
+            status = build_proxy_pool_status(Settings())
+        self.assertFalse(status["enabled"])
+        self.assertEqual(status["current_ip"], "1.2.3.4")
+        self.assertTrue(status["current_ip_checked_at"])
 
     def test_fetch_profile_posted_pages_uses_signed_api_and_returns_paginated_payloads(self) -> None:
         collector = XHSCollector(

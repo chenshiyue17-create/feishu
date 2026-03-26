@@ -14,6 +14,7 @@ from xhs_feishu_monitor.comment_alerts import (
 class CommentAlertsTest(unittest.TestCase):
     def setUp(self) -> None:
         self.settings = SimpleNamespace(
+            interaction_alert_delta_threshold=10,
             comment_alert_growth_threshold_percent=10.0,
             comment_alert_min_previous_count=0,
         )
@@ -36,7 +37,7 @@ class CommentAlertsTest(unittest.TestCase):
     def test_should_trigger_comment_alert(self) -> None:
         self.assertTrue(
             should_trigger_comment_alert(
-                current_comment_count=22,
+                current_comment_count=30,
                 previous_comment_count=20,
                 growth_rate=10.01,
                 settings=self.settings,
@@ -44,9 +45,9 @@ class CommentAlertsTest(unittest.TestCase):
         )
         self.assertFalse(
             should_trigger_comment_alert(
-                current_comment_count=22,
+                current_comment_count=29,
                 previous_comment_count=20,
-                growth_rate=10.0,
+                growth_rate=45.0,
                 settings=self.settings,
             )
         )
@@ -63,27 +64,34 @@ class CommentAlertsTest(unittest.TestCase):
         self.assertEqual(fields["评论增长率"], 10.0)
         self.assertIsNone(alert)
 
-        self.work["comment_count"] = 24
-        self.work["comment_count_text"] = "24"
+        self.work["comment_count"] = 30
+        self.work["comment_count_text"] = "30"
         fields, alert = build_work_comment_fields(
             report=self.report,
             work=self.work,
             previous_fields={"评论数": 20},
             settings=self.settings,
         )
-        self.assertEqual(fields["评论预警"], "评论日增>10%")
+        self.assertEqual(fields["评论预警"], "评论日增>=10")
         self.assertIsNotNone(alert)
+        self.assertEqual(alert["预警类型"], "评论预警")
 
     def test_build_comment_alert_record(self) -> None:
         alert = build_comment_alert_record(
             report=self.report,
             work=self.work,
+            current_like_count=15,
+            previous_like_count=3,
+            like_delta=12,
             current_comment_count=24,
             previous_comment_count=20,
             comment_delta=4,
             growth_rate=20.0,
+            alert_type="点赞预警",
         )
         self.assertEqual(alert["账号"], "账号A")
+        self.assertEqual(alert["预警类型"], "点赞预警")
+        self.assertEqual(alert["点赞增量"], 12)
         self.assertEqual(alert["当前评论数"], 24)
         self.assertEqual(alert["评论增长率"], 20.0)
         self.assertIn("主页链接", alert)

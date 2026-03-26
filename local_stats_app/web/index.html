@@ -13,19 +13,34 @@
         <div>
           <p class="eyebrow">Local Stats App</p>
           <h1>小红书数据本地统计台</h1>
-          <p class="hero-copy">本地浏览器直接看账号总控、日历走势、单条排行和评论预警，不用每次切飞书。</p>
+          <p class="hero-copy">以项目为主维度管理账号、增长、排行和预警。本地看板负责实时运营，飞书只负责留底和协作展示。</p>
         </div>
         <div class="hero-actions">
           <div class="hero-action-row">
-            <button id="manualUpdateButton" class="primary-button">立即更新数据</button>
+            <button id="manualUpdateButton" class="primary-button">更新本地看板</button>
             <button id="refreshButton" class="primary-button secondary-button">刷新看板</button>
           </div>
           <div class="meta">
             <span id="updatedAt">等待加载</span>
             <span id="latestDate">-</span>
           </div>
+          <p id="samplingNote" class="subtle hero-note">作品采集口径说明加载中</p>
         </div>
       </header>
+      <section class="strategy-strip">
+        <article class="strategy-card">
+          <div class="strategy-title">本地看板</div>
+          <div class="strategy-copy">实时查看项目概况、账号榜、作品榜和互动预警。</div>
+        </article>
+        <article class="strategy-card">
+          <div class="strategy-title">飞书上传</div>
+          <div class="strategy-copy">按需手动上传，用于团队查看、留底和汇报，不参与本地实时计算。</div>
+        </article>
+        <article class="strategy-card">
+          <div class="strategy-title">统一口径</div>
+          <div class="strategy-copy">每个账号最多采集前 30 条作品；项目增长默认看可比账号，不把新增账号误算成成长。</div>
+        </article>
+      </section>
 
       <section class="panel monitor-panel">
         <div class="panel-header">
@@ -46,7 +61,11 @@
             <div id="loginStateCard" class="login-state-card"></div>
             <div id="proxyPoolCard" class="proxy-pool-card"></div>
             <div class="action-row">
-              <button id="syncNowButton" class="primary-button secondary-button">立即更新数据</button>
+              <button id="syncNowButton" class="primary-button secondary-button">更新本地看板</button>
+              <button id="retryUploadButton" class="monitor-inline-button" type="button">上传当前项目到飞书</button>
+              <button id="uploadAllButton" class="monitor-inline-button" type="button">上传全部项目</button>
+              <button id="uploadCalendarButton" class="monitor-inline-button" type="button">仅上传日历</button>
+              <button id="uploadRankingButton" class="monitor-inline-button" type="button">仅上传排行榜</button>
               <button id="checkLoginStateButton" class="monitor-inline-button" type="button">立即自检</button>
             </div>
             <p id="syncCooldownText" class="subtle"></p>
@@ -83,6 +102,10 @@
             </div>
           </div>
           <div class="monitor-toolbar-right">
+            <div class="monitor-view-tabs">
+              <button id="monitorViewTable" class="monitor-inline-button" type="button">紧凑表格</button>
+              <button id="monitorViewCards" class="monitor-inline-button" type="button">卡片视图</button>
+            </div>
             <label class="monitor-page-size-shell" for="monitorPageSize">
               <span class="form-label">每页</span>
               <select id="monitorPageSize" class="monitor-page-size-select">
@@ -112,6 +135,38 @@
         </div>
       </section>
 
+      <section class="panel project-home-panel">
+        <div class="panel-header">
+          <div>
+            <p class="panel-label">项目总览</p>
+            <h2 id="projectHomeTitle">项目总览</h2>
+          </div>
+          <p id="projectHomeSummary" class="summary-text"></p>
+        </div>
+        <div id="projectHomeStats" class="portal-grid"></div>
+        <div id="projectComparePanel" class="project-compare-panel"></div>
+        <div class="panel project-home-trend-panel">
+          <div class="panel-header">
+            <div>
+              <p class="panel-label">项目趋势</p>
+              <h3 id="projectHomeTrendTitle">项目近 7 天成长</h3>
+            </div>
+            <p id="projectHomeTrendSummary" class="summary-text"></p>
+          </div>
+          <div id="projectHomeTrendChart" class="chart-shell"></div>
+        </div>
+        <div class="project-home-layout">
+          <div class="project-home-column">
+            <div class="project-home-subtitle">项目内 Top 账号</div>
+            <div id="projectTopAccounts" class="project-home-list"></div>
+          </div>
+          <div class="project-home-column">
+            <div class="project-home-subtitle">项目内 Top 内容</div>
+            <div id="projectTopContents" class="project-home-list"></div>
+          </div>
+        </div>
+      </section>
+
       <section id="portalCards" class="portal-grid"></section>
 
       <section class="panel account-focus-panel">
@@ -121,6 +176,17 @@
             <h2 id="activeAccountTitle">当前账号</h2>
           </div>
           <p id="activeAccountSummary" class="summary-text"></p>
+        </div>
+        <div class="account-export-row">
+          <input
+            id="accountRankingExportDir"
+            class="monitor-search-input account-export-input"
+            type="text"
+            placeholder="/Users/cc/Downloads/飞书缓存/账号榜单导出"
+          />
+          <button id="exportAccountRankingButton" class="monitor-inline-button" type="button">导出当前账号榜单</button>
+          <button id="exportProjectRankingButton" class="monitor-inline-button" type="button">导出当前项目快照</button>
+          <span id="accountExportResult" class="subtle"></span>
         </div>
         <div id="accountFilterBar" class="account-filter-bar"></div>
       </section>
@@ -149,6 +215,7 @@
             <div>
               <p class="panel-label">单条内容</p>
               <h2 id="rankingTitle">榜单中心</h2>
+              <p id="rankingSummaryText" class="summary-text"></p>
             </div>
             <div class="ranking-controls">
               <div class="scope-tabs">
@@ -157,6 +224,7 @@
               </div>
             </div>
           </div>
+          <div id="rankingSummaryBar" class="ranking-summary-bar"></div>
           <div id="rankingList" class="ranking-board"></div>
         </section>
 
@@ -176,8 +244,10 @@
           <div>
             <p class="panel-label">评论预警</p>
             <h2>最近提醒</h2>
+            <p id="alertsSummaryText" class="summary-text"></p>
           </div>
         </div>
+        <div id="alertsSummaryBar" class="ranking-summary-bar"></div>
         <div id="alertsList" class="alerts-list"></div>
       </section>
     </main>
