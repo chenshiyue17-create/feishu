@@ -5,6 +5,7 @@ import csv
 import copy
 import json
 import os
+import re
 import subprocess
 import threading
 import time
@@ -107,6 +108,14 @@ SYSTEM_CONFIG_KEYS = (
     "PROJECT_CACHE_DIR",
     "STATE_FILE",
 )
+SYSTEM_CONFIG_HELPER_KEYS = (
+    "FEISHU_BASE_LINK",
+    "FEISHU_RANKING_BASE_LINK",
+    "FEISHU_TABLE_LINK",
+)
+
+_FEISHU_BASE_LINK_PATTERN = re.compile(r"/base/([A-Za-z0-9]+)")
+_FEISHU_TABLE_ID_PATTERN = re.compile(r"\b(tbl[A-Za-z0-9]+)\b")
 
 DASHBOARD_SERIES_META = {
     "mode": "daily",
@@ -145,6 +154,59 @@ def load_system_config(env_file: str, urls_file: str) -> Dict[str, Any]:
     }
 
 
+def _extract_feishu_base_token(value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    match = _FEISHU_BASE_LINK_PATTERN.search(text)
+    if match:
+        return match.group(1)
+    if text.startswith("http://") or text.startswith("https://"):
+        return ""
+    return text
+
+
+def _extract_feishu_table_id(value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    match = _FEISHU_TABLE_ID_PATTERN.search(text)
+    if match:
+        return match.group(1)
+    if text.startswith("http://") or text.startswith("https://"):
+        return ""
+    return text
+
+
+def _normalize_system_config_updates(updates: Dict[str, str]) -> Dict[str, str]:
+    normalized = dict(updates)
+    shared_base_link = str(normalized.get("FEISHU_BASE_LINK") or "").strip()
+    ranking_base_link = str(normalized.get("FEISHU_RANKING_BASE_LINK") or "").strip()
+    table_link = str(normalized.get("FEISHU_TABLE_LINK") or "").strip()
+
+    default_base_token = _extract_feishu_base_token(shared_base_link)
+    ranking_base_token = _extract_feishu_base_token(ranking_base_link) or default_base_token
+
+    if shared_base_link and default_base_token:
+        normalized["FEISHU_BITABLE_APP_TOKEN"] = default_base_token
+    elif normalized.get("FEISHU_BITABLE_APP_TOKEN"):
+        normalized["FEISHU_BITABLE_APP_TOKEN"] = _extract_feishu_base_token(str(normalized["FEISHU_BITABLE_APP_TOKEN"]))
+
+    if ranking_base_link and ranking_base_token:
+        normalized["FEISHU_RANKING_BITABLE_APP_TOKEN"] = ranking_base_token
+    elif normalized.get("FEISHU_RANKING_BITABLE_APP_TOKEN"):
+        normalized["FEISHU_RANKING_BITABLE_APP_TOKEN"] = _extract_feishu_base_token(str(normalized["FEISHU_RANKING_BITABLE_APP_TOKEN"]))
+    elif default_base_token:
+        normalized["FEISHU_RANKING_BITABLE_APP_TOKEN"] = default_base_token
+
+    if table_link:
+        normalized["FEISHU_TABLE_ID"] = _extract_feishu_table_id(table_link)
+    elif normalized.get("FEISHU_TABLE_ID"):
+        normalized["FEISHU_TABLE_ID"] = _extract_feishu_table_id(str(normalized["FEISHU_TABLE_ID"]))
+
+    return normalized
+
+
 def save_system_config(env_file: str, urls_file: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     env_path = Path(env_file).expanduser().resolve()
     urls_path = resolve_text_path(urls_file).expanduser().resolve()
@@ -155,7 +217,9 @@ def save_system_config(env_file: str, urls_file: str, payload: Dict[str, Any]) -
     updates = payload.get("config") or {}
     if not isinstance(updates, dict):
         raise ValueError("config 必须是对象")
-    normalized = {str(key): str(value or "") for key, value in updates.items() if str(key) in SYSTEM_CONFIG_KEYS}
+    allowed_input_keys = set(SYSTEM_CONFIG_KEYS) | set(SYSTEM_CONFIG_HELPER_KEYS)
+    normalized = {str(key): str(value or "") for key, value in updates.items() if str(key) in allowed_input_keys}
+    normalized = _normalize_system_config_updates(normalized)
 
     kept_keys = set(normalized.keys())
     new_lines: List[str] = []

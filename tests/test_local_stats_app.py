@@ -82,6 +82,30 @@ class LocalStatsAppTest(unittest.TestCase):
             self.assertEqual(result["config"]["PROJECT_CACHE_DIR"], "/data/cache")
             self.assertIn("u2", urls_path.read_text(encoding="utf-8"))
 
+    def test_save_system_config_accepts_feishu_links(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            env_path = Path(temp_dir) / ".env"
+            urls_path = Path(temp_dir) / "urls.txt"
+            env_path.write_text("", encoding="utf-8")
+            urls_path.write_text("", encoding="utf-8")
+
+            result = save_system_config(
+                str(env_path),
+                str(urls_path),
+                {
+                    "config": {
+                        "FEISHU_BASE_LINK": "https://bcngptco7wrj.feishu.cn/base/IILDbLfeVaRztqsYytSc05Gqnu9?from=from_copylink",
+                        "FEISHU_RANKING_BASE_LINK": "",
+                        "FEISHU_TABLE_LINK": "https://bcngptco7wrj.feishu.cn/base/IILDbLfeVaRztqsYytSc05Gqnu9?table=tbl6oiY6SO03mpgd&view=vew123",
+                    },
+                    "urls_text": "",
+                },
+            )
+
+            self.assertEqual(result["config"]["FEISHU_BITABLE_APP_TOKEN"], "IILDbLfeVaRztqsYytSc05Gqnu9")
+            self.assertEqual(result["config"]["FEISHU_RANKING_BITABLE_APP_TOKEN"], "IILDbLfeVaRztqsYytSc05Gqnu9")
+            self.assertEqual(result["config"]["FEISHU_TABLE_ID"], "tbl6oiY6SO03mpgd")
+
     def test_build_daily_series(self) -> None:
         rows = [
             {"日期文本": "2026-03-17", "账号ID": "u1", "粉丝数": 100, "首页总点赞": 20, "首页总评论": 5, "首页可见作品数": 2},

@@ -46,6 +46,9 @@ function renderSystemConfig() {
   const payload = state.systemConfig || {};
   const config = payload.config || {};
   document.getElementById("configXhsCookie").value = config.XHS_COOKIE || "";
+  document.getElementById("configFeishuBaseLink").value = config.FEISHU_BITABLE_APP_TOKEN || "";
+  document.getElementById("configFeishuRankingBaseLink").value = config.FEISHU_RANKING_BITABLE_APP_TOKEN || "";
+  document.getElementById("configFeishuTableLink").value = config.FEISHU_TABLE_ID || "";
   document.getElementById("configFeishuAppId").value = config.FEISHU_APP_ID || "";
   document.getElementById("configFeishuAppSecret").value = config.FEISHU_APP_SECRET || "";
   document.getElementById("configFeishuBitableToken").value = config.FEISHU_BITABLE_APP_TOKEN || "";
@@ -66,6 +69,9 @@ async function saveSystemConfig() {
     body: JSON.stringify({
       config: {
         XHS_COOKIE: document.getElementById("configXhsCookie").value,
+        FEISHU_BASE_LINK: document.getElementById("configFeishuBaseLink").value,
+        FEISHU_RANKING_BASE_LINK: document.getElementById("configFeishuRankingBaseLink").value,
+        FEISHU_TABLE_LINK: document.getElementById("configFeishuTableLink").value,
         FEISHU_APP_ID: document.getElementById("configFeishuAppId").value,
         FEISHU_APP_SECRET: document.getElementById("configFeishuAppSecret").value,
         FEISHU_BITABLE_APP_TOKEN: document.getElementById("configFeishuBitableToken").value,
