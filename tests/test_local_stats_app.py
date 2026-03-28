@@ -24,6 +24,7 @@ from xhs_feishu_monitor.local_stats_app.server import (
     DashboardStore,
     LoginStateStore,
     MonitoringSyncStore,
+    build_mobile_rankings_payload,
     build_dashboard_account_index,
     build_dashboard_payload_with_reports,
     build_login_state_payload,
@@ -115,6 +116,35 @@ class LocalStatsAppTest(unittest.TestCase):
         self.assertEqual(series[0]["fans"], 300)
         self.assertEqual(series[0]["likes"], 50)
         self.assertEqual(series[0]["comments"], 13)
+
+    def test_build_mobile_rankings_payload_filters_by_project(self) -> None:
+        payload = build_mobile_rankings_payload(
+            dashboard_payload={
+                "updated_at": "2026-03-28T12:00:00+08:00",
+                "rankings": {
+                    "单条点赞排行": [
+                        {"rank": 1, "account_id": "u1", "title": "A"},
+                        {"rank": 2, "account_id": "u2", "title": "B"},
+                    ],
+                    "单条评论排行": [
+                        {"rank": 1, "account_id": "u1", "title": "A"},
+                    ],
+                    "单条第二天增长排行": [
+                        {"rank": 1, "account_id": "u2", "title": "B"},
+                    ],
+                },
+            },
+            monitored_entries=[
+                {"account_id": "u1", "project": "默认项目"},
+                {"account_id": "u2", "project": "东莞"},
+            ],
+            project="东莞",
+        )
+        self.assertEqual(payload["project"], "东莞")
+        self.assertEqual(len(payload["rankings"]["likes"]), 1)
+        self.assertEqual(payload["rankings"]["likes"][0]["account_id"], "u2")
+        self.assertEqual(len(payload["rankings"]["comments"]), 0)
+        self.assertEqual(len(payload["rankings"]["growth"]), 1)
 
     def test_build_account_series_map(self) -> None:
         rows = [

@@ -1345,6 +1345,46 @@ def build_dashboard_payload_with_reports(
     return merged_payload
 
 
+def build_mobile_rankings_payload(
+    *,
+    dashboard_payload: Dict[str, Any],
+    monitored_entries: List[Dict[str, Any]],
+    project: str = "",
+) -> Dict[str, Any]:
+    normalized_project = normalize_project_name(project) if str(project or "").strip() else ""
+    rankings = dashboard_payload.get("rankings") or {}
+    if normalized_project:
+        project_account_ids = {
+            str(item.get("account_id") or "").strip()
+            for item in (monitored_entries or [])
+            if normalize_project_name(str(item.get("project") or DEFAULT_PROJECT_NAME)) == normalized_project
+        }
+    else:
+        project_account_ids = {
+            str(item.get("account_id") or "").strip()
+            for item in (monitored_entries or [])
+            if str(item.get("account_id") or "").strip()
+        }
+
+    def filter_rows(rank_type: str) -> List[Dict[str, Any]]:
+        rows = rankings.get(rank_type) or []
+        if not normalized_project:
+            return list(rows)
+        return [dict(item) for item in rows if str(item.get("account_id") or "").strip() in project_account_ids]
+
+    return {
+        "ok": True,
+        "project": normalized_project or "all",
+        "updated_at": str(dashboard_payload.get("updated_at") or dashboard_payload.get("generated_at") or "").strip(),
+        "generated_at": str(dashboard_payload.get("generated_at") or "").strip(),
+        "rankings": {
+            "likes": filter_rows("单条点赞排行"),
+            "comments": filter_rows("单条评论排行"),
+            "growth": filter_rows("单条第二天增长排行"),
+        },
+    }
+
+
 def refresh_project_export_snapshots(
     *,
     payload: Dict[str, Any],
@@ -2919,6 +2959,17 @@ def build_handler(
             if path == "/api/dashboard":
                 force = "refresh=1" in self.path
                 payload = dashboard_store.get_payload(force=force)
+                self.send_json_response(HTTPStatus.OK, payload)
+                return
+            if path == "/api/mobile-rankings":
+                parsed = urllib.parse.urlparse(self.path)
+                params = urllib.parse.parse_qs(parsed.query)
+                project = str((params.get("project") or [""])[0]).strip()
+                payload = build_mobile_rankings_payload(
+                    dashboard_payload=dashboard_store.get_payload(force=False),
+                    monitored_entries=monitoring_store.get_payload().get("entries") or [],
+                    project=project,
+                )
                 self.send_json_response(HTTPStatus.OK, payload)
                 return
             if path == "/api/system-config":
