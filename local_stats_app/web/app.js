@@ -1,6 +1,7 @@
 const state = {
   payload: null,
   monitoring: null,
+  systemConfig: null,
   activeAccountId: "",
   rankingScope: "all",
   trendWindow: 7,
@@ -29,6 +30,61 @@ function formatNumber(value) {
 function formatDateTime(value) {
   if (!value) return "未更新";
   return String(value).replace("T", " ").slice(0, 19);
+}
+
+async function loadSystemConfig() {
+  const response = await fetch("/api/system-config");
+  const payload = await response.json();
+  if (!response.ok) {
+    throw new Error(payload.message || "系统配置加载失败");
+  }
+  state.systemConfig = payload;
+  renderSystemConfig();
+}
+
+function renderSystemConfig() {
+  const payload = state.systemConfig || {};
+  const config = payload.config || {};
+  document.getElementById("configXhsCookie").value = config.XHS_COOKIE || "";
+  document.getElementById("configFeishuAppId").value = config.FEISHU_APP_ID || "";
+  document.getElementById("configFeishuAppSecret").value = config.FEISHU_APP_SECRET || "";
+  document.getElementById("configFeishuBitableToken").value = config.FEISHU_BITABLE_APP_TOKEN || "";
+  document.getElementById("configFeishuRankingToken").value = config.FEISHU_RANKING_BITABLE_APP_TOKEN || "";
+  document.getElementById("configFeishuTableId").value = config.FEISHU_TABLE_ID || "";
+  document.getElementById("configProjectCacheDir").value = config.PROJECT_CACHE_DIR || "";
+  document.getElementById("configStateFile").value = config.STATE_FILE || "";
+  document.getElementById("configUrlsText").value = payload.urls_text || "";
+  document.getElementById("systemConfigSummary").textContent = payload.env_file
+    ? `当前配置：${payload.env_file}`
+    : "当前未加载配置";
+}
+
+async function saveSystemConfig() {
+  const response = await fetch("/api/system-config", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      config: {
+        XHS_COOKIE: document.getElementById("configXhsCookie").value,
+        FEISHU_APP_ID: document.getElementById("configFeishuAppId").value,
+        FEISHU_APP_SECRET: document.getElementById("configFeishuAppSecret").value,
+        FEISHU_BITABLE_APP_TOKEN: document.getElementById("configFeishuBitableToken").value,
+        FEISHU_RANKING_BITABLE_APP_TOKEN: document.getElementById("configFeishuRankingToken").value,
+        FEISHU_TABLE_ID: document.getElementById("configFeishuTableId").value,
+        PROJECT_CACHE_DIR: document.getElementById("configProjectCacheDir").value,
+        STATE_FILE: document.getElementById("configStateFile").value,
+      },
+      urls_text: document.getElementById("configUrlsText").value,
+    }),
+  });
+  const payload = await response.json();
+  if (!response.ok) {
+    throw new Error(payload.message || "保存配置失败");
+  }
+  state.systemConfig = payload;
+  renderSystemConfig();
+  document.getElementById("systemConfigResult").textContent = "配置已保存";
+  await Promise.all([loadMonitoring(), loadDashboard(true)]);
 }
 
 function formatScheduleWindow(plan = {}) {
@@ -2828,6 +2884,20 @@ document.getElementById("assignProjectButton").addEventListener("click", () => {
     document.getElementById("addResult").textContent = error.message;
   });
 });
+document.getElementById("reloadSystemConfigButton").addEventListener("click", () => {
+  loadSystemConfig()
+    .then(() => {
+      document.getElementById("systemConfigResult").textContent = "已导入当前项目配置";
+    })
+    .catch((error) => {
+      document.getElementById("systemConfigResult").textContent = error.message;
+    });
+});
+document.getElementById("saveSystemConfigButton").addEventListener("click", () => {
+  saveSystemConfig().catch((error) => {
+    document.getElementById("systemConfigResult").textContent = error.message;
+  });
+});
 document.querySelectorAll(".scope-button").forEach((button) => {
   button.addEventListener("click", () => {
     state.rankingScope = button.dataset.rankingScope || "account";
@@ -2845,7 +2915,7 @@ window.setInterval(() => {
   renderManualUpdateState(state.monitoring?.sync_status || {});
 }, 1000);
 
-Promise.all([loadDashboard(), loadMonitoring()]).catch((error) => {
+Promise.all([loadDashboard(), loadMonitoring(), loadSystemConfig()]).catch((error) => {
   document.getElementById("portalCards").innerHTML = `<div class="empty-state">${error.message}</div>`;
   document.getElementById("monitorList").innerHTML = `<div class="empty-state">${error.message}</div>`;
 });

@@ -97,6 +97,16 @@ ALERT_TABLE_NAME = "小红书评论预警"
 WEB_DIR = Path(__file__).resolve().parent / "web"
 DEFAULT_URLS_FILE = "xhs_feishu_monitor/input/robam_multi_profile_urls.txt"
 DEFAULT_ACCOUNT_RANKING_EXPORT_DIR = "/Users/cc/Downloads/飞书缓存/账号榜单导出"
+SYSTEM_CONFIG_KEYS = (
+    "XHS_COOKIE",
+    "FEISHU_APP_ID",
+    "FEISHU_APP_SECRET",
+    "FEISHU_BITABLE_APP_TOKEN",
+    "FEISHU_RANKING_BITABLE_APP_TOKEN",
+    "FEISHU_TABLE_ID",
+    "PROJECT_CACHE_DIR",
+    "STATE_FILE",
+)
 
 DASHBOARD_SERIES_META = {
     "mode": "daily",
@@ -108,6 +118,69 @@ DASHBOARD_SERIES_META = {
 
 def iso_now() -> str:
     return datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def load_system_config(env_file: str, urls_file: str) -> Dict[str, Any]:
+    env_path = Path(env_file).expanduser().resolve()
+    urls_path = resolve_text_path(urls_file).expanduser().resolve()
+    env_values: Dict[str, str] = {}
+    env_lines: List[str] = []
+    if env_path.exists():
+        env_lines = env_path.read_text(encoding="utf-8").splitlines()
+        for raw in env_lines:
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            env_values[key.strip()] = value.strip()
+    urls_text = urls_path.read_text(encoding="utf-8") if urls_path.exists() else ""
+    config = {key: env_values.get(key, "") for key in SYSTEM_CONFIG_KEYS}
+    return {
+        "ok": True,
+        "env_file": str(env_path),
+        "urls_file": str(urls_path),
+        "config": config,
+        "urls_text": urls_text,
+        "updated_at": iso_now(),
+    }
+
+
+def save_system_config(env_file: str, urls_file: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    env_path = Path(env_file).expanduser().resolve()
+    urls_path = resolve_text_path(urls_file).expanduser().resolve()
+    env_path.parent.mkdir(parents=True, exist_ok=True)
+    urls_path.parent.mkdir(parents=True, exist_ok=True)
+
+    current_lines = env_path.read_text(encoding="utf-8").splitlines() if env_path.exists() else []
+    updates = payload.get("config") or {}
+    if not isinstance(updates, dict):
+        raise ValueError("config 必须是对象")
+    normalized = {str(key): str(value or "") for key, value in updates.items() if str(key) in SYSTEM_CONFIG_KEYS}
+
+    kept_keys = set(normalized.keys())
+    new_lines: List[str] = []
+    seen: set[str] = set()
+    for raw in current_lines:
+        line = raw.rstrip("\n")
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in line:
+            new_lines.append(line)
+            continue
+        key, _value = line.split("=", 1)
+        key = key.strip()
+        if key in normalized:
+            new_lines.append(f"{key}={normalized[key]}")
+            seen.add(key)
+        else:
+            new_lines.append(line)
+    for key in SYSTEM_CONFIG_KEYS:
+        if key in normalized and key not in seen:
+            new_lines.append(f"{key}={normalized[key]}")
+    env_path.write_text("\n".join(new_lines).rstrip() + "\n", encoding="utf-8")
+
+    urls_text = str(payload.get("urls_text") or "")
+    urls_path.write_text(urls_text, encoding="utf-8")
+    return load_system_config(str(env_path), str(urls_path))
 
 
 def _parse_clock_minutes(value: str, default: str) -> int:
@@ -2784,6 +2857,9 @@ def build_handler(
                 payload = dashboard_store.get_payload(force=force)
                 self.send_json_response(HTTPStatus.OK, payload)
                 return
+            if path == "/api/system-config":
+                self.send_json_response(HTTPStatus.OK, load_system_config(monitoring_store.env_file, monitoring_store.urls_file))
+                return
             if path == "/api/health":
                 self.send_json_response(
                     HTTPStatus.OK,
@@ -2922,6 +2998,11 @@ def build_handler(
                 if path == "/api/monitored-accounts/sync-project":
                     payload = self.read_json_body()
                     result = monitoring_store.request_sync(project=str(payload.get("project") or ""))
+                    self.send_json_response(HTTPStatus.OK, result)
+                    return
+                if path == "/api/system-config":
+                    payload = self.read_json_body()
+                    result = save_system_config(monitoring_store.env_file, monitoring_store.urls_file, payload)
                     self.send_json_response(HTTPStatus.OK, result)
                     return
                 if path == "/api/login-state/check":

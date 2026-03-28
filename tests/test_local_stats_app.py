@@ -47,12 +47,41 @@ from xhs_feishu_monitor.local_stats_app.server import (
     wait_for_xiaohongshu_login,
     write_monitored_entries,
     write_monitored_urls,
+    load_system_config,
+    save_system_config,
 )
 from xhs_feishu_monitor.local_stats_app.login_state import is_transient_self_check_failure
 from xhs_feishu_monitor.project_sync_status import update_project_sync_status
 
 
 class LocalStatsAppTest(unittest.TestCase):
+    def test_load_and_save_system_config(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            env_path = Path(temp_dir) / ".env"
+            urls_path = Path(temp_dir) / "urls.txt"
+            env_path.write_text("XHS_COOKIE=old_cookie\nFEISHU_APP_ID=old_app\n", encoding="utf-8")
+            urls_path.write_text("https://www.xiaohongshu.com/user/profile/u1\n", encoding="utf-8")
+            payload = load_system_config(str(env_path), str(urls_path))
+            self.assertEqual(payload["config"]["XHS_COOKIE"], "old_cookie")
+            self.assertIn("u1", payload["urls_text"])
+
+            result = save_system_config(
+                str(env_path),
+                str(urls_path),
+                {
+                    "config": {
+                        "XHS_COOKIE": "new_cookie",
+                        "FEISHU_APP_ID": "new_app",
+                        "PROJECT_CACHE_DIR": "/data/cache",
+                    },
+                    "urls_text": "https://www.xiaohongshu.com/user/profile/u2\n",
+                },
+            )
+            self.assertEqual(result["config"]["XHS_COOKIE"], "new_cookie")
+            self.assertEqual(result["config"]["FEISHU_APP_ID"], "new_app")
+            self.assertEqual(result["config"]["PROJECT_CACHE_DIR"], "/data/cache")
+            self.assertIn("u2", urls_path.read_text(encoding="utf-8"))
+
     def test_build_daily_series(self) -> None:
         rows = [
             {"日期文本": "2026-03-17", "账号ID": "u1", "粉丝数": 100, "首页总点赞": 20, "首页总评论": 5, "首页可见作品数": 2},
