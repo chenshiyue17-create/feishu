@@ -4,10 +4,12 @@ const state = {
   activeAccountId: "",
   rankingScope: "all",
   trendWindow: 7,
+  calendarMonth: "",
+  calendarSelectedDate: "",
   monitorQuery: "",
   monitorFilter: "all",
   monitorProjectFilter: "all",
-  monitorViewMode: "table",
+  monitorViewMode: "cards",
   collapseStableProjects: true,
   monitorPage: 1,
   monitorPageSize: 30,
@@ -27,6 +29,27 @@ function formatNumber(value) {
 function formatDateTime(value) {
   if (!value) return "未更新";
   return String(value).replace("T", " ").slice(0, 19);
+}
+
+function formatScheduleWindow(plan = {}) {
+  const start = String(plan.window_start || "").trim();
+  const end = String(plan.window_end || "").trim();
+  if (!start || !end) return "";
+  return `${start}-${end}`;
+}
+
+function buildSchedulePlanSummary(plan = {}) {
+  if (!plan || !plan.enabled) return "";
+  const nextRun = plan.next_run_at ? formatDateTime(plan.next_run_at) : "";
+  const windowText = formatScheduleWindow(plan);
+  const perRun = Number(plan.per_run || 0);
+  const projectCount = Number(plan.project_count || 0);
+  const pieces = [];
+  if (nextRun) pieces.push(`下一轮 ${nextRun}`);
+  if (windowText) pieces.push(`窗口 ${windowText}`);
+  if (perRun) pieces.push(`单轮 ${formatNumber(perRun)} 账号`);
+  if (projectCount) pieces.push(`${formatNumber(projectCount)} 个项目轮转`);
+  return pieces.join(" · ");
 }
 
 function formatSignedNumber(value) {
@@ -305,6 +328,7 @@ async function loadMonitoring() {
   ensureProjectSelection();
   ensureActiveAccount();
   renderMonitoring();
+  renderApp();
   schedulePolling();
 }
 
@@ -329,7 +353,9 @@ function schedulePolling() {
 
 function renderApp() {
   renderMeta();
+  renderOperationsHub();
   renderProjectHome();
+  renderProjectCalendar();
   renderAccountFocus();
   renderPortalCards();
   renderTrendWindowTabs();
@@ -338,6 +364,91 @@ function renderApp() {
   renderRankingList();
   renderAccounts();
   renderAlerts();
+}
+
+function renderOperationsHub() {
+  const root = document.getElementById("operationsHub");
+  const summaryNode = document.getElementById("operationsSummary");
+  if (!root || !summaryNode) return;
+  const projectName = getSelectedProjectName();
+  const selectedProject = (state.monitoring?.projects || []).find((item) => item.name === projectName) || null;
+  const syncStatus = state.monitoring?.sync_status || {};
+  const uploadStatus = syncStatus.upload_status || {};
+  const loginState = state.monitoring?.login_state || {};
+  const projectSync = selectedProject?.sync_status || {};
+  const manualState = getManualUpdateState(syncStatus);
+  const isAllProjects = projectName === "all";
+  const projectLabel = isAllProjects ? "全部项目" : projectName;
+  const loginLabel =
+    loginState.state === "ok"
+      ? "登录态正常"
+      : loginState.state === "warning"
+        ? "抓取异常，建议复核"
+        : loginState.state === "checking"
+          ? "正在自检"
+          : loginState.state === "error"
+            ? "登录态异常"
+            : "等待自检";
+  const uploadLabel =
+    uploadStatus.state === "running"
+      ? (uploadStatus.scope_label || "飞书上传中")
+      : uploadStatus.last_error
+        ? "上传失败，建议重试"
+        : uploadStatus.last_success_at
+          ? `最近上传 ${formatDateTime(uploadStatus.last_success_at)}`
+          : "飞书待命";
+  const syncLabel =
+    syncStatus.state === "running"
+      ? "本地采集中"
+      : manualState.cooldownSeconds > 0
+        ? `采集冷却 ${formatDurationShort(manualState.cooldownSeconds)}`
+        : "可更新本地看板";
+  const projectResult =
+    projectSync.total_accounts
+      ? `${formatNumber(projectSync.total_accounts)} 账号 / ${formatNumber(projectSync.total_works || 0)} 作品`
+      : (selectedProject ? `${formatNumber(selectedProject.active_count || selectedProject.total || 0)} 个账号` : "等待项目数据");
+  const nextAction =
+    loginState.state === "error"
+      ? "先点立即自检并完成网页登录"
+      : syncStatus.state === "running"
+        ? "等待本地看板采集完成"
+        : uploadStatus.state === "running"
+          ? "等待飞书上传完成"
+          : isAllProjects
+            ? "先选一个项目，再更新看板或上传飞书"
+            : "建议先更新本地看板，再按需上传当前项目到飞书";
+
+  summaryNode.textContent = `${projectLabel} · ${syncLabel} · ${uploadLabel}`;
+  root.innerHTML = `
+    <article class="operations-card is-focus">
+      <div class="operations-card-label">当前项目</div>
+      <div class="operations-card-title">${projectLabel}</div>
+      <div class="operations-card-copy">${projectResult}</div>
+      <div class="operations-chip-row">
+        <span class="operations-chip">${syncLabel}</span>
+        <span class="operations-chip">${uploadLabel}</span>
+      </div>
+    </article>
+    <article class="operations-card">
+      <div class="operations-card-label">推荐下一步</div>
+      <div class="operations-card-title">今日动作</div>
+      <div class="operations-card-copy">${nextAction}</div>
+      <div class="operations-list">
+        <span>1. 更新本地看板</span>
+        <span>2. 检查项目概况与榜单</span>
+        <span>3. 按需上传当前项目到飞书</span>
+      </div>
+    </article>
+    <article class="operations-card">
+      <div class="operations-card-label">系统状态</div>
+      <div class="operations-card-title">${loginLabel}</div>
+      <div class="operations-card-copy">${loginState.message || "优先用自检判断是否需要重新登录。"}</div>
+      <div class="operations-chip-row">
+        ${loginState.checked_at ? `<span class="operations-chip">上次自检 ${formatDateTime(loginState.checked_at)}</span>` : ""}
+        ${uploadStatus.scope_label ? `<span class="operations-chip">${uploadStatus.scope_label}</span>` : ""}
+      </div>
+    </article>
+  `;
 }
 
 function ensureActiveAccount() {
@@ -456,6 +567,253 @@ function getProjectSeries(projectName = getSelectedProjectName()) {
     });
   });
   return Array.from(grouped.values()).sort((a, b) => String(a.date).localeCompare(String(b.date)));
+}
+
+function monthKeyFromDate(dateText) {
+  return String(dateText || "").slice(0, 7);
+}
+
+function formatCalendarMonth(monthKey) {
+  if (!monthKey || !monthKey.includes("-")) return "暂无历史";
+  const [year, month] = monthKey.split("-");
+  return `${year}年${month}月`;
+}
+
+function getMonthDateRange(monthKey) {
+  if (!monthKey || !monthKey.includes("-")) return null;
+  const [yearText, monthText] = monthKey.split("-");
+  const year = Number(yearText);
+  const month = Number(monthText);
+  if (!year || !month) return null;
+  const firstDay = new Date(year, month - 1, 1);
+  const lastDay = new Date(year, month, 0);
+  return { firstDay, lastDay };
+}
+
+function toIsoDate(date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function buildProjectCalendarState(projectName = getSelectedProjectName()) {
+  const accountSeries = state.payload?.account_series || {};
+  const accountCards = new Map((state.payload?.accounts || []).map((item) => [item.account_id, item]));
+  const accountIds = projectName === "all" ? new Set(Object.keys(accountSeries)) : getProjectAccountIds(projectName);
+  const grouped = new Map();
+
+  accountIds.forEach((accountId) => {
+    const series = accountSeries[accountId] || [];
+    const card = accountCards.get(accountId) || {};
+    series.forEach((point) => {
+      const date = String(point.date || "").trim();
+      if (!date) return;
+      if (!grouped.has(date)) {
+        grouped.set(date, {
+          date,
+          fans: 0,
+          interaction: 0,
+          likes: 0,
+          comments: 0,
+          works: 0,
+          accounts: [],
+        });
+      }
+      const bucket = grouped.get(date);
+      bucket.fans += Number(point.fans || 0);
+      bucket.interaction += Number(point.interaction || 0);
+      bucket.likes += Number(point.likes || 0);
+      bucket.comments += Number(point.comments || 0);
+      bucket.works += Number(point.works || 0);
+      bucket.accounts.push({
+        account_id: accountId,
+        account: card.account || card.display_name || accountId,
+        profile_url: card.profile_url || "",
+        fans: Number(point.fans || 0),
+        interaction: Number(point.interaction || 0),
+        likes: Number(point.likes || 0),
+        comments: Number(point.comments || 0),
+        works: Number(point.works || 0),
+      });
+    });
+  });
+
+  const dates = Array.from(grouped.keys()).sort();
+  const months = Array.from(new Set(dates.map(monthKeyFromDate))).sort();
+  if (!months.length) {
+    state.calendarMonth = "";
+    state.calendarSelectedDate = "";
+    return { months: [], cells: [], selectedDay: null, summary: "", availableDates: [] };
+  }
+
+  if (!months.includes(state.calendarMonth)) {
+    state.calendarMonth = months[months.length - 1];
+  }
+
+  const activeMonthDates = dates.filter((date) => monthKeyFromDate(date) === state.calendarMonth);
+  if (!activeMonthDates.length) {
+    state.calendarMonth = months[months.length - 1];
+  }
+  const monthDates = dates.filter((date) => monthKeyFromDate(date) === state.calendarMonth);
+
+  if (!monthDates.includes(state.calendarSelectedDate)) {
+    state.calendarSelectedDate = monthDates[monthDates.length - 1] || "";
+  }
+
+  const range = getMonthDateRange(state.calendarMonth);
+  if (!range) {
+    return { months, cells: [], selectedDay: null, summary: "", availableDates: dates };
+  }
+
+  const firstWeekday = (range.firstDay.getDay() + 6) % 7;
+  const totalDays = range.lastDay.getDate();
+  const cells = [];
+  for (let index = 0; index < firstWeekday; index += 1) {
+    cells.push({ empty: true, key: `empty-start-${index}` });
+  }
+  for (let day = 1; day <= totalDays; day += 1) {
+    const currentDate = new Date(range.firstDay.getFullYear(), range.firstDay.getMonth(), day);
+    const dateKey = toIsoDate(currentDate);
+    const bucket = grouped.get(dateKey);
+    cells.push({
+      empty: false,
+      date: dateKey,
+      day,
+      hasData: Boolean(bucket),
+      bucket: bucket || null,
+      isSelected: state.calendarSelectedDate === dateKey,
+    });
+  }
+  while (cells.length % 7 !== 0) {
+    cells.push({ empty: true, key: `empty-end-${cells.length}` });
+  }
+
+  const selectedDay = grouped.get(state.calendarSelectedDate) || null;
+  const summary = monthDates.length
+    ? `${formatCalendarMonth(state.calendarMonth)} 共 ${formatNumber(monthDates.length)} 天有留底，最近留底 ${monthDates[monthDates.length - 1]}`
+    : `${formatCalendarMonth(state.calendarMonth)} 暂无留底`;
+
+  if (selectedDay) {
+    selectedDay.accounts.sort((left, right) => (right.interaction - left.interaction) || (right.likes - left.likes) || (right.comments - left.comments));
+  }
+
+  return {
+    months,
+    cells,
+    selectedDay,
+    summary,
+    availableDates: dates,
+  };
+}
+
+function renderProjectCalendar() {
+  const titleNode = document.getElementById("projectCalendarTitle");
+  const monthNode = document.getElementById("projectCalendarMonth");
+  const summaryNode = document.getElementById("projectCalendarSummary");
+  const gridNode = document.getElementById("projectCalendar");
+  const detailNode = document.getElementById("projectCalendarDetail");
+  const prevButton = document.getElementById("calendarPrevMonth");
+  const nextButton = document.getElementById("calendarNextMonth");
+  const projectName = getSelectedProjectName();
+
+  if (projectName === "all") {
+    titleNode.textContent = "项目日历";
+    monthNode.textContent = "请选择项目";
+    summaryNode.textContent = "进入单个项目后，可按日历查看历史留底。";
+    gridNode.innerHTML = `<div class="empty-state">请选择单个项目后查看历史日历。</div>`;
+    detailNode.innerHTML = "";
+    prevButton.disabled = true;
+    nextButton.disabled = true;
+    return;
+  }
+
+  const calendarState = buildProjectCalendarState(projectName);
+  titleNode.textContent = `${projectName} · 历史日历`;
+  monthNode.textContent = formatCalendarMonth(state.calendarMonth);
+  summaryNode.textContent = `${calendarState.summary} · 每天展示该项目账号留底总量，可点日期看当天明细。`;
+
+  const monthIndex = calendarState.months.indexOf(state.calendarMonth);
+  prevButton.disabled = monthIndex <= 0;
+  nextButton.disabled = monthIndex === -1 || monthIndex >= calendarState.months.length - 1;
+
+  if (!calendarState.cells.length) {
+    gridNode.innerHTML = `<div class="empty-state">当前项目还没有历史留底。</div>`;
+    detailNode.innerHTML = "";
+    return;
+  }
+
+  const weekLabels = ["一", "二", "三", "四", "五", "六", "日"];
+  gridNode.innerHTML = `
+    <div class="calendar-weekdays">
+      ${weekLabels.map((label) => `<div class="calendar-weekday">${label}</div>`).join("")}
+    </div>
+    <div class="calendar-cells">
+      ${calendarState.cells
+        .map((cell) => {
+          if (cell.empty) {
+            return `<div class="calendar-cell is-empty"></div>`;
+          }
+          const bucket = cell.bucket || {};
+          return `
+            <button class="calendar-cell ${cell.hasData ? "has-data" : "is-empty-day"} ${cell.isSelected ? "is-selected" : ""}" data-calendar-date="${cell.date}" type="button">
+              <div class="calendar-cell-day">${cell.day}</div>
+              ${
+                cell.hasData
+                  ? `
+                <div class="calendar-cell-metrics">
+                  <span>粉 ${formatNumber(bucket.fans)}</span>
+                  <span>赞 ${formatNumber(bucket.likes)}</span>
+                  <span>评 ${formatNumber(bucket.comments)}</span>
+                </div>
+                <div class="calendar-cell-meta">${formatNumber((bucket.accounts || []).length)} 个账号</div>
+              `
+                  : `<div class="calendar-cell-empty">无采集</div>`
+              }
+            </button>
+          `;
+        })
+        .join("")}
+    </div>
+  `;
+
+  gridNode.querySelectorAll("[data-calendar-date]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.calendarSelectedDate = button.dataset.calendarDate || "";
+      renderProjectCalendar();
+    });
+  });
+
+  const selected = calendarState.selectedDay;
+  if (!selected) {
+    detailNode.innerHTML = `<div class="empty-state">当前月份暂无可查看的留底明细。</div>`;
+    return;
+  }
+
+  detailNode.innerHTML = `
+    <div class="project-calendar-detail-head">
+      <div>
+        <div class="project-calendar-detail-title">${selected.date} 留底</div>
+        <div class="project-calendar-detail-meta">项目总量：粉丝 ${formatNumber(selected.fans)} · 获赞 ${formatNumber(selected.interaction)} · 点赞 ${formatNumber(selected.likes)} · 评论 ${formatNumber(selected.comments)}</div>
+      </div>
+      <div class="project-calendar-detail-meta">${formatNumber(selected.accounts.length)} 个账号</div>
+    </div>
+    <div class="project-calendar-account-list">
+      ${selected.accounts
+        .slice(0, 8)
+        .map(
+          (item) => `
+            <article class="project-calendar-account-item">
+              <div class="project-calendar-account-title">
+                ${item.profile_url ? `<a class="note-link" href="${item.profile_url}" target="_blank" rel="noreferrer">${item.account}</a>` : item.account}
+              </div>
+              <div class="project-calendar-account-meta">粉丝 ${formatNumber(item.fans)} · 获赞 ${formatNumber(item.interaction)} · 点赞 ${formatNumber(item.likes)} · 评论 ${formatNumber(item.comments)} · 作品 ${formatNumber(item.works)}</div>
+            </article>
+          `,
+        )
+        .join("")}
+    </div>
+  `;
 }
 
 function getProjectTopContentRows(limit = 5) {
@@ -1075,8 +1433,6 @@ function renderMonitoring() {
   document.getElementById("monitorPageSize").value = String(state.monitorPageSize);
   renderMonitorProjectFilterOptions(projects);
   renderProjectCards(projects, syncStatus);
-  document.getElementById("monitorViewTable").classList.toggle("is-active", state.monitorViewMode === "table");
-  document.getElementById("monitorViewCards").classList.toggle("is-active", state.monitorViewMode === "cards");
   document.querySelectorAll(".monitor-filter-button").forEach((button) => {
     button.classList.toggle("is-active", (button.dataset.monitorFilter || "all") === state.monitorFilter);
   });
@@ -1130,93 +1486,43 @@ function renderMonitoring() {
     listNode.innerHTML = `<div class="empty-state">当前筛选条件下没有账号，换个关键词或状态再试。</div>`;
     return;
   }
-  if (state.monitorViewMode === "table") {
-    listNode.className = "monitor-table";
-    listNode.innerHTML = `
-      <div class="monitor-table-head">
-        <span>账号</span>
-        <span>项目 / 状态</span>
-        <span>摘要</span>
-        <span>操作</span>
-      </div>
-      ${page.items
-        .map(
-          (entry) => `
-            <article class="monitor-table-row ${entry.active ? "" : "is-paused"}">
-              <div class="monitor-table-account">
-                <a class="monitor-chip" href="${entry.profile_url || entry.url}" target="_blank" rel="noreferrer" title="${entry.url}">
-                  ${entry.display_name || truncateMiddle(entry.url, 64)}
-                </a>
-                <div class="monitor-link-text" title="${entry.url}">${truncateMiddle(entry.url, 56)}</div>
-              </div>
-              <div class="monitor-table-status">
-                <span class="monitor-project-pill">${entry.project || "默认项目"}</span>
-                <span class="monitor-state-pill ${entry.active ? "is-active" : "is-paused"}">${entry.active ? "监测中" : "已暂停"}</span>
-                <span class="monitor-fetch-pill is-${entry.fetch_state || "checking"}">${getFetchStateText(entry.fetch_state)}</span>
-              </div>
-              <div class="monitor-table-summary">
-                <div class="monitor-summary-row">
-                  <span class="monitor-summary-chip">ID ${entry.account_id || "-"}</span>
-                  <span class="monitor-summary-chip">${entry.summary_text || "暂无快照摘要"}</span>
-                  <span class="monitor-summary-chip is-time" title="${entry.fetch_checked_at || ""}">采集 ${formatDateTime(entry.fetch_checked_at)}</span>
-                </div>
-                <div class="monitor-link-text">${entry.fetch_message || "等待首次同步"}</div>
-              </div>
-              <div class="monitor-item-actions is-table">
-                <button class="monitor-inline-button monitor-toggle-button" data-url="${entry.url}" data-active="${entry.active ? "0" : "1"}">
-                  ${entry.active ? "暂停" : "恢复"}
-                </button>
-                <button class="monitor-inline-button monitor-retry-button" data-url="${entry.url}">
-                  重试
-                </button>
-                <button class="monitor-inline-button danger-button monitor-remove-button" data-url="${entry.url}">
-                  删除
-                </button>
-              </div>
-            </article>
-          `,
-        )
-        .join("")}
-    `;
-  } else {
-    listNode.className = "monitor-list";
-    listNode.innerHTML = page.items
-      .map(
-        (entry) => `
-          <article class="monitor-item ${entry.active ? "" : "is-paused"}">
-            <div class="monitor-main">
-              <div class="monitor-title-row">
-                <a class="monitor-chip" href="${entry.profile_url || entry.url}" target="_blank" rel="noreferrer" title="${entry.url}">
-                  ${entry.display_name || truncateMiddle(entry.url, 82)}
-                </a>
-                <span class="monitor-project-pill">${entry.project || "默认项目"}</span>
-                <span class="monitor-state-pill ${entry.active ? "is-active" : "is-paused"}">${entry.active ? "监测中" : "已暂停"}</span>
-                <span class="monitor-fetch-pill is-${entry.fetch_state || "checking"}">${getFetchStateText(entry.fetch_state)}</span>
-              </div>
-              <div class="monitor-summary-row">
-                <span class="monitor-summary-chip">账号ID ${entry.account_id || "-"}</span>
-                <span class="monitor-summary-chip">${entry.summary_text || "暂无快照摘要"}</span>
-                <span class="monitor-summary-chip is-time" title="${entry.fetch_checked_at || ""}">采集 ${formatDateTime(entry.fetch_checked_at)}</span>
-                <span class="monitor-summary-chip ${entry.fetch_state === "error" ? "is-error" : entry.fetch_state === "ok" ? "is-success" : ""}">${entry.fetch_message || "等待首次同步"}</span>
-              </div>
-              <div class="monitor-link-text" title="${entry.url}">主页 ${truncateMiddle(entry.url, 72)}</div>
+  listNode.className = "monitor-list";
+  listNode.innerHTML = page.items
+    .map(
+      (entry) => `
+        <article class="monitor-item ${entry.active ? "" : "is-paused"}">
+          <div class="monitor-main">
+            <div class="monitor-title-row">
+              <a class="monitor-chip" href="${entry.profile_url || entry.url}" target="_blank" rel="noreferrer" title="${entry.url}">
+                ${entry.display_name || truncateMiddle(entry.url, 82)}
+              </a>
+              <span class="monitor-project-pill">${entry.project || "默认项目"}</span>
+              <span class="monitor-state-pill ${entry.active ? "is-active" : "is-paused"}">${entry.active ? "监测中" : "已暂停"}</span>
+              <span class="monitor-fetch-pill is-${entry.fetch_state || "checking"}">${getFetchStateText(entry.fetch_state)}</span>
             </div>
-            <div class="monitor-item-actions">
-              <button class="monitor-inline-button monitor-toggle-button" data-url="${entry.url}" data-active="${entry.active ? "0" : "1"}">
-                ${entry.active ? "暂停" : "恢复"}
-              </button>
-              <button class="monitor-inline-button monitor-retry-button" data-url="${entry.url}">
-                重试
-              </button>
-              <button class="monitor-inline-button danger-button monitor-remove-button" data-url="${entry.url}">
-                删除
-              </button>
+            <div class="monitor-summary-row">
+              <span class="monitor-summary-chip">账号ID ${entry.account_id || "-"}</span>
+              <span class="monitor-summary-chip">${entry.summary_text || "暂无快照摘要"}</span>
+              <span class="monitor-summary-chip is-time" title="${entry.fetch_checked_at || ""}">采集 ${formatDateTime(entry.fetch_checked_at)}</span>
+              <span class="monitor-summary-chip ${entry.fetch_state === "error" ? "is-error" : entry.fetch_state === "ok" ? "is-success" : ""}">${entry.fetch_message || "等待首次同步"}</span>
             </div>
-          </article>
-        `,
-      )
-      .join("");
-  }
+            <div class="monitor-link-text" title="${entry.url}">主页 ${truncateMiddle(entry.url, 72)}</div>
+          </div>
+          <div class="monitor-item-actions">
+            <button class="monitor-inline-button monitor-toggle-button" data-url="${entry.url}" data-active="${entry.active ? "0" : "1"}">
+              ${entry.active ? "暂停" : "恢复"}
+            </button>
+            <button class="monitor-inline-button monitor-retry-button" data-url="${entry.url}">
+              重试
+            </button>
+            <button class="monitor-inline-button danger-button monitor-remove-button" data-url="${entry.url}">
+              删除
+            </button>
+          </div>
+        </article>
+      `,
+    )
+    .join("");
   listNode.querySelectorAll(".monitor-toggle-button").forEach((button) => {
     button.addEventListener("click", () => {
       toggleMonitoredAccount(button.dataset.url, button.dataset.active === "1").catch((error) => {
@@ -1262,6 +1568,14 @@ function renderSyncProgress(syncStatus) {
   const uploadLastSuccessAt = uploadStatus?.last_success_at ? formatDateTime(uploadStatus.last_success_at) : "";
   const uploadLastFinishedAt = uploadStatus?.finished_at ? formatDateTime(uploadStatus.finished_at) : "";
   const uploadLastError = String(uploadStatus?.last_error || "").trim();
+  const schedulePlan = syncStatus?.schedule_plan || {};
+  const scheduleSummary = buildSchedulePlanSummary(schedulePlan);
+  const scheduleProjectChips = (schedulePlan.projects || [])
+    .slice(0, 3)
+    .map(
+      (item) =>
+        `${item.name} ${formatDateTime(item.next_run_at).slice(11, 16)} · 单轮 ${formatNumber(item.per_run || 0)} 个`
+    );
 
   if (syncStatus?.state !== "running" && !progress.phase && (!uploadStatus?.state || uploadStatus.state === "idle")) {
     root.innerHTML = `
@@ -1271,9 +1585,11 @@ function renderSyncProgress(syncStatus) {
           <div class="sync-progress-subtitle">当前无活动同步任务</div>
           <div class="sync-progress-meta">
             <span class="sync-progress-chip">状态 待命</span>
+            ${scheduleSummary ? `<span class="sync-progress-chip">${scheduleSummary}</span>` : ""}
             ${syncLastSuccessAt ? `<span class="sync-progress-chip is-success">最近成功 ${syncLastSuccessAt}</span>` : ""}
             ${syncLastFinishedAt && !syncLastSuccessAt ? `<span class="sync-progress-chip">最近结束 ${syncLastFinishedAt}</span>` : ""}
             ${syncLastError ? `<span class="sync-progress-chip is-error">${truncateMiddle(syncLastError, 72)}</span>` : ""}
+            ${scheduleProjectChips.map((text) => `<span class="sync-progress-chip">${text}</span>`).join("")}
           </div>
         </section>
         <section class="sync-progress-idle-block">
@@ -2431,6 +2747,28 @@ document.getElementById("uploadRankingButton").addEventListener("click", () => {
     document.getElementById("addResult").textContent = error.message;
   });
 });
+document.getElementById("calendarPrevMonth").addEventListener("click", () => {
+  const projectName = getSelectedProjectName();
+  if (projectName === "all") return;
+  const calendarState = buildProjectCalendarState(projectName);
+  const monthIndex = calendarState.months.indexOf(state.calendarMonth);
+  if (monthIndex > 0) {
+    state.calendarMonth = calendarState.months[monthIndex - 1];
+    state.calendarSelectedDate = "";
+    renderProjectCalendar();
+  }
+});
+document.getElementById("calendarNextMonth").addEventListener("click", () => {
+  const projectName = getSelectedProjectName();
+  if (projectName === "all") return;
+  const calendarState = buildProjectCalendarState(projectName);
+  const monthIndex = calendarState.months.indexOf(state.calendarMonth);
+  if (monthIndex >= 0 && monthIndex < calendarState.months.length - 1) {
+    state.calendarMonth = calendarState.months[monthIndex + 1];
+    state.calendarSelectedDate = "";
+    renderProjectCalendar();
+  }
+});
 document.getElementById("exportAccountRankingButton").addEventListener("click", () => {
   exportCurrentAccountRankings().catch((error) => {
     document.getElementById("accountExportResult").textContent = error.message;
@@ -2466,14 +2804,6 @@ document.querySelectorAll(".monitor-filter-button").forEach((button) => {
     resetMonitoringPage();
     renderMonitoring();
   });
-});
-document.getElementById("monitorViewTable").addEventListener("click", () => {
-  state.monitorViewMode = "table";
-  renderMonitoring();
-});
-document.getElementById("monitorViewCards").addEventListener("click", () => {
-  state.monitorViewMode = "cards";
-  renderMonitoring();
 });
 document.getElementById("monitorPrevPage").addEventListener("click", () => {
   state.monitorPage = Math.max(1, state.monitorPage - 1);

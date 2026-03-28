@@ -53,6 +53,14 @@ class Settings:
     xhs_batch_retry_delay_seconds: float = 20.0
     xhs_batch_risk_retry_delay_seconds: float = 45.0
     xhs_batch_project_cooldown_seconds: float = 45.0
+    xhs_spread_schedule_enabled: bool = True
+    xhs_batch_schedule_interval_minutes: int = 30
+    xhs_batch_window_start: str = "09:00"
+    xhs_batch_window_end: str = "21:00"
+    xhs_batch_min_accounts_per_run: int = 1
+    xhs_batch_max_accounts_per_run: int = 12
+    xhs_batch_slot_offset_seconds: int = 300
+    xhs_batch_sampling_state_file: str = ""
     xhs_manual_sync_cooldown_minutes: int = 20
     xhs_fetch_work_comment_counts: bool = True
     xhs_enable_signed_profile_pages: bool = True
@@ -148,6 +156,17 @@ def load_settings(env_file: Optional[str] = None) -> Settings:
         xhs_batch_retry_delay_seconds=_env_float("XHS_BATCH_RETRY_DELAY_SECONDS", env_values, default=20.0),
         xhs_batch_risk_retry_delay_seconds=_env_float("XHS_BATCH_RISK_RETRY_DELAY_SECONDS", env_values, default=45.0),
         xhs_batch_project_cooldown_seconds=_env_float("XHS_BATCH_PROJECT_COOLDOWN_SECONDS", env_values, default=45.0),
+        xhs_spread_schedule_enabled=_env_bool("XHS_SPREAD_SCHEDULE_ENABLED", env_values, default=True),
+        xhs_batch_schedule_interval_minutes=_env_int("XHS_BATCH_SCHEDULE_INTERVAL_MINUTES", env_values, default=30),
+        xhs_batch_window_start=_env("XHS_BATCH_WINDOW_START", env_values) or "09:00",
+        xhs_batch_window_end=_env("XHS_BATCH_WINDOW_END", env_values) or "21:00",
+        xhs_batch_min_accounts_per_run=_env_int("XHS_BATCH_MIN_ACCOUNTS_PER_RUN", env_values, default=1),
+        xhs_batch_max_accounts_per_run=_env_int("XHS_BATCH_MAX_ACCOUNTS_PER_RUN", env_values, default=12),
+        xhs_batch_slot_offset_seconds=_env_int("XHS_BATCH_SLOT_OFFSET_SECONDS", env_values, default=300),
+        xhs_batch_sampling_state_file=_resolve_optional_path(
+            _env("XHS_BATCH_SAMPLING_STATE_FILE", env_values),
+            base_dir,
+        ),
         xhs_manual_sync_cooldown_minutes=_env_int("XHS_MANUAL_SYNC_COOLDOWN_MINUTES", env_values, default=20),
         xhs_fetch_work_comment_counts=_env_bool("XHS_FETCH_WORK_COMMENT_COUNTS", env_values, default=True),
         xhs_enable_signed_profile_pages=_env_bool("XHS_ENABLE_SIGNED_PROFILE_PAGES", env_values, default=True),

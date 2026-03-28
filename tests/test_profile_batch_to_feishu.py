@@ -19,6 +19,7 @@ from xhs_feishu_monitor.profile_batch_to_feishu import (
     is_feishu_forbidden_error,
     build_record_id_index,
     build_record_state_index,
+    ensure_project_dashboard_views,
     sync_cached_project_account_rankings_to_feishu,
     sync_cached_project_calendar_to_feishu,
     sync_cached_project_rankings_to_feishu,
@@ -27,6 +28,7 @@ from xhs_feishu_monitor.profile_batch_to_feishu import (
     merge_report_with_existing_work_details,
     load_export_review_rows,
     load_reports_from_json,
+    load_reports_for_sync,
     normalize_batch_item_to_report,
     normalize_unique_value,
     sync_export_review_tables_to_feishu,
@@ -38,6 +40,72 @@ from xhs_feishu_monitor.profile_works_to_feishu import build_work_fingerprint
 
 
 class ProfileBatchToFeishuTest(unittest.TestCase):
+    def test_load_reports_for_sync_assigns_project_to_explicit_urls(self) -> None:
+        settings = SimpleNamespace()
+        with patch(
+            "xhs_feishu_monitor.profile_batch_to_feishu.collect_profile_reports_with_progress",
+            return_value=[
+                {
+                    "status": "success",
+                    "requested_url": "https://www.xiaohongshu.com/user/profile/u1",
+                    "profile": {"profile_user_id": "u1"},
+                    "works": [],
+                }
+            ],
+        ):
+            reports = load_reports_for_sync(
+                settings=settings,
+                explicit_urls=["https://www.xiaohongshu.com/user/profile/u1"],
+                raw_text="",
+                urls_file=None,
+                project="项目A",
+                report_json=None,
+            )
+        self.assertEqual(len(reports), 1)
+        self.assertEqual(reports[0]["project"], "项目A")
+
+    def test_load_reports_for_sync_skips_profile_url_mismatch(self) -> None:
+        settings = SimpleNamespace()
+        with patch(
+            "xhs_feishu_monitor.profile_batch_to_feishu.collect_profile_reports_with_progress",
+            return_value=[
+                {
+                    "status": "success",
+                    "requested_url": "https://www.xiaohongshu.com/user/profile/real1",
+                    "profile": {"profile_user_id": "u1", "nickname": "账号A"},
+                    "works": [],
+                }
+            ],
+        ):
+            with self.assertRaisesRegex(ValueError, "批量抓取没有成功结果"):
+                load_reports_for_sync(
+                    settings=settings,
+                    explicit_urls=["https://www.xiaohongshu.com/user/profile/real1"],
+                    raw_text="",
+                    urls_file=None,
+                    project="项目A",
+                    report_json=None,
+                )
+
+    def test_ensure_project_dashboard_views_creates_views_for_each_project(self) -> None:
+        client = _FakeRankingClient(
+            tables=[
+                {"name": "小红书日历留底", "table_id": "tbl_calendar"},
+                {"name": "每日点赞复盘", "table_id": "tbl_like"},
+                {"name": "每日评论复盘", "table_id": "tbl_comment"},
+            ],
+            records=[],
+        )
+        settings = SimpleNamespace(feishu_ranking_bitable_app_token="", feishu_bitable_app_token="token")
+        with patch("xhs_feishu_monitor.profile_batch_to_feishu.FeishuBitableClient", return_value=client):
+            with patch("xhs_feishu_monitor.profile_batch_to_feishu.replace", side_effect=lambda value, **kwargs: value):
+                summary = ensure_project_dashboard_views(settings=settings, projects=["默认项目", "东莞"])
+        self.assertEqual(summary["projects"], ["东莞", "默认项目"])
+        self.assertEqual(summary["view_count"], 12)
+        self.assertEqual(summary["primary_views"], ["东莞-今日点赞榜", "东莞-今日评论榜", "默认项目-今日点赞榜", "默认项目-今日评论榜"])
+        self.assertIn(("默认项目-今日点赞榜", "grid", "tbl_like"), client.created_views)
+        self.assertIn(("东莞-日历", "calendar", "tbl_calendar"), client.created_views)
+
     def test_normalize_batch_item_to_report_fills_profile_url_and_captured_at(self) -> None:
         report = normalize_batch_item_to_report(
             {
@@ -162,6 +230,8 @@ class ProfileBatchToFeishuTest(unittest.TestCase):
             works_table_name="作品明细表",
             ensure_fields=True,
             sync_dashboard=True,
+            scheduled=True,
+            slot_offset_seconds=300,
         )
         self.assertEqual(argv[1:3], ["-m", "xhs_feishu_monitor.profile_batch_to_feishu"])
         self.assertIn("--url", argv)
@@ -170,6 +240,8 @@ class ProfileBatchToFeishuTest(unittest.TestCase):
         self.assertIn("--ensure-fields", argv)
         self.assertIn("--sync-dashboard", argv)
         self.assertIn("--project", argv)
+        self.assertIn("--scheduled", argv)
+        self.assertIn("--slot-offset-seconds", argv)
 
     def test_offset_daily_time(self) -> None:
         self.assertEqual(offset_daily_time("14:00", 20), "14:20")
@@ -192,12 +264,13 @@ class ProfileBatchToFeishuTest(unittest.TestCase):
                 daily_at="14:00",
                 project_slot_minutes=20,
                 base_label="com.cc.test",
+                slot_offset_seconds=300,
             )
         self.assertEqual(
             specs,
             [
-                {"project": "项目A", "daily_at": "14:00", "label": "com.cc.test.项目a"},
-                {"project": "项目B", "daily_at": "14:20", "label": "com.cc.test.项目b"},
+                {"project": "项目A", "daily_at": "14:00", "label": "com.cc.test.项目a", "slot_offset_seconds": 0},
+                {"project": "项目B", "daily_at": "14:20", "label": "com.cc.test.项目b", "slot_offset_seconds": 300},
             ],
         )
 
@@ -258,6 +331,88 @@ class ProfileBatchToFeishuTest(unittest.TestCase):
             build_project_sync_error_message(project="东莞", error=ValueError("命中登录页，当前登录态不可用")),
             "项目「东莞」抓取失败：登录态异常",
         )
+
+    def test_load_export_review_rows_keeps_tracking_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_dir = Path(temp_dir) / "默认项目"
+            snapshot_dir = project_dir / "2026-03-26_140000"
+            account_dir = snapshot_dir / "账号A"
+            account_dir.mkdir(parents=True, exist_ok=True)
+            (snapshot_dir / "项目导出摘要.json").write_text(
+                json.dumps(
+                    {
+                        "project": "默认项目",
+                        "snapshot_time": "2026-03-26 14:00:00",
+                        "snapshot_slug": "2026-03-26_140000",
+                        "export_dir": str(snapshot_dir),
+                        "accounts": [
+                            {
+                                "account_id": "u1",
+                                "account": "账号A",
+                                "files": {
+                                    "like_json": str(account_dir / "点赞.json"),
+                                    "comment_json": str(account_dir / "评论.json"),
+                                },
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+            (account_dir / "点赞.json").write_text(
+                json.dumps(
+                    [
+                        {
+                            "排名": 1,
+                            "标题": "作品A",
+                            "数值": 99,
+                            "摘要": "点赞 99",
+                            "作品链接": "https://www.xiaohongshu.com/explore/a",
+                            "主页链接": "https://www.xiaohongshu.com/user/profile/u1",
+                            "封面图": "https://img.example.com/a.jpg",
+                            "追踪状态": "连续追踪",
+                            "首次入池日期": "2026-03-20",
+                        }
+                    ],
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+            (account_dir / "评论.json").write_text(
+                json.dumps(
+                    [
+                        {
+                            "排名": 1,
+                            "标题": "作品A",
+                            "数值": 11,
+                            "摘要": "评论 11",
+                            "作品链接": "https://www.xiaohongshu.com/explore/a",
+                            "主页链接": "https://www.xiaohongshu.com/user/profile/u1",
+                            "封面图": "https://img.example.com/a.jpg",
+                            "评论口径": "精确值",
+                            "追踪状态": "连续追踪",
+                            "首次入池日期": "2026-03-20",
+                        }
+                    ],
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+            rows = load_export_review_rows(
+                project="默认项目",
+                export_dir=temp_dir,
+                settings=SimpleNamespace(feishu_review_upload_days=14, feishu_review_per_account_limit=10),
+            )
+        like_row = rows["每日点赞复盘"][0]
+        comment_row = rows["每日评论复盘"][0]
+        self.assertEqual(like_row["追踪状态"], "连续追踪")
+        self.assertEqual(like_row["首次入池日期"], "2026-03-20")
+        self.assertEqual(comment_row["追踪状态"], "连续追踪")
+        self.assertEqual(comment_row["首次入池日期"], "2026-03-20")
 
     def test_build_dense_rank_map(self) -> None:
         rows = [
@@ -458,6 +613,38 @@ class ProfileBatchToFeishuTest(unittest.TestCase):
                 rows = load_export_review_rows(project="默认项目", export_dir=str(Path(temp_dir) / "账号榜单导出"), settings=settings)
         self.assertEqual(len(rows["每日点赞复盘"]), 10)
         self.assertEqual(len(rows["每日评论复盘"]), 10)
+
+    def test_load_export_review_rows_latest_only_keeps_latest_snapshot_date(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "账号榜单导出" / "默认项目"
+            older = root / "2026-03-27_100000"
+            latest = root / "2026-03-28_100000"
+            for snapshot_root, title in ((older, "旧作品"), (latest, "新作品")):
+                account_dir = snapshot_root / "账号A"
+                account_dir.mkdir(parents=True, exist_ok=True)
+                like_path = account_dir / f"{snapshot_root.name}-点赞排行.json"
+                comment_path = account_dir / f"{snapshot_root.name}-评论排行.json"
+                rows = [{"项目": "默认项目", "账号ID": "u1", "账号": "账号A", "排名": 1, "标题": title, "数值": 1}]
+                like_path.write_text(json.dumps(rows, ensure_ascii=False), encoding="utf-8")
+                comment_path.write_text(json.dumps(rows, ensure_ascii=False), encoding="utf-8")
+                (snapshot_root / "项目导出摘要.json").write_text(
+                    json.dumps({"project": "默认项目", "snapshot_time": snapshot_root.name.replace("_", " "), "snapshot_slug": snapshot_root.name, "export_dir": str(snapshot_root), "accounts": [{"account_id": "u1", "account": "账号A", "files": {"like_json": str(like_path), "comment_json": str(comment_path)}}]}, ensure_ascii=False),
+                    encoding="utf-8",
+                )
+            settings = SimpleNamespace(feishu_review_upload_days=14, feishu_review_per_account_limit=10)
+            with patch("xhs_feishu_monitor.profile_batch_to_feishu.datetime") as mocked_datetime:
+                from datetime import datetime as real_datetime
+                mocked_datetime.now.return_value = real_datetime(2026, 3, 28, 12, 0, 0)
+                mocked_datetime.strptime = real_datetime.strptime
+                rows = load_export_review_rows(
+                    project="默认项目",
+                    export_dir=str(Path(temp_dir) / "账号榜单导出"),
+                    settings=settings,
+                    latest_only=True,
+                )
+        self.assertEqual(len(rows["每日点赞复盘"]), 1)
+        self.assertEqual(rows["每日点赞复盘"][0]["日期文本"], "2026-03-28")
+        self.assertEqual(rows["每日点赞复盘"][0]["标题"], "新作品")
 
     def test_sync_cached_project_calendar_to_feishu_uses_project_cache(self) -> None:
         client = _FakeRankingClient(
@@ -794,6 +981,8 @@ class _FakeRankingClient(_FakeClient):
         self.deleted: list[str] = []
         self.raise_on_update: Exception | None = None
         self.created_table_name: str = ""
+        self.created_views: list[tuple[str, str, str]] = []
+        self.views: list[dict] = []
 
     def list_tables(self):  # noqa: ANN201
         return self.tables
@@ -824,6 +1013,23 @@ class _FakeRankingClient(_FakeClient):
 
     def delete_record(self, record_id: str) -> None:
         self.deleted.append(record_id)
+
+    def list_views(self, *, table_id=None):  # noqa: ANN001, ANN201
+        if not table_id:
+            return self.views
+        return [item for item in self.views if item.get("table_id") == table_id]
+
+    def create_view(self, *, view_name: str, view_type: str = "grid", table_id=None):  # noqa: ANN001, ANN201
+        item = {"view_name": view_name, "view_type": view_type, "table_id": table_id, "view_id": f"vew_{len(self.views)+1}"}
+        self.views.append(item)
+        self.created_views.append((view_name, view_type, str(table_id or "")))
+        return item
+
+    def ensure_view(self, *, view_name: str, view_type: str = "grid", table_id=None):  # noqa: ANN001, ANN201
+        for item in self.list_views(table_id=table_id):
+            if str(item.get("view_name") or "").strip() == str(view_name or "").strip():
+                return item
+        return self.create_view(view_name=view_name, view_type=view_type, table_id=table_id)
 
 
 if __name__ == "__main__":

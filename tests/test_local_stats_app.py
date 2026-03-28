@@ -42,6 +42,7 @@ from xhs_feishu_monitor.local_stats_app.server import (
     open_xiaohongshu_login_window,
     parse_monitored_entries,
     run_login_state_self_check,
+    refresh_project_export_snapshots,
     update_monitored_metadata,
     wait_for_xiaohongshu_login,
     write_monitored_entries,
@@ -593,6 +594,38 @@ class LocalStatsAppTest(unittest.TestCase):
         self.assertEqual(payload["sync_status"]["upload_status"]["state"], "idle")
         self.assertFalse(payload["sync_status"]["upload_status"]["has_retry_payload"])
 
+    def test_status_snapshot_exposes_schedule_plan(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = write_monitored_entries(
+                f"{temp_dir}/urls.txt",
+                [
+                    {"url": "https://www.xiaohongshu.com/user/profile/u1", "active": True, "project": "项目A"},
+                    {"url": "https://www.xiaohongshu.com/user/profile/u2", "active": True, "project": "项目B"},
+                ],
+            )
+            store = MonitoringSyncStore(
+                env_file=f"{temp_dir}/.env",
+                urls_file=str(path),
+                dashboard_store=DashboardStore(env_file=f"{temp_dir}/.env"),
+            )
+            with patch("xhs_feishu_monitor.local_stats_app.server.load_settings") as load_settings_mock:
+                load_settings_mock.return_value = Settings(
+                    xhs_spread_schedule_enabled=True,
+                    xhs_batch_schedule_interval_minutes=30,
+                    xhs_batch_window_start="14:00",
+                    xhs_batch_window_end="16:00",
+                    xhs_batch_min_accounts_per_run=1,
+                    xhs_batch_max_accounts_per_run=1,
+                    xhs_batch_slot_offset_seconds=300,
+                )
+                payload = store.get_payload()
+        schedule_plan = payload["sync_status"]["schedule_plan"]
+        self.assertTrue(schedule_plan["enabled"])
+        self.assertEqual(schedule_plan["window_start"], "14:00")
+        self.assertEqual(schedule_plan["window_end"], "16:00")
+        self.assertEqual(schedule_plan["per_run"], 1)
+        self.assertEqual(len(schedule_plan["projects"]), 2)
+
     def test_sync_loop_updates_dashboard_before_feishu_upload(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             path = write_monitored_entries(
@@ -637,7 +670,7 @@ class LocalStatsAppTest(unittest.TestCase):
             with (
                 patch("xhs_feishu_monitor.local_stats_app.server.load_settings", return_value=settings),
                 patch.object(store, "_ensure_login_ready_for_sync", return_value=None),
-                patch("xhs_feishu_monitor.local_stats_app.server.load_reports_for_sync", return_value=reports),
+                patch("xhs_feishu_monitor.local_stats_app.server.load_reports_for_sync", return_value=reports) as load_reports,
                 patch(
                     "xhs_feishu_monitor.local_stats_app.server.build_dashboard_payload_with_reports",
                     return_value={"generated_at": "2026-03-23T18:05:00+08:00", "latest_date": "2026-03-23"},
@@ -648,6 +681,7 @@ class LocalStatsAppTest(unittest.TestCase):
         self.assertEqual(store._status["state"], "success")
         self.assertIn("看板已更新，飞书上传任务已准备好", store._status["message"])
         self.assertEqual(store._status["summary"]["feishu_upload_state"], "staged")
+        self.assertEqual(load_reports.call_args.kwargs["project"], "项目A")
         stage_upload.assert_called_once()
 
     def test_upload_progress_does_not_override_dashboard_success_state(self) -> None:
@@ -1415,6 +1449,73 @@ class LocalStatsAppTest(unittest.TestCase):
             self.assertEqual(summary["compare"]["changed_accounts"][0]["like_compare"]["new_entries"][0]["title"], "作品2")
             self.assertEqual(summary["compare"]["changed_accounts"][0]["like_compare"]["moved_down"][0]["title"], "作品1")
             self.assertEqual(summary["compare"]["changed_accounts"][0]["comment_compare"]["new_entries"], [])
+
+    def test_export_single_account_rankings_without_rows_creates_no_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with self.assertRaisesRegex(ValueError, "暂无可导出"):
+                export_single_account_rankings(
+                    payload={
+                        "accounts": [{"account_id": "u1", "account": "账号A"}],
+                        "rankings": {
+                            "单条点赞排行": [],
+                            "单条评论排行": [],
+                        },
+                    },
+                    account_id="u1",
+                    project="项目A",
+                    export_dir=temp_dir,
+                )
+            project_dir = Path(temp_dir) / "项目A"
+            self.assertFalse(project_dir.exists())
+
+    def test_export_project_rankings_without_rows_creates_no_snapshot_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with self.assertRaisesRegex(ValueError, "暂无可导出"):
+                export_project_rankings(
+                    payload={
+                        "accounts": [{"account_id": "u1", "account": "账号A"}],
+                        "rankings": {
+                            "单条点赞排行": [],
+                            "单条评论排行": [],
+                        },
+                    },
+                    project="项目A",
+                    account_ids=["u1"],
+                    export_dir=temp_dir,
+                )
+            project_dir = Path(temp_dir) / "项目A"
+            self.assertFalse(project_dir.exists())
+
+    def test_refresh_project_export_snapshots_writes_latest_snapshot_for_current_reports(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            payload = {
+                "accounts": [
+                    {"account_id": "u1", "account": "账号A", "profile_url": "https://www.xiaohongshu.com/user/profile/u1"},
+                    {"account_id": "u2", "account": "账号B", "profile_url": "https://www.xiaohongshu.com/user/profile/u2"},
+                ],
+                "rankings": {
+                    "单条点赞排行": [
+                        {"rank": 1, "account_id": "u1", "account": "账号A", "title": "作品1", "metric": 99},
+                        {"rank": 2, "account_id": "u2", "account": "账号B", "title": "作品2", "metric": 88},
+                    ],
+                    "单条评论排行": [
+                        {"rank": 1, "account_id": "u1", "account": "账号A", "title": "作品3", "metric": 12},
+                    ],
+                },
+            }
+            reports = [
+                {"profile": {"profile_user_id": "u1"}, "project": "项目A"},
+                {"profile": {"profile_user_id": "u2"}, "project": "项目A"},
+            ]
+            summaries = refresh_project_export_snapshots(
+                payload=payload,
+                reports=reports,
+                export_dir=temp_dir,
+            )
+            self.assertEqual(len(summaries), 1)
+            self.assertEqual(summaries[0]["project"], "项目A")
+            latest_summary = Path(temp_dir) / "项目A" / "最近一次项目导出.json"
+            self.assertTrue(latest_summary.exists())
 
     def test_build_sync_progress_calculates_phase_and_overall_percent(self) -> None:
         collect_progress = build_sync_progress(

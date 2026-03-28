@@ -12,7 +12,7 @@ import urllib.parse
 import urllib.request
 import webbrowser
 from dataclasses import replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -43,7 +43,12 @@ from ..profile_dashboard_to_feishu import (
     rank_profile_works,
 )
 from ..project_sync_status import attach_project_sync_statuses, update_project_sync_status
-from ..project_cache import load_cached_dashboard_payload
+from ..project_cache import (
+    load_cached_dashboard_payload,
+    rebuild_dashboard_cache_from_project_dirs,
+    repair_dashboard_cache_from_exports,
+    write_project_cache_bundle,
+)
 from ..profile_report import build_profile_report, load_profile_report_payload
 from ..profile_to_feishu import PROFILE_TABLE_NAME
 from ..profile_works_to_feishu import WORKS_TABLE_NAME
@@ -103,6 +108,101 @@ DASHBOARD_SERIES_META = {
 
 def iso_now() -> str:
     return datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def _parse_clock_minutes(value: str, default: str) -> int:
+    text = str(value or default).strip() or default
+    try:
+        hour_text, minute_text = text.split(":", 1)
+        hour = max(0, min(23, int(hour_text)))
+        minute = max(0, min(59, int(minute_text)))
+    except Exception:
+        hour, minute = map(int, default.split(":", 1))
+    return hour * 60 + minute
+
+
+def _compute_next_schedule_time(*, now: datetime, start_minutes: int, end_minutes: int, interval_minutes: int) -> datetime:
+    current_minutes = now.hour * 60 + now.minute
+    interval_minutes = max(1, int(interval_minutes or 30))
+    if start_minutes == end_minutes:
+        slot_minutes = ((current_minutes // interval_minutes) + 1) * interval_minutes
+        day_offset, minute_of_day = divmod(slot_minutes, 24 * 60)
+        base = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        return base.replace(hour=minute_of_day // 60, minute=minute_of_day % 60) + timedelta(days=day_offset)
+    if start_minutes <= current_minutes < end_minutes:
+        relative = current_minutes - start_minutes
+        next_relative = ((relative // interval_minutes) + 1) * interval_minutes
+        next_minutes = start_minutes + next_relative
+        if next_minutes < end_minutes:
+            return now.replace(hour=next_minutes // 60, minute=next_minutes % 60, second=0, microsecond=0)
+    if current_minutes < start_minutes:
+        return now.replace(hour=start_minutes // 60, minute=start_minutes % 60, second=0, microsecond=0)
+    next_day = now + timedelta(days=1)
+    return next_day.replace(hour=start_minutes // 60, minute=start_minutes % 60, second=0, microsecond=0)
+
+
+def build_collection_schedule_plan(*, settings, entries: List[Dict[str, Any]], now: Optional[datetime] = None) -> Dict[str, Any]:
+    current = now or datetime.now().astimezone()
+    enabled = bool(getattr(settings, "xhs_spread_schedule_enabled", True))
+    interval_minutes = max(1, int(getattr(settings, "xhs_batch_schedule_interval_minutes", 30) or 30))
+    window_start = str(getattr(settings, "xhs_batch_window_start", "14:00") or "14:00")
+    window_end = str(getattr(settings, "xhs_batch_window_end", "16:00") or "16:00")
+    start_minutes = _parse_clock_minutes(window_start, "14:00")
+    end_minutes = _parse_clock_minutes(window_end, "16:00")
+    slot_offset_seconds = max(0, int(getattr(settings, "xhs_batch_slot_offset_seconds", 300) or 0))
+    min_accounts = max(1, int(getattr(settings, "xhs_batch_min_accounts_per_run", 1) or 1))
+    max_accounts = max(min_accounts, int(getattr(settings, "xhs_batch_max_accounts_per_run", min_accounts) or min_accounts))
+    per_run = min_accounts if min_accounts == max_accounts else max_accounts
+    active_entries = [dict(item) for item in (entries or []) if item.get("active")]
+    grouped: Dict[str, int] = {}
+    order: List[str] = []
+    for item in active_entries:
+        project_name = normalize_project_name(str(item.get("project") or DEFAULT_PROJECT_NAME))
+        if project_name not in grouped:
+            grouped[project_name] = 0
+            order.append(project_name)
+        grouped[project_name] += 1
+    next_run_at = _compute_next_schedule_time(
+        now=current,
+        start_minutes=start_minutes,
+        end_minutes=end_minutes,
+        interval_minutes=interval_minutes,
+    )
+    duration_minutes = (end_minutes - start_minutes) % (24 * 60)
+    if duration_minutes == 0:
+        duration_minutes = 24 * 60
+    slots_per_day = max(1, (duration_minutes + interval_minutes - 1) // interval_minutes)
+    projects = []
+    for index, project_name in enumerate(order):
+        active_count = grouped.get(project_name, 0)
+        project_per_run = min(
+            active_count,
+            max(
+                min_accounts,
+                min(max_accounts, (active_count + slots_per_day - 1) // slots_per_day),
+            ),
+        ) if active_count else 0
+        project_run_at = next_run_at + timedelta(seconds=index * slot_offset_seconds)
+        projects.append(
+            {
+                "name": project_name,
+                "active_count": active_count,
+                "per_run": project_per_run,
+                "next_run_at": project_run_at.isoformat(timespec="seconds"),
+                "slot_offset_seconds": index * slot_offset_seconds,
+            }
+        )
+    return {
+        "enabled": enabled,
+        "interval_minutes": interval_minutes,
+        "window_start": window_start,
+        "window_end": window_end,
+        "next_run_at": next_run_at.isoformat(timespec="seconds"),
+        "per_run": max((item["per_run"] for item in projects), default=per_run),
+        "slots_per_day": slots_per_day,
+        "project_count": len(projects),
+        "projects": projects,
+    }
 
 
 def _sync_login_state_module_dependencies() -> None:
@@ -283,6 +383,8 @@ def build_ranking_item_from_fields(fields: Dict[str, Any]) -> Dict[str, Any]:
         "profile_url": extract_link(fields.get("主页链接")),
         "note_url": extract_link(fields.get("作品链接")),
         "cover_url": extract_link(fields.get("封面图")),
+        "tracking_status": str(fields.get("追踪状态") or "").strip(),
+        "first_seen_date": str(fields.get("首次入池日期") or "").strip(),
     }
 
 
@@ -365,6 +467,8 @@ def _build_account_export_rows(
                     "主页链接": str(item.get("profile_url") or account.get("profile_url") or "").strip(),
                     "封面图": str(item.get("cover_url") or "").strip(),
                     "评论口径": str(item.get("comment_basis") or "").strip(),
+                    "追踪状态": str(item.get("tracking_status") or "").strip(),
+                    "首次入池日期": str(item.get("first_seen_date") or "").strip(),
                 }
             )
         return rows
@@ -755,15 +859,16 @@ def export_single_account_rankings(
     snapshot_label = snapshot_time.strftime("%Y-%m-%d %H:%M:%S")
     snapshot_slug = snapshot_time.strftime("%Y-%m-%d_%H%M%S")
     target_dir = account_dir / snapshot_slug
+    like_rows, comment_rows = _build_account_export_rows(
+        rankings=rankings,
+        account=account,
+        account_id=normalized_account_id,
+        account_name=account_name,
+        project_name=project_name,
+    )
+    if not like_rows and not comment_rows:
+        raise ValueError("当前账号暂无可导出的点赞或评论榜单数据")
     target_dir.mkdir(parents=True, exist_ok=True)
-
-    like_csv_path = target_dir / f"{snapshot_slug}-点赞排行.csv"
-    comment_csv_path = target_dir / f"{snapshot_slug}-评论排行.csv"
-    like_json_path = target_dir / f"{snapshot_slug}-点赞排行.json"
-    comment_json_path = target_dir / f"{snapshot_slug}-评论排行.json"
-    summary_path = target_dir / "导出摘要.json"
-    review_markdown_path = target_dir / "复盘摘要.md"
-    latest_summary_path = account_dir / "最近一次导出.json"
 
     return _export_account_rankings_to_snapshot(
         rankings=rankings,
@@ -803,31 +908,51 @@ def export_project_rankings(
     snapshot_label = snapshot_time.strftime("%Y-%m-%d %H:%M:%S")
     snapshot_slug = snapshot_time.strftime("%Y-%m-%d_%H%M%S")
     snapshot_dir = project_dir / snapshot_slug
-    snapshot_dir.mkdir(parents=True, exist_ok=True)
 
-    exported_summaries: List[Dict[str, Any]] = []
-    index_rows: List[Dict[str, Any]] = []
+    exportable_accounts: List[Dict[str, Any]] = []
     for account_id in normalized_account_ids:
         account = account_index.get(account_id, {})
         account_name = str(account.get("account") or account_id).strip() or account_id
+        like_rows, comment_rows = _build_account_export_rows(
+            rankings=rankings,
+            account=account,
+            account_id=account_id,
+            account_name=account_name,
+            project_name=project_name,
+        )
+        if not like_rows and not comment_rows:
+            continue
+        exportable_accounts.append(
+            {
+                "account_id": account_id,
+                "account": account,
+                "account_name": account_name,
+            }
+        )
+    if not exportable_accounts:
+        raise ValueError("当前项目暂无可导出的账号榜单数据")
+    snapshot_dir.mkdir(parents=True, exist_ok=True)
+    exported_summaries: List[Dict[str, Any]] = []
+    index_rows: List[Dict[str, Any]] = []
+    for exportable in exportable_accounts:
+        account_id = str(exportable.get("account_id") or "")
+        account = dict(exportable.get("account") or {})
+        account_name = str(exportable.get("account_name") or account_id).strip() or account_id
         account_dir = project_dir / _safe_export_name(account_name, account_id)
         target_dir = snapshot_dir / _safe_export_name(account_name, account_id)
         account_dir.mkdir(parents=True, exist_ok=True)
         target_dir.mkdir(parents=True, exist_ok=True)
-        try:
-            summary = _export_account_rankings_to_snapshot(
-                rankings=rankings,
-                account=account,
-                account_id=account_id,
-                account_name=account_name,
-                project_name=project_name,
-                account_dir=account_dir,
-                target_dir=target_dir,
-                snapshot_label=snapshot_label,
-                snapshot_slug=snapshot_slug,
-            )
-        except ValueError:
-            continue
+        summary = _export_account_rankings_to_snapshot(
+            rankings=rankings,
+            account=account,
+            account_id=account_id,
+            account_name=account_name,
+            project_name=project_name,
+            account_dir=account_dir,
+            target_dir=target_dir,
+            snapshot_label=snapshot_label,
+            snapshot_slug=snapshot_slug,
+        )
         exported_summaries.append(summary)
         index_rows.append(
             {
@@ -841,9 +966,6 @@ def export_project_rankings(
                 "最近一次导出": str(summary.get("latest_summary_path") or ""),
             }
         )
-
-    if not exported_summaries:
-        raise ValueError("当前项目暂无可导出的账号榜单数据")
 
     project_index_csv = snapshot_dir / "项目账号索引.csv"
     project_index_json = snapshot_dir / "项目账号索引.json"
@@ -1084,6 +1206,45 @@ def build_dashboard_payload_with_reports(
     merged_payload["series_meta"].setdefault("source", DASHBOARD_SERIES_META["source"])
     merged_payload["series_meta"].setdefault("note", DASHBOARD_SERIES_META["note"])
     return merged_payload
+
+
+def refresh_project_export_snapshots(
+    *,
+    payload: Dict[str, Any],
+    reports: List[Dict[str, Any]],
+    fallback_project: str = "",
+    export_dir: str = "",
+) -> List[Dict[str, Any]]:
+    grouped_account_ids: Dict[str, List[str]] = {}
+    normalized_fallback_project = normalize_project_name(fallback_project) if str(fallback_project or "").strip() else ""
+    for report in reports:
+        profile = report.get("profile") or {}
+        account_id = str(profile.get("profile_user_id") or "").strip()
+        if not account_id:
+            continue
+        project_name = normalize_project_name(
+            str(report.get("project") or normalized_fallback_project or DEFAULT_PROJECT_NAME)
+        )
+        grouped_account_ids.setdefault(project_name, [])
+        if account_id not in grouped_account_ids[project_name]:
+            grouped_account_ids[project_name].append(account_id)
+
+    summaries: List[Dict[str, Any]] = []
+    for project_name, account_ids in grouped_account_ids.items():
+        if not account_ids:
+            continue
+        try:
+            summaries.append(
+                export_project_rankings(
+                    payload=payload,
+                    project=project_name,
+                    account_ids=account_ids,
+                    export_dir=export_dir,
+                )
+            )
+        except Exception:
+            continue
+    return summaries
 
 
 class DashboardStore:
@@ -1452,6 +1613,11 @@ class MonitoringSyncStore:
                     project_name=str(item.get("name") or ""),
                     export_dir="",
                 )
+            sync_status = self._status_snapshot_locked()
+            sync_status["schedule_plan"] = build_collection_schedule_plan(
+                settings=settings,
+                entries=enriched_entries,
+            )
             return {
                 "urls_file": str(resolve_text_path(self.urls_file)),
                 "total": len(enriched_entries),
@@ -1467,7 +1633,7 @@ class MonitoringSyncStore:
                     else build_login_state_payload()
                 ),
                 "proxy_pool": build_proxy_pool_status(settings),
-                "sync_status": self._status_snapshot_locked(),
+                "sync_status": sync_status,
             }
 
     def _get_profile_lookup_rows_locked(self) -> tuple[List[Dict[str, Any]], str]:
@@ -1628,6 +1794,7 @@ class MonitoringSyncStore:
                     "project": normalized_project,
                     "upload_scope": upload_scope,
                     "estimated_total": 1,
+                    "latest_only": bool(normalized_project and upload_scope == "rankings"),
                 }
             elif not self._last_upload_retry_job or upload_scope != "full":
                 try:
@@ -1655,6 +1822,7 @@ class MonitoringSyncStore:
                     "project": "",
                     "upload_scope": upload_scope,
                     "estimated_total": 1 if upload_scope != "full" else 2,
+                    "latest_only": False,
                 }
             if self._upload_running:
                 self._pending_upload_job = copy.deepcopy(self._last_upload_retry_job)
@@ -1699,6 +1867,7 @@ class MonitoringSyncStore:
             upload_mode = str(upload_job.get("mode") or "").strip()
             upload_scope = self._normalize_upload_scope(str(upload_job.get("upload_scope") or "full"))
             upload_project = str(upload_job.get("project") or "").strip()
+            latest_only = bool(upload_job.get("latest_only"))
             if upload_mode == "cache":
                 summary = sync_cached_project_rankings_to_feishu(
                     settings=settings,
@@ -1706,6 +1875,7 @@ class MonitoringSyncStore:
                     progress_callback=self._handle_upload_progress_update,
                     upload_calendar=upload_scope in {"full", "calendar"},
                     upload_rankings=upload_scope in {"full", "rankings"},
+                    latest_only=latest_only,
                 )
             else:
                 summary = sync_reports_to_feishu(
@@ -2250,7 +2420,7 @@ class MonitoringSyncStore:
                     explicit_urls=current_urls,
                     raw_text="",
                     urls_file=None if current_urls else self.urls_file,
-                    project="",
+                    project=self._current_sync_project,
                     report_json=None,
                     progress_callback=self._handle_progress_update,
                 )
@@ -2278,12 +2448,9 @@ class MonitoringSyncStore:
                     ],
                 )
                 try:
-                    self.dashboard_store.set_local_override(
-                        build_dashboard_payload_with_reports(
-                            base_payload=self.dashboard_store.get_cached_payload(),
-                            reports=reports,
-                        )
-                    )
+                    write_project_cache_bundle(reports=reports, settings=settings)
+                    cached_payload = load_cached_dashboard_payload(settings)
+                    self.dashboard_store.set_local_override(cached_payload)
                 except Exception:
                     pass
                 if not self.dashboard_store.commit_local_override():
@@ -2473,10 +2640,64 @@ class MonitoringSyncStore:
 
 
 def load_dashboard_payload(env_file: str) -> Dict[str, Any]:
+    def _payload_account_ids(payload: Dict[str, Any]) -> set[str]:
+        return {
+            str((item or {}).get("account_id") or "").strip()
+            for item in (payload.get("accounts") or [])
+            if str((item or {}).get("account_id") or "").strip()
+        }
+
+    def _normalize_dashboard_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+        normalized = copy.deepcopy(payload or {})
+        accounts = []
+        for item in normalized.get("accounts") or []:
+            row = dict(item or {})
+            account_name = str(row.get("account_name") or row.get("account") or row.get("display_name") or "").strip()
+            account_id = str(row.get("account_id") or "").strip()
+            row["account"] = account_name or account_id
+            row["account_name"] = account_name or account_id
+            row["display_name"] = str(row.get("display_name") or account_name or account_id).strip() or account_id
+            accounts.append(row)
+        normalized["accounts"] = accounts
+        return normalized
+
     settings = load_settings(env_file)
     cached_payload = load_cached_dashboard_payload(settings)
+    metadata_path = resolve_text_path(DEFAULT_URLS_FILE + ".meta.json")
+    monitored_metadata: Dict[str, Any] = {}
+    if metadata_path.exists():
+        try:
+            monitored_metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except Exception:
+            monitored_metadata = {}
+    expected_account_ids = {
+        str((item or {}).get("account_id") or "").strip()
+        for item in monitored_metadata.values()
+        if str((item or {}).get("account_id") or "").strip()
+    }
+    expected_accounts = max(1, len(expected_account_ids) or (len(monitored_metadata) // 2))
+    cached_account_ids = _payload_account_ids(cached_payload) if cached_payload else set()
+    if cached_payload and len(cached_payload.get("accounts") or []) >= expected_accounts and cached_account_ids.issuperset(expected_account_ids):
+        return _normalize_dashboard_payload(cached_payload)
     if cached_payload:
-        return cached_payload
+        try:
+            rebuilt_payload = rebuild_dashboard_cache_from_project_dirs(settings)
+            rebuilt_account_ids = _payload_account_ids(rebuilt_payload)
+            if rebuilt_payload and rebuilt_account_ids.issuperset(expected_account_ids) and len(rebuilt_payload.get("accounts") or []) >= len(cached_payload.get("accounts") or []):
+                return _normalize_dashboard_payload(rebuilt_payload)
+        except Exception:
+            pass
+        try:
+            repaired_payload = repair_dashboard_cache_from_exports(
+                settings=settings,
+                monitored_metadata=monitored_metadata,
+            )
+            repaired_account_ids = _payload_account_ids(repaired_payload)
+            if repaired_payload and repaired_account_ids.issuperset(expected_account_ids) and len(repaired_payload.get("accounts") or []) >= len(cached_payload.get("accounts") or []):
+                return _normalize_dashboard_payload(repaired_payload)
+        except Exception:
+            pass
+        return _normalize_dashboard_payload(cached_payload)
     base_client = FeishuBitableClient(settings)
     table_ids = list_table_ids(base_client)
 
@@ -2485,12 +2706,12 @@ def load_dashboard_payload(env_file: str) -> Dict[str, Any]:
     ranking_rows = fetch_table_rows(settings, table_ids, RANKING_TABLE_NAME)
     alert_rows = fetch_table_rows(settings, table_ids, ALERT_TABLE_NAME, required=False)
 
-    return build_dashboard_payload_from_tables(
+    return _normalize_dashboard_payload(build_dashboard_payload_from_tables(
         portal_rows=portal_rows,
         calendar_rows=calendar_rows,
         ranking_rows=ranking_rows,
         alert_rows=alert_rows,
-    )
+    ))
 
 
 def load_profile_table_rows(env_file: str) -> List[Dict[str, Any]]:

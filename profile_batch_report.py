@@ -9,8 +9,9 @@ import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .config import load_settings
 from .launchd import (
@@ -26,6 +27,7 @@ from .profile_live_sync import parse_daily_time
 
 
 DEFAULT_BATCH_LABEL = "com.cc.xhs-profile-batch-report"
+DEFAULT_BATCH_SAMPLING_STATE_FILE = ".batch_sampling_state.json"
 
 
 PROFILE_URL_START_PATTERN = re.compile(
@@ -451,6 +453,96 @@ def collect_profile_reports_with_progress(
     return [indexed_results[index] for index in range(len(ordered_urls))]
 
 
+def select_spread_batch_entries(
+    *,
+    url_entries: List[Dict[str, str]],
+    settings,
+    project: str = "",
+    now: Optional[datetime] = None,
+    state_path: Optional[str] = None,
+) -> Tuple[List[Dict[str, str]], Dict[str, Any]]:
+    normalized_entries = _normalize_batch_entries(urls=[], url_entries=url_entries)
+    project_name = str(project or "").strip() or str(normalized_entries[0].get("project") or "").strip() if normalized_entries else ""
+    current = now or datetime.now().astimezone()
+    if not normalized_entries:
+        return [], {
+            "active": False,
+            "reason": "empty",
+            "project": project_name,
+            "selected_count": 0,
+            "total_count": 0,
+        }
+    if not is_spread_collection_active(settings=settings, now=current):
+        return [], {
+            "active": False,
+            "reason": "outside_window",
+            "project": project_name,
+            "selected_count": 0,
+            "total_count": len(normalized_entries),
+            "window_start": str(getattr(settings, "xhs_batch_window_start", "09:00") or "09:00"),
+            "window_end": str(getattr(settings, "xhs_batch_window_end", "21:00") or "21:00"),
+        }
+    interval_minutes = max(1, int(getattr(settings, "xhs_batch_schedule_interval_minutes", 30) or 30))
+    slots_per_day = compute_slots_per_day(settings)
+    min_count = max(1, int(getattr(settings, "xhs_batch_min_accounts_per_run", 1) or 1))
+    max_count = max(min_count, int(getattr(settings, "xhs_batch_max_accounts_per_run", 12) or min_count))
+    batch_size = min(len(normalized_entries), max(min_count, min(max_count, (len(normalized_entries) + slots_per_day - 1) // slots_per_day)))
+    slot_key = build_spread_slot_key(settings=settings, now=current)
+    state = load_batch_sampling_state(state_path or resolve_batch_sampling_state_path(url_entries=normalized_entries, settings=settings))
+    state_key = project_name or "__all__"
+    project_state = dict((state.get("projects") or {}).get(state_key) or {})
+    date_text = current.date().isoformat()
+    order = list(normalized_entries)
+    rng = random.Random(f"{date_text}|{state_key}|{len(order)}")
+    rng.shuffle(order)
+    if str(project_state.get("date") or "") != date_text:
+        project_state = {"date": date_text, "next_index": 0, "last_slot": ""}
+    if str(project_state.get("last_slot") or "") == slot_key:
+        selected = [dict(item) for item in (project_state.get("last_selected") or []) if isinstance(item, dict)]
+        return selected, {
+            "active": True,
+            "reason": "same_slot",
+            "project": project_name,
+            "selected_count": len(selected),
+            "total_count": len(normalized_entries),
+            "batch_size": batch_size,
+            "slot_key": slot_key,
+            "slots_per_day": slots_per_day,
+        }
+    start = int(project_state.get("next_index") or 0)
+    selected: List[Dict[str, str]] = []
+    if order:
+        for offset in range(batch_size):
+            selected.append(dict(order[(start + offset) % len(order)]))
+    next_index = 0 if not order else (start + batch_size) % len(order)
+    updated_projects = dict(state.get("projects") or {})
+    updated_projects[state_key] = {
+        "date": date_text,
+        "next_index": next_index,
+        "last_slot": slot_key,
+        "last_selected": selected,
+        "interval_minutes": interval_minutes,
+        "window_start": str(getattr(settings, "xhs_batch_window_start", "09:00") or "09:00"),
+        "window_end": str(getattr(settings, "xhs_batch_window_end", "21:00") or "21:00"),
+    }
+    save_batch_sampling_state(
+        state_path or resolve_batch_sampling_state_path(url_entries=normalized_entries, settings=settings),
+        {"projects": updated_projects},
+    )
+    return selected, {
+        "active": True,
+        "reason": "selected",
+        "project": project_name,
+        "selected_count": len(selected),
+        "total_count": len(normalized_entries),
+        "batch_size": batch_size,
+        "slot_key": slot_key,
+        "slots_per_day": slots_per_day,
+        "window_start": str(getattr(settings, "xhs_batch_window_start", "09:00") or "09:00"),
+        "window_end": str(getattr(settings, "xhs_batch_window_end", "21:00") or "21:00"),
+    }
+
+
 def _normalize_batch_entries(*, urls: List[str], url_entries: Optional[List[Dict[str, str]]]) -> List[Dict[str, str]]:
     if url_entries:
         normalized: List[Dict[str, str]] = []
@@ -473,6 +565,83 @@ def build_project_batches(url_entries: List[Dict[str, str]]) -> List[List[Dict[s
             order.append(project)
         grouped[project].append(item)
     return [grouped[project] for project in order]
+
+
+def is_spread_collection_active(*, settings, now: Optional[datetime] = None) -> bool:
+    if not bool(getattr(settings, "xhs_spread_schedule_enabled", True)):
+        return True
+    current = now or datetime.now().astimezone()
+    start_minutes = _parse_clock_minutes(str(getattr(settings, "xhs_batch_window_start", "09:00") or "09:00"))
+    end_minutes = _parse_clock_minutes(str(getattr(settings, "xhs_batch_window_end", "21:00") or "21:00"))
+    current_minutes = current.hour * 60 + current.minute
+    if start_minutes == end_minutes:
+        return True
+    if start_minutes < end_minutes:
+        return start_minutes <= current_minutes < end_minutes
+    return current_minutes >= start_minutes or current_minutes < end_minutes
+
+
+def compute_slots_per_day(settings) -> int:
+    interval_minutes = max(1, int(getattr(settings, "xhs_batch_schedule_interval_minutes", 30) or 30))
+    start_minutes = _parse_clock_minutes(str(getattr(settings, "xhs_batch_window_start", "09:00") or "09:00"))
+    end_minutes = _parse_clock_minutes(str(getattr(settings, "xhs_batch_window_end", "21:00") or "21:00"))
+    duration = (end_minutes - start_minutes) % (24 * 60)
+    if duration == 0:
+        duration = 24 * 60
+    return max(1, (duration + interval_minutes - 1) // interval_minutes)
+
+
+def build_spread_slot_key(*, settings, now: Optional[datetime] = None) -> str:
+    current = now or datetime.now().astimezone()
+    interval_minutes = max(1, int(getattr(settings, "xhs_batch_schedule_interval_minutes", 30) or 30))
+    minutes = current.hour * 60 + current.minute
+    slot_start = (minutes // interval_minutes) * interval_minutes
+    return f"{current.date().isoformat()}T{slot_start // 60:02d}:{slot_start % 60:02d}"
+
+
+def resolve_batch_sampling_state_path(*, url_entries: Optional[List[Dict[str, str]]] = None, settings=None) -> str:
+    configured = str(getattr(settings, "xhs_batch_sampling_state_file", "") or "").strip() if settings else ""
+    if configured:
+        return str(Path(configured).expanduser().resolve())
+    candidates = url_entries or []
+    first_url = str(candidates[0].get("url") or "").strip() if candidates else ""
+    project_name = str(candidates[0].get("project") or "").strip() if candidates else ""
+    base_dir = Path(str(getattr(settings, "project_cache_dir", "/Users/cc/Downloads/飞书缓存") or "/Users/cc/Downloads/飞书缓存")).expanduser()
+    slug = re.sub(r"[^0-9A-Za-z\u4e00-\u9fff]+", "-", project_name or "__all__").strip("-") or "__all__"
+    hint = normalize_profile_url(first_url).rsplit("/", 1)[-1] if first_url else ""
+    filename = f"{slug}{('-' + hint) if hint else ''}{DEFAULT_BATCH_SAMPLING_STATE_FILE}"
+    return str((base_dir / filename).resolve())
+
+
+def load_batch_sampling_state(path_text: str) -> Dict[str, Any]:
+    path = Path(path_text).expanduser().resolve()
+    if not path.exists():
+        return {"projects": {}}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {"projects": {}}
+    if not isinstance(payload, dict):
+        return {"projects": {}}
+    return payload
+
+
+def save_batch_sampling_state(path_text: str, payload: Dict[str, Any]) -> None:
+    path = Path(path_text).expanduser().resolve()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _parse_clock_minutes(value: str) -> int:
+    text = str(value or "").strip()
+    match = re.fullmatch(r"(\d{1,2}):(\d{2})", text)
+    if not match:
+        raise ValueError(f"无效时间格式: {value}")
+    hour = int(match.group(1))
+    minute = int(match.group(2))
+    if hour < 0 or hour > 23 or minute < 0 or minute > 59:
+        raise ValueError(f"无效时间格式: {value}")
+    return hour * 60 + minute
 
 
 def _sleep_between_project_batches(*, project_cooldown_seconds: float) -> None:

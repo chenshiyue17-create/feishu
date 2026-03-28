@@ -42,6 +42,17 @@
         </article>
       </section>
 
+      <section class="panel operations-panel">
+        <div class="panel-header">
+          <div>
+            <p class="panel-label">运营主入口</p>
+            <h2>今日操作</h2>
+          </div>
+          <p id="operationsSummary" class="summary-text"></p>
+        </div>
+        <div id="operationsHub" class="operations-hub"></div>
+      </section>
+
       <section class="panel monitor-panel">
         <div class="panel-header">
           <div>
@@ -102,10 +113,6 @@
             </div>
           </div>
           <div class="monitor-toolbar-right">
-            <div class="monitor-view-tabs">
-              <button id="monitorViewTable" class="monitor-inline-button" type="button">紧凑表格</button>
-              <button id="monitorViewCards" class="monitor-inline-button" type="button">卡片视图</button>
-            </div>
             <label class="monitor-page-size-shell" for="monitorPageSize">
               <span class="form-label">每页</span>
               <select id="monitorPageSize" class="monitor-page-size-select">
@@ -145,6 +152,22 @@
         </div>
         <div id="projectHomeStats" class="portal-grid"></div>
         <div id="projectComparePanel" class="project-compare-panel"></div>
+        <div class="panel project-calendar-panel">
+          <div class="panel-header">
+            <div>
+              <p class="panel-label">历史日历</p>
+              <h3 id="projectCalendarTitle">项目日历</h3>
+            </div>
+            <div class="calendar-toolbar">
+              <button id="calendarPrevMonth" class="monitor-inline-button" type="button">上个月</button>
+              <span id="projectCalendarMonth" class="calendar-month-label">-</span>
+              <button id="calendarNextMonth" class="monitor-inline-button" type="button">下个月</button>
+            </div>
+          </div>
+          <div id="projectCalendarSummary" class="summary-text"></div>
+          <div id="projectCalendar" class="project-calendar-grid"></div>
+          <div id="projectCalendarDetail" class="project-calendar-detail"></div>
+        </div>
         <div class="panel project-home-trend-panel">
           <div class="panel-header">
             <div>

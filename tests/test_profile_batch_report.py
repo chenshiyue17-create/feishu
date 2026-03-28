@@ -3,6 +3,7 @@ from __future__ import annotations
 import tempfile
 import time
 import unittest
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -13,15 +14,20 @@ from xhs_feishu_monitor.profile_batch_report import (
     build_batch_program_arguments,
     collect_profile_reports,
     collect_profile_reports_with_progress,
+    compute_slots_per_day,
     extract_profile_urls,
     is_retryable_batch_error,
     is_slow_tail_retry_error,
+    is_spread_collection_active,
     load_url_entries_file,
     load_urls_file,
+    load_batch_sampling_state,
     normalize_profile_url,
     normalize_profile_url_entries,
     normalize_profile_urls,
+    resolve_batch_sampling_state_path,
     resolve_batch_concurrency,
+    select_spread_batch_entries,
 )
 
 
@@ -221,6 +227,93 @@ class ProfileBatchReportTest(unittest.TestCase):
         self.assertTrue(all(event["phase"] == "collect" for event in progress_events))
         self.assertEqual(progress_events[-1]["success_count"], 2)
         self.assertEqual(progress_events[-1]["failed_count"], 0)
+
+    def test_spread_collection_active_checks_window(self) -> None:
+        settings = SimpleNamespace(
+            xhs_spread_schedule_enabled=True,
+            xhs_batch_window_start="09:00",
+            xhs_batch_window_end="21:00",
+        )
+        self.assertTrue(is_spread_collection_active(settings=settings, now=datetime.fromisoformat("2026-03-26T10:00:00+08:00")))
+        self.assertFalse(is_spread_collection_active(settings=settings, now=datetime.fromisoformat("2026-03-26T22:00:00+08:00")))
+
+    def test_compute_slots_per_day(self) -> None:
+        settings = SimpleNamespace(
+            xhs_batch_schedule_interval_minutes=30,
+            xhs_batch_window_start="09:00",
+            xhs_batch_window_end="21:00",
+        )
+        self.assertEqual(compute_slots_per_day(settings), 24)
+
+    def test_select_spread_batch_entries_rotates_by_slot(self) -> None:
+        entries = [
+            {"url": f"https://www.xiaohongshu.com/user/profile/u{i}", "project": "默认项目"}
+            for i in range(1, 11)
+        ]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = str(Path(temp_dir) / "sampling.json")
+            settings = SimpleNamespace(
+                xhs_spread_schedule_enabled=True,
+                xhs_batch_schedule_interval_minutes=30,
+                xhs_batch_window_start="09:00",
+                xhs_batch_window_end="21:00",
+                xhs_batch_min_accounts_per_run=1,
+                xhs_batch_max_accounts_per_run=12,
+                xhs_batch_sampling_state_file=state_path,
+                project_cache_dir=temp_dir,
+            )
+            first, first_meta = select_spread_batch_entries(
+                url_entries=entries,
+                settings=settings,
+                project="默认项目",
+                now=datetime.fromisoformat("2026-03-26T09:15:00+08:00"),
+            )
+            second, second_meta = select_spread_batch_entries(
+                url_entries=entries,
+                settings=settings,
+                project="默认项目",
+                now=datetime.fromisoformat("2026-03-26T09:45:00+08:00"),
+            )
+            state = load_batch_sampling_state(state_path)
+        self.assertEqual(len(first), 1)
+        self.assertEqual(len(second), 1)
+        self.assertNotEqual(first[0]["url"], second[0]["url"])
+        self.assertEqual(first_meta["slots_per_day"], 24)
+        self.assertEqual(second_meta["reason"], "selected")
+        self.assertEqual(state["projects"]["默认项目"]["date"], "2026-03-26")
+
+    def test_select_spread_batch_entries_skips_outside_window(self) -> None:
+        entries = [{"url": "https://www.xiaohongshu.com/user/profile/u1", "project": "默认项目"}]
+        settings = SimpleNamespace(
+            xhs_spread_schedule_enabled=True,
+            xhs_batch_schedule_interval_minutes=30,
+            xhs_batch_window_start="09:00",
+            xhs_batch_window_end="21:00",
+            xhs_batch_min_accounts_per_run=1,
+            xhs_batch_max_accounts_per_run=12,
+            xhs_batch_sampling_state_file="",
+            project_cache_dir="/tmp",
+        )
+        selected, meta = select_spread_batch_entries(
+            url_entries=entries,
+            settings=settings,
+            project="默认项目",
+            now=datetime.fromisoformat("2026-03-26T22:10:00+08:00"),
+        )
+        self.assertEqual(selected, [])
+        self.assertEqual(meta["reason"], "outside_window")
+
+    def test_resolve_batch_sampling_state_path_defaults_into_cache(self) -> None:
+        settings = SimpleNamespace(
+            xhs_batch_sampling_state_file="",
+            project_cache_dir="/Users/cc/Downloads/飞书缓存",
+        )
+        path = resolve_batch_sampling_state_path(
+            url_entries=[{"url": "https://www.xiaohongshu.com/user/profile/u1", "project": "东莞"}],
+            settings=settings,
+        )
+        self.assertIn("东莞", path)
+        self.assertTrue(path.endswith(".batch_sampling_state.json"))
 
     def test_collect_profile_reports_preserves_project_on_results(self) -> None:
         def fake_collect_single_profile_report(*, url, settings):

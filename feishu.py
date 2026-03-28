@@ -15,7 +15,7 @@ class FeishuBitableClient:
         self.settings = settings
         self.session = requests.Session()
         self._tenant_access_token: Optional[str] = None
-        self._request_retry_attempts = 3
+        self._request_retry_attempts = 5
 
     def sync_snapshot(self, snapshot: NoteSnapshot) -> Tuple[str, str]:
         fields = self._build_fields(snapshot)
@@ -267,8 +267,8 @@ class FeishuBitableClient:
                 last_error = exc
                 if attempt >= self._request_retry_attempts:
                     raise
-                self._reset_session()
-                time.sleep(0.8 * attempt)
+                self._reset_session(clear_token=True)
+                time.sleep(min(1.2 * attempt, 5.0))
             except ValueError:
                 raise
         if last_error is not None:
@@ -303,8 +303,8 @@ class FeishuBitableClient:
                 last_error = exc
                 if attempt >= self._request_retry_attempts:
                     raise
-                self._reset_session(clear_token=False)
-                time.sleep(0.8 * attempt)
+                self._reset_session(clear_token=True)
+                time.sleep(min(1.2 * attempt, 5.0))
         if last_error is not None:
             raise last_error
         raise RuntimeError("获取 tenant_access_token 失败")

@@ -5,6 +5,7 @@ import hashlib
 import json
 import re
 import sys
+import time
 from dataclasses import replace
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -23,10 +24,12 @@ from .launchd import (
 )
 from .profile_batch_report import (
     collect_profile_reports_with_progress,
+    compute_slots_per_day,
     load_url_entries_file,
     normalize_profile_url,
     normalize_profile_url_entries,
     normalize_profile_urls,
+    select_spread_batch_entries,
 )
 from .project_cache import resolve_project_cache_dir, write_project_cache_bundle
 from .project_sync_status import update_project_sync_status
@@ -70,6 +73,7 @@ from .profile_works_to_feishu import (
 
 DEFAULT_BATCH_SYNC_LABEL = "com.cc.xhs-profile-batch-report"
 NOTE_ID_FROM_URL_PATTERN = re.compile(r"/(?:explore|discovery/item)/([A-Za-z0-9_-]+)")
+PROFILE_ID_FROM_URL_PATTERN = re.compile(r"/user/profile/([0-9a-z]+)", re.IGNORECASE)
 LIKE_RANK_TYPE = "单条点赞排行"
 COMMENT_RANK_TYPE = "单条评论排行"
 PROJECT_WORK_RANKING_TABLE_NAME = "项目作品排行榜"
@@ -80,6 +84,16 @@ ACCOUNT_RANKING_USAGE_NOTE = "用途：按项目查看账号点赞排行和评�
 EXPORT_REVIEW_ROOT_DIR = "/Users/cc/Downloads/飞书缓存/账号榜单导出"
 DAILY_LIKE_REVIEW_TABLE_NAME = "每日点赞复盘"
 DAILY_COMMENT_REVIEW_TABLE_NAME = "每日评论复盘"
+PROJECT_DASHBOARD_VIEW_SPECS = (
+    (DAILY_LIKE_REVIEW_TABLE_NAME, "今日点赞榜", "grid"),
+    (DAILY_COMMENT_REVIEW_TABLE_NAME, "今日评论榜", "grid"),
+)
+PROJECT_DASHBOARD_AUX_VIEW_SPECS = (
+    (DASHBOARD_CALENDAR_TABLE_NAME, "日历", "calendar"),
+    (DASHBOARD_CALENDAR_TABLE_NAME, "最新留底", "grid"),
+    (DAILY_LIKE_REVIEW_TABLE_NAME, "点赞复盘", "grid"),
+    (DAILY_COMMENT_REVIEW_TABLE_NAME, "评论复盘", "grid"),
+)
 LEGACY_FEISHU_TABLE_NAMES = {
     "__codex_probe__",
     "小红书账号总览",
@@ -113,6 +127,8 @@ DAILY_REVIEW_COMMON_FIELDS: List[Dict[str, Any]] = [
     {"field_name": "作品链接", "type": 15},
     {"field_name": "主页链接", "type": 15},
     {"field_name": "封面图", "type": 15},
+    {"field_name": "追踪状态", "type": 1},
+    {"field_name": "首次入池日期", "type": 1},
     {"field_name": "快照目录", "type": 1},
     {"field_name": "口径说明", "type": 1},
 ]
@@ -205,6 +221,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--unload-launchd", action="store_true", help="卸载 launchd 任务")
     parser.add_argument("--daily-at", default="14:00", help="每天固定执行时间，格式 HH:MM")
     parser.add_argument("--project-slot-minutes", type=int, default=20, help="按项目安装错峰任务时，每个项目之间的分钟间隔")
+    parser.add_argument("--scheduled", action="store_true", help="供定时任务调用：按日内分批策略随机抽样采集")
+    parser.add_argument("--slot-offset-seconds", type=int, default=0, help="定时任务项目错峰启动延迟秒数")
     parser.add_argument("--launchd-label", default=DEFAULT_BATCH_SYNC_LABEL, help="launchd 任务标签")
     parser.add_argument("--launchd-plist", help="launchd plist 路径")
     parser.add_argument("--stdout-log-path", help="stdout 日志路径")
@@ -247,6 +265,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 0
 
     settings = load_settings(args.env_file)
+    if args.scheduled and args.slot_offset_seconds > 0:
+        time.sleep(max(0, int(args.slot_offset_seconds)))
     started_at = datetime.now().astimezone().isoformat(timespec="seconds")
     if args.project:
         update_project_sync_status(
@@ -264,7 +284,32 @@ def main(argv: Optional[List[str]] = None) -> int:
             urls_file=args.urls_file,
             project=args.project or "",
             report_json=args.report_json,
+            scheduled=args.scheduled,
         )
+        if args.scheduled and not reports:
+            if args.project:
+                update_project_sync_status(
+                    urls_file=args.urls_file or "",
+                    project=args.project,
+                    state="success",
+                    message="当前时段无需采集，已按随机轮转策略跳过",
+                    started_at=started_at,
+                    finished_at=datetime.now().astimezone().isoformat(timespec="seconds"),
+                )
+            print(
+                json.dumps(
+                    {
+                        "status": "skipped",
+                        "message": "当前时段无需采集，已按随机轮转策略跳过",
+                        "window_start": getattr(settings, "xhs_batch_window_start", "09:00"),
+                        "window_end": getattr(settings, "xhs_batch_window_end", "21:00"),
+                        "slots_per_day": compute_slots_per_day(settings),
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+            return 0
         if args.dry_run:
             print(json.dumps(build_dry_run_summary(reports), ensure_ascii=False, indent=2))
             return 0
@@ -332,6 +377,7 @@ def load_reports_for_sync(
     urls_file: Optional[str],
     project: str,
     report_json: Optional[str],
+    scheduled: bool = False,
     progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
 ) -> List[Dict[str, Any]]:
     if report_json:
@@ -340,7 +386,22 @@ def load_reports_for_sync(
     url_entries = normalize_profile_url_entries(explicit_urls, raw_text, urls_file)
     if str(project or "").strip():
         project_name = str(project).strip()
+        url_entries = [
+            {
+                **item,
+                "project": str(item.get("project") or "").strip() or project_name,
+            }
+            for item in url_entries
+        ]
         url_entries = [item for item in url_entries if str(item.get("project") or "").strip() == project_name]
+    if scheduled:
+        url_entries, _sampling_meta = select_spread_batch_entries(
+            url_entries=url_entries,
+            settings=settings,
+            project=project,
+        )
+        if not url_entries:
+            return []
     project_by_url = {
         normalize_profile_url(str(item.get("url") or "")): str(item.get("project") or "").strip()
         for item in url_entries
@@ -355,8 +416,11 @@ def load_reports_for_sync(
         settings=settings,
         progress_callback=progress_callback,
     )
-    reports = [
-        normalize_batch_item_to_report(
+    reports: List[Dict[str, Any]] = []
+    for item in items:
+        if item.get("status") != "success":
+            continue
+        report = normalize_batch_item_to_report(
             item,
             project=project_by_url.get(
                 normalize_profile_url(
@@ -370,12 +434,31 @@ def load_reports_for_sync(
                 "",
             ),
         )
-        for item in items
-        if item.get("status") == "success"
-    ]
+        if not _report_matches_requested_profile(report):
+            continue
+        reports.append(report)
+    if not reports and scheduled:
+        return []
     if not reports:
         raise ValueError("批量抓取没有成功结果，无法同步到飞书")
     return reports
+
+
+def _extract_profile_user_id_from_url(url: str) -> str:
+    match = PROFILE_ID_FROM_URL_PATTERN.search(str(url or ""))
+    if not match:
+        return ""
+    return str(match.group(1) or "").strip()
+
+
+def _report_matches_requested_profile(report: Dict[str, Any]) -> bool:
+    profile = report.get("profile") or {}
+    source_url = str(report.get("source_url") or "").strip()
+    requested_account_id = _extract_profile_user_id_from_url(source_url)
+    actual_account_id = str(profile.get("profile_user_id") or "").strip()
+    if requested_account_id and actual_account_id and requested_account_id != actual_account_id:
+        return False
+    return True
 
 
 def load_reports_from_json(path_text: str) -> List[Dict[str, Any]]:
@@ -633,7 +716,13 @@ def _link_field(text: str, url: Any) -> Dict[str, str] | str:
     return {"text": str(text or url_text).strip() or url_text, "link": url_text}
 
 
-def load_export_review_rows(*, project: str = "", export_dir: str = "", settings: Any = None) -> Dict[str, List[Dict[str, Any]]]:
+def load_export_review_rows(
+    *,
+    project: str = "",
+    export_dir: str = "",
+    settings: Any = None,
+    latest_only: bool = False,
+) -> Dict[str, List[Dict[str, Any]]]:
     root = resolve_export_review_root(export_dir)
     target_project = str(project or "").strip()
     grouped_rows: Dict[str, List[Dict[str, Any]]] = {
@@ -673,7 +762,20 @@ def load_export_review_rows(*, project: str = "", export_dir: str = "", settings
             continue
         latest_daily_summaries[key] = (snapshot_slug, summary_path, payload)
 
-    for (_project_name, _snapshot_date_text), (snapshot_slug, summary_path, payload) in sorted(latest_daily_summaries.items(), key=lambda item: (item[0][0], item[0][1])):
+    selected_daily_summaries = latest_daily_summaries
+    if latest_only:
+        latest_per_project: Dict[str, tuple[str, str, Path, Dict[str, Any]]] = {}
+        for (project_name, snapshot_date_text), (snapshot_slug, summary_path, payload) in latest_daily_summaries.items():
+            current = latest_per_project.get(project_name)
+            candidate = (snapshot_date_text, snapshot_slug, summary_path, payload)
+            if current is None or candidate[:2] > current[:2]:
+                latest_per_project[project_name] = candidate
+        selected_daily_summaries = {
+            (project_name, snapshot_date_text): (snapshot_slug, summary_path, payload)
+            for project_name, (snapshot_date_text, snapshot_slug, summary_path, payload) in latest_per_project.items()
+        }
+
+    for (_project_name, _snapshot_date_text), (snapshot_slug, summary_path, payload) in sorted(selected_daily_summaries.items(), key=lambda item: (item[0][0], item[0][1])):
         project_name = str(payload.get("project") or summary_path.parent.parent.name).strip() or "未分组"
         snapshot_time = str(payload.get("snapshot_time") or "").strip()
         snapshot_ms = to_ms(snapshot_time)
@@ -728,6 +830,8 @@ def load_export_review_rows(*, project: str = "", export_dir: str = "", settings
                         "作品链接": _link_field(title or "作品详情", work_url),
                         "主页链接": _link_field(account_name or "账号主页", row.get("主页链接")),
                         "封面图": _link_field("封面图", row.get("封面图")),
+                        "追踪状态": str(row.get("追踪状态") or "").strip(),
+                        "首次入池日期": str(row.get("首次入池日期") or "").strip(),
                         "快照目录": export_dir_text,
                         "口径说明": PRODUCT_METRIC_NOTE,
                         value_field: value,
@@ -743,8 +847,9 @@ def sync_export_review_tables_to_feishu(
     settings,
     project: str = "",
     progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+    latest_only: bool = False,
 ) -> Dict[str, Any]:
-    grouped_rows = load_export_review_rows(project=project, settings=settings)
+    grouped_rows = load_export_review_rows(project=project, settings=settings, latest_only=latest_only)
     total_rows = sum(len(rows) for rows in grouped_rows.values())
     if total_rows <= 0:
         if project:
@@ -868,8 +973,53 @@ def sync_export_review_tables_to_feishu(
     summary["single_work_ranking_updated"] = summary["daily_like_review_updated"] + summary["daily_comment_review_updated"]
     summary["single_work_ranking_skipped"] = summary["daily_like_review_skipped"] + summary["daily_comment_review_skipped"]
     summary["single_work_ranking_deleted"] = summary["daily_like_review_deleted"] + summary["daily_comment_review_deleted"]
-    summary["project_count"] = len({str(row.get("项目") or "").strip() for rows in grouped_rows.values() for row in rows if str(row.get("项目") or "").strip()})
+    summary["projects"] = sorted(
+        {
+            str(row.get("项目") or "").strip()
+            for rows in grouped_rows.values()
+            for row in rows
+            if str(row.get("项目") or "").strip()
+        }
+    )
+    summary["project_count"] = len(summary["projects"])
     return summary
+
+
+def ensure_project_dashboard_views(*, settings, projects: List[str]) -> Dict[str, Any]:
+    normalized_projects = sorted({str(item or "").strip() for item in projects if str(item or "").strip()})
+    if not normalized_projects:
+        return {"projects": [], "view_count": 0, "views": []}
+    ranking_app_token = str(getattr(settings, "feishu_ranking_bitable_app_token", "") or "").strip()
+    base_app_token = str(getattr(settings, "feishu_bitable_app_token", "") or "").strip()
+    if not ranking_app_token and not base_app_token:
+        return {"projects": normalized_projects, "view_count": 0, "views": []}
+
+    ranking_settings = (
+        replace(settings, feishu_bitable_app_token=ranking_app_token)
+        if ranking_app_token
+        else settings
+    )
+    tables_client = FeishuBitableClient(ranking_settings)
+    table_ids = {
+        str(item.get("name") or "").strip(): str(item.get("table_id") or "").strip()
+        for item in tables_client.list_tables()
+        if str(item.get("name") or "").strip() and str(item.get("table_id") or "").strip()
+    }
+    ensured_views: List[str] = []
+    for project_name in normalized_projects:
+        for table_name, suffix, view_type in (*PROJECT_DASHBOARD_VIEW_SPECS, *PROJECT_DASHBOARD_AUX_VIEW_SPECS):
+            table_id = table_ids.get(table_name)
+            if not table_id:
+                continue
+            view_name = f"{project_name}-{suffix}"
+            tables_client.ensure_view(view_name=view_name, view_type=view_type, table_id=table_id)
+            ensured_views.append(view_name)
+    return {
+        "projects": normalized_projects,
+        "view_count": len(ensured_views),
+        "views": ensured_views,
+        "primary_views": [f"{project_name}-{suffix}" for project_name in normalized_projects for _table_name, suffix, _view_type in PROJECT_DASHBOARD_VIEW_SPECS],
+    }
 
 
 def rebuild_feishu_review_tables_from_exports(
@@ -921,6 +1071,7 @@ def sync_cached_project_rankings_to_feishu(
     progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
     upload_calendar: bool = True,
     upload_rankings: bool = True,
+    latest_only: bool = False,
 ) -> Dict[str, Any]:
     if not upload_calendar and not upload_rankings:
         raise ValueError("至少选择一种飞书上传内容")
@@ -938,14 +1089,22 @@ def sync_cached_project_rankings_to_feishu(
             settings=settings,
             project=project,
             progress_callback=progress_callback,
+            latest_only=latest_only,
         )
 
     if not ranking_summary and not calendar_summary.get("calendar_project_count"):
         if project:
             raise ValueError(f"项目「{project}」当前没有可上传的复盘快照或日历留底")
         raise ValueError("当前没有可上传的复盘快照或日历留底")
-
-    return {**calendar_summary, **ranking_summary}
+    dashboard_projects = sorted(
+        {
+            *[str(item).strip() for item in calendar_summary.get("calendar_projects", []) if str(item).strip()],
+            *[str(item).strip() for item in ranking_summary.get("projects", []) if str(item).strip()],
+            *([str(project).strip()] if str(project or "").strip() else []),
+        }
+    )
+    dashboard_summary = ensure_project_dashboard_views(settings=settings, projects=dashboard_projects)
+    return {**calendar_summary, **ranking_summary, "dashboard_views": dashboard_summary}
 
 
 def sync_cached_project_calendar_to_feishu(
@@ -990,6 +1149,7 @@ def sync_cached_project_calendar_to_feishu(
             "calendar_created": 0,
             "calendar_updated": 0,
             "calendar_skipped": 0,
+            "calendar_projects": [],
         }
 
     total_rows = sum(len(rows) for rows in grouped_rows.values())
@@ -1105,6 +1265,7 @@ def sync_cached_project_calendar_to_feishu(
         "calendar_table_name": DASHBOARD_CALENDAR_TABLE_NAME,
         "calendar_table_id": table_id,
         "calendar_project_count": len(grouped_rows),
+        "calendar_projects": sorted(grouped_rows.keys()),
         "calendar_created": created,
         "calendar_updated": updated,
         "calendar_skipped": skipped,
@@ -1832,12 +1993,19 @@ def install_batch_sync_launchd(
     stderr_log_path: Optional[str],
     load_after_install: bool,
 ) -> None:
+    schedule_settings = load_settings(env_file)
     project_specs = build_project_launchd_specs(
         urls_file=urls_file,
         explicit_project=project,
         daily_at=daily_at,
         project_slot_minutes=project_slot_minutes,
         base_label=label,
+        slot_offset_seconds=max(0, int(getattr(schedule_settings, "xhs_batch_slot_offset_seconds", 300) or 0)),
+    )
+    use_spread_schedule = bool(getattr(schedule_settings, "xhs_spread_schedule_enabled", True))
+    interval_seconds = max(
+        300,
+        int(max(1, int(getattr(schedule_settings, "xhs_batch_schedule_interval_minutes", 30) or 30)) * 60),
     )
     if len(project_specs) > 1:
         working_directory = str(Path(__file__).resolve().parent.parent)
@@ -1853,6 +2021,8 @@ def install_batch_sync_launchd(
                 works_table_name=works_table_name,
                 ensure_fields=ensure_fields,
                 sync_dashboard=sync_dashboard,
+                scheduled=use_spread_schedule,
+                slot_offset_seconds=int(spec.get("slot_offset_seconds") or 0),
             )
             plist_bytes = build_launch_agent_plist(
                 label=spec["label"],
@@ -1861,7 +2031,8 @@ def install_batch_sync_launchd(
                     working_directory=working_directory,
                 ),
                 working_directory=working_directory,
-                start_calendar_interval=parse_daily_time(spec["daily_at"]),
+                interval_seconds=interval_seconds if use_spread_schedule else None,
+                start_calendar_interval=None if use_spread_schedule else parse_daily_time(spec["daily_at"]),
                 stdout_log_path=resolved_paths["stdout_log_path"],
                 stderr_log_path=resolved_paths["stderr_log_path"],
                 environment_variables=build_launch_environment(),
@@ -1877,7 +2048,15 @@ def install_batch_sync_launchd(
             print(f"[OK] plist={resolved_paths['plist_path']}")
             print(f"[OK] stdout_log={resolved_paths['stdout_log_path']}")
             print(f"[OK] stderr_log={resolved_paths['stderr_log_path']}")
-            print(f"[OK] daily_at={spec['daily_at']}")
+            if use_spread_schedule:
+                print(f"[OK] interval_minutes={getattr(schedule_settings, 'xhs_batch_schedule_interval_minutes', 30)}")
+                print(
+                    f"[OK] window={getattr(schedule_settings, 'xhs_batch_window_start', '09:00')}"
+                    f"-{getattr(schedule_settings, 'xhs_batch_window_end', '21:00')}"
+                )
+                print(f"[OK] slot_offset_seconds={int(spec.get('slot_offset_seconds') or 0)}")
+            else:
+                print(f"[OK] daily_at={spec['daily_at']}")
         return
 
     resolved_paths = resolve_launchd_paths(
@@ -1896,6 +2075,8 @@ def install_batch_sync_launchd(
         works_table_name=works_table_name,
         ensure_fields=ensure_fields,
         sync_dashboard=sync_dashboard,
+        scheduled=use_spread_schedule,
+        slot_offset_seconds=0,
     )
     working_directory = str(Path(__file__).resolve().parent.parent)
     plist_bytes = build_launch_agent_plist(
@@ -1905,7 +2086,8 @@ def install_batch_sync_launchd(
             working_directory=working_directory,
         ),
         working_directory=working_directory,
-        start_calendar_interval=parse_daily_time(daily_at),
+        interval_seconds=interval_seconds if use_spread_schedule else None,
+        start_calendar_interval=None if use_spread_schedule else parse_daily_time(daily_at),
         stdout_log_path=resolved_paths["stdout_log_path"],
         stderr_log_path=resolved_paths["stderr_log_path"],
         environment_variables=build_launch_environment(),
@@ -1920,7 +2102,14 @@ def install_batch_sync_launchd(
     print(f"[OK] plist={resolved_paths['plist_path']}")
     print(f"[OK] stdout_log={resolved_paths['stdout_log_path']}")
     print(f"[OK] stderr_log={resolved_paths['stderr_log_path']}")
-    print(f"[OK] daily_at={daily_at}")
+    if use_spread_schedule:
+        print(f"[OK] interval_minutes={getattr(schedule_settings, 'xhs_batch_schedule_interval_minutes', 30)}")
+        print(
+            f"[OK] window={getattr(schedule_settings, 'xhs_batch_window_start', '09:00')}"
+            f"-{getattr(schedule_settings, 'xhs_batch_window_end', '21:00')}"
+        )
+    else:
+        print(f"[OK] daily_at={daily_at}")
 
 
 def build_batch_sync_program_arguments(
@@ -1934,6 +2123,8 @@ def build_batch_sync_program_arguments(
     works_table_name: str,
     ensure_fields: bool,
     sync_dashboard: bool,
+    scheduled: bool = False,
+    slot_offset_seconds: int = 0,
 ) -> List[str]:
     argv = [
         sys.executable,
@@ -1951,6 +2142,10 @@ def build_batch_sync_program_arguments(
             argv.extend(["--url", url])
     if str(project or "").strip():
         argv.extend(["--project", str(project).strip()])
+    if scheduled:
+        argv.append("--scheduled")
+    if slot_offset_seconds > 0:
+        argv.extend(["--slot-offset-seconds", str(int(slot_offset_seconds))])
     if profile_table_name != PROFILE_TABLE_NAME:
         argv.extend(["--profile-table-name", profile_table_name])
     if works_table_name != WORKS_TABLE_NAME:
@@ -1984,6 +2179,7 @@ def build_project_launchd_specs(
     daily_at: str,
     project_slot_minutes: int,
     base_label: str,
+    slot_offset_seconds: int = 0,
 ) -> List[Dict[str, str]]:
     if str(explicit_project or "").strip():
         return [{"project": str(explicit_project).strip(), "daily_at": daily_at, "label": base_label}]
@@ -1997,6 +2193,7 @@ def build_project_launchd_specs(
             "project": project,
             "daily_at": offset_daily_time(daily_at, index * project_slot_minutes),
             "label": f"{base_label}.{slugify_project_name(project)}",
+            "slot_offset_seconds": index * max(0, int(slot_offset_seconds or 0)),
         }
         for index, project in enumerate(projects)
     ]

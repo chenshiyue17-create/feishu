@@ -1019,9 +1019,10 @@ def select_portal_weekly_baseline(
 def build_single_work_rankings(
     *,
     reports: List[Dict[str, Any]],
+    items: Optional[List[Dict[str, Any]]] = None,
     history_index: Dict[str, List[tuple[date, Dict[str, Any]]]],
 ) -> Dict[str, List[Dict[str, Any]]]:
-    items = build_single_work_items(reports)
+    items = list(items) if items is not None else build_single_work_items(reports)
 
     like_rank = sorted(
         items,
@@ -1045,11 +1046,21 @@ def build_single_work_rankings(
     )
     growth_rank = []
     for item in items:
-        baseline = select_previous_day_work_baseline(
-            history_index=history_index,
-            fingerprint=item["fingerprint"],
-            snapshot_date=item["snapshot_date"],
-        )
+        baseline = None
+        candidate_fingerprints = [
+            str(item.get("fingerprint") or "").strip(),
+            str(item.get("baseline_fingerprint") or "").strip(),
+        ]
+        for candidate_fingerprint in candidate_fingerprints:
+            if not candidate_fingerprint:
+                continue
+            baseline = select_previous_day_work_baseline(
+                history_index=history_index,
+                fingerprint=candidate_fingerprint,
+                snapshot_date=item["snapshot_date"],
+            )
+            if baseline:
+                break
         if not baseline:
             continue
         previous_like = to_optional_int(baseline.get("点赞数"))
@@ -1104,11 +1115,7 @@ def build_single_work_items(reports: List[Dict[str, Any]]) -> List[Dict[str, Any
         captured_at = str(report.get("captured_at") or "")
         snapshot_date = extract_snapshot_date(captured_at)
         for work in report.get("works") or []:
-            fingerprint = build_work_fingerprint(
-                profile_user_id=profile.get("profile_user_id") or "",
-                title=work.get("title_copy") or "",
-                cover_url=work.get("cover_url") or "",
-            )
+            fingerprint = build_work_ranking_identity(profile=profile, work=work)
             items.append(
                 {
                     "snapshot_date": snapshot_date,
@@ -1117,6 +1124,11 @@ def build_single_work_items(reports: List[Dict[str, Any]]) -> List[Dict[str, Any
                     "account": profile.get("nickname") or "",
                     "profile_url": profile.get("profile_url") or "",
                     "fingerprint": fingerprint,
+                    "baseline_fingerprint": build_work_fingerprint(
+                        profile_user_id=profile.get("profile_user_id") or "",
+                        title=work.get("title_copy") or "",
+                        cover_url=work.get("cover_url") or "",
+                    ),
                     "title_copy": work.get("title_copy") or "",
                     "note_type": work.get("note_type") or "",
                     "cover_url": work.get("cover_url") or "",
@@ -1125,9 +1137,22 @@ def build_single_work_items(reports: List[Dict[str, Any]]) -> List[Dict[str, Any
                     "comment_count": work_numeric_comment(work),
                     "comment_count_is_lower_bound": bool(work.get("comment_count_is_lower_bound")),
                     "xsec_token": work.get("xsec_token") or "",
+                    "tracking_status": str(work.get("tracking_status") or "").strip(),
+                    "first_seen_date": str(work.get("first_seen_date") or "").strip(),
                 }
             )
     return items
+
+
+def build_work_ranking_identity(*, profile: Dict[str, Any], work: Dict[str, Any]) -> str:
+    note_id = str(work.get("note_id") or "").strip()
+    if note_id:
+        return f"note:{note_id}"
+    return build_work_fingerprint(
+        profile_user_id=profile.get("profile_user_id") or "",
+        title=work.get("title_copy") or "",
+        cover_url=work.get("cover_url") or "",
+    )
 
 
 def select_previous_day_work_baseline(
@@ -1196,6 +1221,10 @@ def build_single_work_ranking_fields(*, item: Dict[str, Any], rank_type: str, ra
         fields["主页链接"] = {"text": item["account"] or "小红书主页", "link": item["profile_url"]}
     if item.get("note_url"):
         fields["作品链接"] = {"text": "作品链接", "link": item["note_url"]}
+    if str(item.get("tracking_status") or "").strip():
+        fields["追踪状态"] = str(item.get("tracking_status") or "").strip()
+    if str(item.get("first_seen_date") or "").strip():
+        fields["首次入池日期"] = str(item.get("first_seen_date") or "").strip()
     return {key: value for key, value in fields.items() if value not in ("", None)}
 
 
