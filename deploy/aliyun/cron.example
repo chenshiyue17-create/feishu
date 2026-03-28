@@ -1,0 +1,9 @@
+# 每天 14:00 与 15:00 触发一轮，项目内随机轮转由程序内部控制
+0 14 * * * cd /opt && /opt/xhs_feishu_monitor/.venv/bin/python -m xhs_feishu_monitor.profile_batch_to_feishu --env-file /opt/xhs_feishu_monitor/.env --urls-file /opt/xhs_feishu_monitor/input/robam_multi_profile_urls.txt --scheduled >> /var/log/xhs_feishu_monitor/sync.log 2>&1
+0 15 * * * cd /opt && /opt/xhs_feishu_monitor/.venv/bin/python -m xhs_feishu_monitor.profile_batch_to_feishu --env-file /opt/xhs_feishu_monitor/.env --urls-file /opt/xhs_feishu_monitor/input/robam_multi_profile_urls.txt --scheduled >> /var/log/xhs_feishu_monitor/sync.log 2>&1
+
+# 如果要按项目拆开跑，可以改成这样：
+# 0 14 * * * cd /opt && /opt/xhs_feishu_monitor/deploy/aliyun/run_sync.sh 默认项目 >> /var/log/xhs_feishu_monitor/default-project.log 2>&1
+# 5 14 * * * cd /opt && /opt/xhs_feishu_monitor/deploy/aliyun/run_sync.sh 东莞 >> /var/log/xhs_feishu_monitor/dongguan.log 2>&1
+# 0 15 * * * cd /opt && /opt/xhs_feishu_monitor/deploy/aliyun/run_sync.sh 默认项目 >> /var/log/xhs_feishu_monitor/default-project.log 2>&1
+# 5 15 * * * cd /opt && /opt/xhs_feishu_monitor/deploy/aliyun/run_sync.sh 东莞 >> /var/log/xhs_feishu_monitor/dongguan.log 2>&1

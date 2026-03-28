@@ -1,0 +1,16 @@
+[Unit]
+Description=XHS Feishu Monitor Scheduled Sync
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=%i
+WorkingDirectory=/opt
+Environment=REPO_PARENT=/opt
+Environment=REPO_NAME=xhs_feishu_monitor
+Environment=ENV_FILE=/opt/xhs_feishu_monitor/.env
+Environment=URLS_FILE=/opt/xhs_feishu_monitor/input/robam_multi_profile_urls.txt
+ExecStart=/opt/xhs_feishu_monitor/deploy/aliyun/run_sync.sh
+StandardOutput=append:/var/log/xhs_feishu_monitor/sync.out.log
+StandardError=append:/var/log/xhs_feishu_monitor/sync.err.log

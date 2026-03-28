@@ -1,0 +1,22 @@
+[Unit]
+Description=XHS Feishu Monitor Local Stats App
+After=network.target
+
+[Service]
+Type=simple
+User=%i
+WorkingDirectory=/opt
+Environment=REPO_PARENT=/opt
+Environment=REPO_NAME=xhs_feishu_monitor
+Environment=ENV_FILE=/opt/xhs_feishu_monitor/.env
+Environment=URLS_FILE=/opt/xhs_feishu_monitor/input/robam_multi_profile_urls.txt
+Environment=HOST=127.0.0.1
+Environment=PORT=8787
+ExecStart=/opt/xhs_feishu_monitor/deploy/aliyun/run_local_stats.sh
+Restart=always
+RestartSec=5
+StandardOutput=append:/var/log/xhs_feishu_monitor/local_stats.out.log
+StandardError=append:/var/log/xhs_feishu_monitor/local_stats.err.log
+
+[Install]
+WantedBy=multi-user.target

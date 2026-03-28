@@ -685,6 +685,31 @@ python3 -m xhs_feishu_monitor \
 
 如果你后面要改成服务器跑，再换成 `cron`、容器定时任务或 Codex automation 也可以。
 
+## 阿里云轻量服务器部署
+
+已经补好服务器版交付件，目录在：
+
+- [deploy/aliyun/alicloud.env.template](/Users/cc/Documents/New%20project/xhs_feishu_monitor/deploy/aliyun/alicloud.env.template)
+- [deploy/aliyun/install_aliyun.sh](/Users/cc/Documents/New%20project/xhs_feishu_monitor/deploy/aliyun/install_aliyun.sh)
+- [deploy/aliyun/DEPLOY_ALIYUN.md](/Users/cc/Documents/New%20project/xhs_feishu_monitor/deploy/aliyun/DEPLOY_ALIYUN.md)
+- [deploy/aliyun/systemd/xhs-local-stats.service](/Users/cc/Documents/New%20project/xhs_feishu_monitor/deploy/aliyun/systemd/xhs-local-stats.service)
+- [deploy/aliyun/systemd/xhs-sync.service](/Users/cc/Documents/New%20project/xhs_feishu_monitor/deploy/aliyun/systemd/xhs-sync.service)
+- [deploy/aliyun/systemd/xhs-sync.timer](/Users/cc/Documents/New%20project/xhs_feishu_monitor/deploy/aliyun/systemd/xhs-sync.timer)
+- [deploy/aliyun/cron.example](/Users/cc/Documents/New%20project/xhs_feishu_monitor/deploy/aliyun/cron.example)
+
+服务器部署建议固定成：
+
+- 小红书：`requests + XHS_COOKIE`
+- 服务托管：`systemd`
+- 定时采集：`systemd timer` 或 `cron`
+- 缓存目录：`/data/xhs_feishu_monitor/cache`
+
+不要再沿用本机的：
+
+- `launchd`
+- `XHS_CHROME_COOKIE_PROFILE`
+- `/Users/cc/...` 路径
+
 ## 说明
 
 - 小红书当前公开开放平台文档主要是电商接口，不是笔记互动监控接口，所以这里采用页面抓取/上游 JSON 适配器方案。
