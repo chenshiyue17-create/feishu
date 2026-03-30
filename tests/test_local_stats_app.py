@@ -151,12 +151,26 @@ class LocalStatsAppTest(unittest.TestCase):
             project="东莞",
         )
         self.assertEqual(payload["project"], "东莞")
+        self.assertEqual(payload["projects"], ["东莞", "默认项目"])
+        self.assertEqual(payload["view_mode"], "server_cache_only")
         self.assertEqual(len(payload["rankings"]["likes"]), 1)
         self.assertEqual(payload["rankings"]["likes"][0]["account_id"], "u2")
         self.assertEqual(len(payload["rankings"]["comments"]), 0)
         self.assertEqual(len(payload["rankings"]["growth"]), 1)
         self.assertEqual(len(payload["calendar"]), 1)
         self.assertEqual(payload["calendar"][0]["likes"], 7)
+
+    def test_build_mobile_rankings_payload_falls_back_to_first_project(self) -> None:
+        payload = build_mobile_rankings_payload(
+            dashboard_payload={"rankings": {}, "account_series": {}},
+            monitored_entries=[
+                {"account_id": "u1", "project": "默认项目"},
+                {"account_id": "u2", "project": "东莞"},
+            ],
+            project="不存在",
+        )
+        self.assertEqual(payload["project"], "东莞")
+        self.assertEqual(payload["projects"], ["东莞", "默认项目"])
 
     def test_dashboard_store_returns_empty_payload_when_loading_fails_without_cache(self) -> None:
         store = DashboardStore(env_file="/tmp/missing.env", cache_seconds=30)

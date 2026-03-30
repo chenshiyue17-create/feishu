@@ -1,8 +1,17 @@
 const params = new URLSearchParams(window.location.search);
 const apiBase = (params.get("api_base") || "").replace(/\/$/, "");
-const selectedProject = (params.get("project") || "默认项目").trim();
-const dashboardUrl = `${apiBase}/api/mobile-rankings?project=${encodeURIComponent(selectedProject)}`;
+let selectedProject = (params.get("project") || "默认项目").trim();
 let calendarExpanded = false;
+
+function buildDashboardUrl() {
+  return `${apiBase}/api/mobile-rankings?project=${encodeURIComponent(selectedProject)}`;
+}
+
+function updateUrlProject(project) {
+  const next = new URL(window.location.href);
+  next.searchParams.set("project", project);
+  window.history.replaceState({}, "", next.toString());
+}
 
 function formatNumber(value) {
   return new Intl.NumberFormat("zh-CN").format(Number(value || 0));
@@ -72,18 +81,38 @@ function bindCalendarToggle() {
   });
 }
 
+function renderProjectOptions(projects) {
+  const select = document.getElementById("projectSelect");
+  const options = (projects || []).filter(Boolean);
+  if (!options.length) {
+    select.innerHTML = `<option value="${selectedProject}">${selectedProject}</option>`;
+    select.value = selectedProject;
+    return;
+  }
+  if (!options.includes(selectedProject)) {
+    selectedProject = options[0];
+  }
+  select.innerHTML = options
+    .map((project) => `<option value="${project}">${project}</option>`)
+    .join("");
+  select.value = selectedProject;
+}
+
 async function loadDashboard() {
   const statusCard = document.getElementById("statusCard");
   statusCard.textContent = "正在加载榜单...";
   try {
-    const response = await fetch(dashboardUrl, { credentials: "omit" });
+    const response = await fetch(buildDashboardUrl(), { credentials: "omit" });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const payload = await response.json();
+    renderProjectOptions(payload.projects || []);
+    selectedProject = payload.project || selectedProject;
+    updateUrlProject(selectedProject);
     document.getElementById("pageTitle").textContent = `${selectedProject} 排行榜`;
     document.getElementById("pageSummary").textContent =
-      `更新时间 ${formatDateTime(payload.updated_at || payload.generated_at)} · 含历史日历与 3 个主榜单`;
+      `更新时间 ${formatDateTime(payload.updated_at || payload.generated_at)} · 服务器负责采集与缓存，手机端只查看榜单和历史`;
     statusCard.textContent =
-      `数据已加载：${formatDateTime(payload.updated_at || payload.generated_at)}。点击榜单卡片会直接跳转到小红书作品或账号主页。`;
+      `当前项目：${selectedProject}。数据来自服务器本地缓存；手机端不采集、不上传。点击榜单卡片会直接跳转到小红书作品或账号主页。`;
     const rankings = payload.rankings || {};
     renderCalendar(payload.calendar || []);
     renderList("likesList", "likesCount", rankings.likes || [], "点赞");
@@ -98,5 +127,9 @@ async function loadDashboard() {
 }
 
 document.getElementById("refreshButton").addEventListener("click", loadDashboard);
+document.getElementById("projectSelect").addEventListener("change", (event) => {
+  selectedProject = String(event.target.value || "").trim() || selectedProject;
+  loadDashboard();
+});
 bindCalendarToggle();
 loadDashboard();

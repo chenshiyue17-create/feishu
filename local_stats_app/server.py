@@ -1385,7 +1385,16 @@ def build_mobile_rankings_payload(
     monitored_entries: List[Dict[str, Any]],
     project: str = "",
 ) -> Dict[str, Any]:
+    normalized_projects = sorted(
+        {
+            normalize_project_name(str(item.get("project") or DEFAULT_PROJECT_NAME))
+            for item in (monitored_entries or [])
+            if normalize_project_name(str(item.get("project") or DEFAULT_PROJECT_NAME))
+        }
+    )
     normalized_project = normalize_project_name(project) if str(project or "").strip() else ""
+    if normalized_projects and normalized_project not in normalized_projects:
+        normalized_project = normalized_projects[0]
     rankings = dashboard_payload.get("rankings") or {}
     if normalized_project:
         project_account_ids = {
@@ -1437,6 +1446,8 @@ def build_mobile_rankings_payload(
     return {
         "ok": True,
         "project": normalized_project or "all",
+        "projects": normalized_projects,
+        "view_mode": "server_cache_only",
         "updated_at": str(dashboard_payload.get("updated_at") or dashboard_payload.get("generated_at") or "").strip(),
         "generated_at": str(dashboard_payload.get("generated_at") or "").strip(),
         "rankings": {
