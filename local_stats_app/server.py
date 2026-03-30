@@ -1400,6 +1400,9 @@ def build_mobile_rankings_payload(
         "view_mode": "server_cache_only",
         "updated_at": str(dashboard_payload.get("updated_at") or dashboard_payload.get("generated_at") or "").strip(),
         "generated_at": str(dashboard_payload.get("generated_at") or "").strip(),
+        "server_received_at": str(dashboard_payload.get("server_received_at") or "").strip(),
+        "latest_date": str(dashboard_payload.get("latest_date") or "").strip(),
+        "account_count": len(project_account_ids),
         "rankings": {
             "likes": filter_rows("单条点赞排行"),
             "comments": filter_rows("单条评论排行"),
@@ -2818,7 +2821,7 @@ def _load_dashboard_payload_local_only(env_file: str) -> Dict[str, Any]:
 
 
 def save_uploaded_server_cache(*, env_file: str, urls_file: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-    dashboard_payload = payload.get("dashboard_payload") or {}
+    dashboard_payload = dict(payload.get("dashboard_payload") or {})
     monitored_entries = payload.get("monitored_entries") or []
     monitored_metadata = payload.get("monitored_metadata") or {}
     if not isinstance(dashboard_payload, dict) or not dashboard_payload:
@@ -2831,6 +2834,7 @@ def save_uploaded_server_cache(*, env_file: str, urls_file: str, payload: Dict[s
     settings = load_settings(env_file)
     cache_dir = resolve_project_cache_dir(settings)
     cache_dir.mkdir(parents=True, exist_ok=True)
+    dashboard_payload["server_received_at"] = iso_now()
     dashboard_path = cache_dir / "dashboard_all.json"
     dashboard_path.write_text(json.dumps(dashboard_payload, ensure_ascii=False, indent=2), encoding="utf-8")
 

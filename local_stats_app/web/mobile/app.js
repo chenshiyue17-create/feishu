@@ -22,6 +22,26 @@ function formatDateTime(value) {
   return String(value).replace("T", " ").slice(0, 19);
 }
 
+function buildMobileStatusSummary(payload) {
+  const serverReceivedAt = payload.server_received_at || "";
+  const updatedAt = payload.updated_at || payload.generated_at || "";
+  const latestDate = payload.latest_date || "";
+  const accountCount = Number(payload.account_count || 0);
+  const pieces = [];
+  if (serverReceivedAt) {
+    pieces.push(`服务器接收 ${formatDateTime(serverReceivedAt)}`);
+  } else if (updatedAt) {
+    pieces.push(`缓存更新 ${formatDateTime(updatedAt)}`);
+  }
+  if (latestDate) {
+    pieces.push(`最新留底 ${latestDate}`);
+  }
+  if (accountCount) {
+    pieces.push(`${formatNumber(accountCount)} 个账号`);
+  }
+  return pieces.join(" · ");
+}
+
 function renderList(rootId, countId, rows, metricLabel) {
   const root = document.getElementById(rootId);
   const count = document.getElementById(countId);
@@ -110,9 +130,9 @@ async function loadDashboard() {
     updateUrlProject(selectedProject);
     document.getElementById("pageTitle").textContent = `${selectedProject} 排行榜`;
     document.getElementById("pageSummary").textContent =
-      `更新时间 ${formatDateTime(payload.updated_at || payload.generated_at)} · 服务器负责采集与缓存，手机端只查看榜单和历史`;
+      `${buildMobileStatusSummary(payload) || `缓存更新 ${formatDateTime(payload.updated_at || payload.generated_at)}`} · 本机采集后推送到服务器，手机端只查看这份缓存`;
     statusCard.textContent =
-      `当前项目：${selectedProject}。数据来自服务器本地缓存；手机端不采集、不上传。点击榜单卡片会直接跳转到小红书作品或账号主页。`;
+      `当前项目：${selectedProject}。手机端只读取服务器缓存，不采集、不上传。点击榜单卡片会直接跳转到小红书作品或账号主页。`;
     const rankings = payload.rankings || {};
     renderCalendar(payload.calendar || []);
     renderList("likesList", "likesCount", rankings.likes || [], "点赞");
