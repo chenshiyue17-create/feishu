@@ -1354,15 +1354,16 @@ def build_mobile_rankings_payload(
     rankings = dashboard_payload.get("rankings") or {}
     if normalized_project:
         project_account_ids = {
-            str(item.get("account_id") or "").strip()
+            str(item.get("account_id") or extract_profile_user_id(str(item.get("url") or "")) or "").strip()
             for item in (monitored_entries or [])
             if normalize_project_name(str(item.get("project") or DEFAULT_PROJECT_NAME)) == normalized_project
+            and str(item.get("account_id") or extract_profile_user_id(str(item.get("url") or "")) or "").strip()
         }
     else:
         project_account_ids = {
-            str(item.get("account_id") or "").strip()
+            str(item.get("account_id") or extract_profile_user_id(str(item.get("url") or "")) or "").strip()
             for item in (monitored_entries or [])
-            if str(item.get("account_id") or "").strip()
+            if str(item.get("account_id") or extract_profile_user_id(str(item.get("url") or "")) or "").strip()
         }
 
     def filter_rows(rank_type: str) -> List[Dict[str, Any]]:

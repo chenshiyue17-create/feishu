@@ -258,6 +258,34 @@ class LocalStatsAppTest(unittest.TestCase):
         self.assertEqual(len(payload["calendar"]), 1)
         self.assertEqual(payload["calendar"][0]["likes"], 7)
 
+    def test_build_mobile_rankings_payload_extracts_account_id_from_url(self) -> None:
+        payload = build_mobile_rankings_payload(
+            dashboard_payload={
+                "updated_at": "2026-03-30T18:34:28+08:00",
+                "latest_date": "2026-03-30",
+                "account_series": {
+                    "572eb4666a6a6940862da761": [
+                        {"date": "2026-03-30", "fans": 10, "interaction": 20, "likes": 3, "comments": 1, "works": 5},
+                    ],
+                },
+                "rankings": {
+                    "单条点赞排行": [
+                        {"rank": 1, "account_id": "572eb4666a6a6940862da761", "title": "A"},
+                    ],
+                    "单条评论排行": [],
+                    "单条第二天增长排行": [],
+                },
+            },
+            monitored_entries=[
+                {"url": "https://www.xiaohongshu.com/user/profile/572eb4666a6a6940862da761", "project": "默认项目"},
+            ],
+            project="默认项目",
+        )
+        self.assertEqual(payload["project"], "默认项目")
+        self.assertEqual(len(payload["rankings"]["likes"]), 1)
+        self.assertEqual(payload["rankings"]["likes"][0]["account_id"], "572eb4666a6a6940862da761")
+        self.assertEqual(len(payload["calendar"]), 1)
+
     def test_build_mobile_rankings_payload_falls_back_to_first_project(self) -> None:
         payload = build_mobile_rankings_payload(
             dashboard_payload={"rankings": {}, "account_series": {}},
