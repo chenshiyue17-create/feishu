@@ -297,6 +297,33 @@ def update_monitored_metadata(urls_file: str, items: List[Dict[str, Any]]) -> Pa
     return path
 
 
+def write_monitored_metadata(urls_file: str, metadata: Dict[str, Dict[str, Any]]) -> Path:
+    path = resolve_metadata_cache_path(urls_file)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    normalized: Dict[str, Dict[str, str]] = {}
+    for raw_url, raw_meta in (metadata or {}).items():
+        url = normalize_profile_url(str(raw_url or ""))
+        if not url or not isinstance(raw_meta, dict):
+            continue
+        normalized[url] = {
+            "account": str(raw_meta.get("account") or "").strip(),
+            "account_id": str(raw_meta.get("account_id") or "").strip(),
+            "profile_url": str(raw_meta.get("profile_url") or "").strip(),
+            "fans_text": str(raw_meta.get("fans_text") or "").strip(),
+            "interaction_text": str(raw_meta.get("interaction_text") or "").strip(),
+            "works_text": str(raw_meta.get("works_text") or "").strip(),
+            "fetch_state": str(raw_meta.get("fetch_state") or "").strip(),
+            "fetch_message": str(raw_meta.get("fetch_message") or "").strip(),
+            "fetch_checked_at": str(raw_meta.get("fetch_checked_at") or "").strip(),
+        }
+    payload = json.dumps(normalized, ensure_ascii=False, indent=2)
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=str(path.parent), delete=False) as handle:
+        handle.write(payload)
+        temp_path = Path(handle.name)
+    temp_path.replace(path)
+    return path
+
+
 def parse_monitored_entries(urls_file: str) -> List[Dict[str, Any]]:
     path = resolve_text_path(urls_file)
     if not path.exists():

@@ -43,6 +43,7 @@ from ..project_cache import (
     load_cached_dashboard_payload,
     rebuild_dashboard_cache_from_project_dirs,
     repair_dashboard_cache_from_exports,
+    resolve_project_cache_dir,
     write_project_cache_bundle,
 )
 from ..profile_report import build_profile_report, load_profile_report_payload
@@ -80,7 +81,9 @@ from .monitored_accounts import (
     parse_monitored_entries,
     pick_profile_url,
     resolve_text_path,
+    resolve_metadata_cache_path,
     update_monitored_metadata,
+    write_monitored_metadata,
     write_monitored_entries,
     write_monitored_urls,
 )
@@ -2812,6 +2815,39 @@ def _load_dashboard_payload_local_only(env_file: str) -> Dict[str, Any]:
     return build_empty_dashboard_payload(load_error="本地暂无可用缓存")
 
 
+def save_uploaded_server_cache(*, env_file: str, urls_file: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    dashboard_payload = payload.get("dashboard_payload") or {}
+    monitored_entries = payload.get("monitored_entries") or []
+    monitored_metadata = payload.get("monitored_metadata") or {}
+    if not isinstance(dashboard_payload, dict) or not dashboard_payload:
+        raise ValueError("dashboard_payload 不能为空")
+    if monitored_entries and not isinstance(monitored_entries, list):
+        raise ValueError("monitored_entries 必须是数组")
+    if monitored_metadata and not isinstance(monitored_metadata, dict):
+        raise ValueError("monitored_metadata 必须是对象")
+
+    settings = load_settings(env_file)
+    cache_dir = resolve_project_cache_dir(settings)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    dashboard_path = cache_dir / "dashboard_all.json"
+    dashboard_path.write_text(json.dumps(dashboard_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    if monitored_entries:
+        write_monitored_entries(urls_file, monitored_entries)
+    if monitored_metadata:
+        write_monitored_metadata(urls_file, monitored_metadata)
+
+    return {
+        "ok": True,
+        "dashboard_path": str(dashboard_path),
+        "urls_file": str(resolve_text_path(urls_file)),
+        "metadata_path": str(resolve_metadata_cache_path(urls_file)),
+        "account_count": len(dashboard_payload.get("accounts") or []),
+        "project_count": len({str(item.get("project") or "").strip() for item in monitored_entries if isinstance(item, dict)}),
+        "updated_at": iso_now(),
+    }
+
+
 def load_dashboard_payload(env_file: str) -> Dict[str, Any]:
     return _normalize_dashboard_payload(_load_dashboard_payload_local_only(env_file))
 
@@ -3040,6 +3076,26 @@ def build_handler(
                 if path == "/api/system-config":
                     payload = self.read_json_body()
                     result = save_system_config(monitoring_store.env_file, monitoring_store.urls_file, payload)
+                    self.send_json_response(HTTPStatus.OK, result)
+                    return
+                if path == "/api/server-cache-upload":
+                    settings = load_settings(monitoring_store.env_file)
+                    expected_token = str(getattr(settings, "server_cache_upload_token", "") or "").strip()
+                    provided_token = str(self.headers.get("X-Upload-Token") or "").strip()
+                    if expected_token and provided_token != expected_token:
+                        self.send_json_response(HTTPStatus.FORBIDDEN, {"ok": False, "message": "上传令牌无效"})
+                        return
+                    payload = self.read_json_body()
+                    result = save_uploaded_server_cache(
+                        env_file=monitoring_store.env_file,
+                        urls_file=monitoring_store.urls_file,
+                        payload=payload,
+                    )
+                    dashboard_payload = payload.get("dashboard_payload") or {}
+                    dashboard_store.set_local_override(dashboard_payload)
+                    monitoring_store._profile_lookup_cache_rows = []  # noqa: SLF001
+                    monitoring_store._profile_lookup_cache_error = ""  # noqa: SLF001
+                    monitoring_store._profile_lookup_cache_loaded_at = 0.0  # noqa: SLF001
                     self.send_json_response(HTTPStatus.OK, result)
                     return
                 if path == "/api/login-state/check":

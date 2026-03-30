@@ -46,6 +46,7 @@ from xhs_feishu_monitor.local_stats_app.server import (
     parse_monitored_entries,
     run_login_state_self_check,
     refresh_project_export_snapshots,
+    save_uploaded_server_cache,
     update_monitored_metadata,
     wait_for_xiaohongshu_login,
     write_monitored_entries,
@@ -113,6 +114,47 @@ class LocalStatsAppTest(unittest.TestCase):
             self.assertIn("PROJECT_CACHE_DIR=/data/cache", text)
             self.assertNotIn("FEISHU_APP_ID=", text)
             self.assertNotIn("FEISHU_APP_SECRET=", text)
+
+    def test_save_uploaded_server_cache_writes_dashboard_and_entries(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            env_path = Path(temp_dir) / ".env"
+            urls_path = Path(temp_dir) / "urls.txt"
+            cache_dir = Path(temp_dir) / "cache"
+            env_path.write_text(
+                f"PROJECT_CACHE_DIR={cache_dir}\nSTATE_FILE={Path(temp_dir) / '.state.json'}\n",
+                encoding="utf-8",
+            )
+
+            result = save_uploaded_server_cache(
+                env_file=str(env_path),
+                urls_file=str(urls_path),
+                payload={
+                    "dashboard_payload": {
+                        "accounts": [{"account_id": "u1", "account": "账号A"}],
+                        "rankings": {},
+                        "account_series": {},
+                    },
+                    "monitored_entries": [
+                        {
+                            "url": "https://www.xiaohongshu.com/user/profile/u1",
+                            "active": True,
+                            "project": "默认项目",
+                        }
+                    ],
+                    "monitored_metadata": {
+                        "https://www.xiaohongshu.com/user/profile/u1": {
+                            "account": "账号A",
+                            "account_id": "u1",
+                            "fetch_state": "ok",
+                        }
+                    },
+                },
+            )
+
+            self.assertTrue((cache_dir / "dashboard_all.json").exists())
+            self.assertIn("默认项目", urls_path.read_text(encoding="utf-8"))
+            self.assertTrue(Path(result["metadata_path"]).exists())
+            self.assertEqual(result["account_count"], 1)
 
     def test_build_daily_series(self) -> None:
         rows = [
