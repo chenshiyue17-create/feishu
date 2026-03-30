@@ -2981,7 +2981,7 @@ def build_handler(
             params = urllib.parse.parse_qs(parsed.query)
             target_url = str((params.get("url") or [""])[0]).strip()
             if not target_url.startswith(("http://", "https://")):
-                self.send_error(HTTPStatus.BAD_REQUEST, "无效图片地址")
+                self.send_json_response(HTTPStatus.BAD_REQUEST, {"ok": False, "message": "无效图片地址"})
                 return
             request = urllib.request.Request(
                 target_url,
@@ -2995,7 +2995,7 @@ def build_handler(
                     body = response.read()
                     content_type = response.getheader("Content-Type") or "image/jpeg"
             except Exception:
-                self.send_error(HTTPStatus.BAD_GATEWAY, "图片加载失败")
+                self.send_json_response(HTTPStatus.BAD_GATEWAY, {"ok": False, "message": "图片加载失败"})
                 return
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", content_type)
@@ -3131,7 +3131,7 @@ def build_handler(
                         {"ok": True, "message": "已开始登录态自检", "login_state": login_state},
                     )
                     return
-                self.send_error(HTTPStatus.NOT_FOUND, "接口不存在")
+                self.send_json_response(HTTPStatus.NOT_FOUND, {"ok": False, "message": "接口不存在"})
             except ValueError as exc:
                 self.send_json_response(HTTPStatus.BAD_REQUEST, {"ok": False, "message": str(exc)})
             except Exception as exc:
