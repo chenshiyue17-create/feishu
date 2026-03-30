@@ -26,6 +26,7 @@ from xhs_feishu_monitor.local_stats_app.server import (
     MonitoringSyncStore,
     build_empty_dashboard_payload,
     build_mobile_rankings_payload,
+    _load_dashboard_payload_local_only,
     build_dashboard_account_index,
     build_dashboard_payload_with_reports,
     build_login_state_payload,
@@ -164,6 +165,15 @@ class LocalStatsAppTest(unittest.TestCase):
         self.assertEqual(payload["accounts"], [])
         self.assertTrue(payload["stale"])
         self.assertEqual(payload["load_error"], "invalid param")
+
+    def test_load_dashboard_payload_local_only_returns_empty_without_feishu(self) -> None:
+        with patch("xhs_feishu_monitor.local_stats_app.server.load_settings"), \
+             patch("xhs_feishu_monitor.local_stats_app.server.load_cached_dashboard_payload", return_value={}), \
+             patch("xhs_feishu_monitor.local_stats_app.server.rebuild_dashboard_cache_from_project_dirs", side_effect=ValueError("bad cache")), \
+             patch("xhs_feishu_monitor.local_stats_app.server.repair_dashboard_cache_from_exports", side_effect=ValueError("bad export")):
+            payload = _load_dashboard_payload_local_only("/tmp/test.env")
+        self.assertEqual(payload["accounts"], [])
+        self.assertTrue(payload["stale"])
 
     def test_build_account_series_map(self) -> None:
         rows = [

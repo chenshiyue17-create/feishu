@@ -2879,28 +2879,30 @@ class MonitoringSyncStore:
             self._status["message"] = progress.get("detail_text") or self._status.get("message", "")
 
 
-def load_dashboard_payload(env_file: str) -> Dict[str, Any]:
-    def _payload_account_ids(payload: Dict[str, Any]) -> set[str]:
-        return {
-            str((item or {}).get("account_id") or "").strip()
-            for item in (payload.get("accounts") or [])
-            if str((item or {}).get("account_id") or "").strip()
-        }
+def _payload_account_ids(payload: Dict[str, Any]) -> set[str]:
+    return {
+        str((item or {}).get("account_id") or "").strip()
+        for item in (payload.get("accounts") or [])
+        if str((item or {}).get("account_id") or "").strip()
+    }
 
-    def _normalize_dashboard_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
-        normalized = copy.deepcopy(payload or {})
-        accounts = []
-        for item in normalized.get("accounts") or []:
-            row = dict(item or {})
-            account_name = str(row.get("account_name") or row.get("account") or row.get("display_name") or "").strip()
-            account_id = str(row.get("account_id") or "").strip()
-            row["account"] = account_name or account_id
-            row["account_name"] = account_name or account_id
-            row["display_name"] = str(row.get("display_name") or account_name or account_id).strip() or account_id
-            accounts.append(row)
-        normalized["accounts"] = accounts
-        return normalized
 
+def _normalize_dashboard_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    normalized = copy.deepcopy(payload or {})
+    accounts = []
+    for item in normalized.get("accounts") or []:
+        row = dict(item or {})
+        account_name = str(row.get("account_name") or row.get("account") or row.get("display_name") or "").strip()
+        account_id = str(row.get("account_id") or "").strip()
+        row["account"] = account_name or account_id
+        row["account_name"] = account_name or account_id
+        row["display_name"] = str(row.get("display_name") or account_name or account_id).strip() or account_id
+        accounts.append(row)
+    normalized["accounts"] = accounts
+    return normalized
+
+
+def _load_dashboard_payload_local_only(env_file: str) -> Dict[str, Any]:
     settings = load_settings(env_file)
     cached_payload = load_cached_dashboard_payload(settings)
     metadata_path = resolve_text_path(DEFAULT_URLS_FILE + ".meta.json")
@@ -2945,23 +2947,18 @@ def load_dashboard_payload(env_file: str) -> Dict[str, Any]:
     except Exception:
         pass
     if cached_payload:
-        try:
-            rebuilt_payload = rebuild_dashboard_cache_from_project_dirs(settings)
-            rebuilt_account_ids = _payload_account_ids(rebuilt_payload)
-            if rebuilt_payload and rebuilt_account_ids.issuperset(expected_account_ids) and len(rebuilt_payload.get("accounts") or []) >= len(cached_payload.get("accounts") or []):
-                return _normalize_dashboard_payload(rebuilt_payload)
-        except Exception:
-            pass
-        try:
-            repaired_payload = repair_dashboard_cache_from_exports(
-                settings=settings,
-                monitored_metadata=monitored_metadata,
-            )
-            repaired_account_ids = _payload_account_ids(repaired_payload)
-            if repaired_payload and repaired_account_ids.issuperset(expected_account_ids) and len(repaired_payload.get("accounts") or []) >= len(cached_payload.get("accounts") or []):
-                return _normalize_dashboard_payload(repaired_payload)
-        except Exception:
-            pass
+        return _normalize_dashboard_payload(cached_payload)
+    return build_empty_dashboard_payload(load_error="本地暂无可用缓存")
+
+
+def load_dashboard_payload(env_file: str) -> Dict[str, Any]:
+
+    local_payload = _load_dashboard_payload_local_only(env_file)
+    if local_payload.get("accounts"):
+        return local_payload
+    settings = load_settings(env_file)
+    cached_payload = load_cached_dashboard_payload(settings)
+    if cached_payload:
         return _normalize_dashboard_payload(cached_payload)
     base_client = FeishuBitableClient(settings)
     table_ids = list_table_ids(base_client)
@@ -3054,7 +3051,7 @@ def build_handler(
                 params = urllib.parse.parse_qs(parsed.query)
                 project = str((params.get("project") or [""])[0]).strip()
                 payload = build_mobile_rankings_payload(
-                    dashboard_payload=dashboard_store.get_payload(force=False),
+                    dashboard_payload=_load_dashboard_payload_local_only(monitoring_store.env_file),
                     monitored_entries=monitoring_store.get_payload().get("entries") or [],
                     project=project,
                 )
