@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import csv
 import copy
+import gzip
 import json
 import os
 import re
@@ -2923,6 +2924,12 @@ def build_handler(
             raw = self.rfile.read(length)
             if not raw:
                 return {}
+            content_encoding = str(self.headers.get("Content-Encoding") or "").lower()
+            if "gzip" in content_encoding:
+                try:
+                    raw = gzip.decompress(raw)
+                except Exception as exc:
+                    raise ValueError(f"请求体解压失败: {exc}") from exc
             payload = json.loads(raw.decode("utf-8"))
             if not isinstance(payload, dict):
                 raise ValueError("请求体必须是 JSON 对象")

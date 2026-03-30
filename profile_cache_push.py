@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import gzip
 import json
 import urllib.request
 from typing import List, Optional
@@ -41,17 +42,19 @@ def push_local_cache_to_server(*, env_file: str, urls_file: str, server_url: str
         },
         ensure_ascii=False,
     ).encode("utf-8")
+    compressed_body = gzip.compress(request_body)
     server_url = str(server_url or "").rstrip("/")
     request = urllib.request.Request(
         f"{server_url}/api/server-cache-upload",
-        data=request_body,
+        data=compressed_body,
         headers={
             "Content-Type": "application/json; charset=utf-8",
+            "Content-Encoding": "gzip",
             **({"X-Upload-Token": str(token or "").strip()} if str(token or "").strip() else {}),
         },
         method="POST",
     )
-    with urllib.request.urlopen(request, timeout=60) as response:
+    with urllib.request.urlopen(request, timeout=180) as response:
         return json.loads(response.read().decode("utf-8"))
 
 
