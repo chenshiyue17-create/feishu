@@ -4,12 +4,72 @@ import argparse
 import json
 import time
 from datetime import datetime
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from .config import load_settings
-from .profile_batch_to_feishu import compute_slots_per_day, load_reports_for_sync
+from .profile_batch_report import (
+    collect_profile_reports_with_progress,
+    compute_slots_per_day,
+    normalize_profile_url_entries,
+    select_spread_batch_entries,
+)
 from .project_cache import write_project_cache_bundle
 from .project_sync_status import update_project_sync_status
+
+
+def _collect_reports(
+    *,
+    settings,
+    explicit_urls: List[str],
+    raw_text: str,
+    urls_file: Optional[str],
+    project: str,
+    scheduled: bool,
+) -> List[Dict[str, Any]]:
+    url_entries = normalize_profile_url_entries(explicit_urls, raw_text, urls_file)
+    project_name = str(project or "").strip()
+    if project_name:
+        url_entries = [
+            {
+                **item,
+                "project": str(item.get("project") or "").strip() or project_name,
+            }
+            for item in url_entries
+        ]
+        url_entries = [item for item in url_entries if str(item.get("project") or "").strip() == project_name]
+    if scheduled:
+        url_entries, _sampling_meta = select_spread_batch_entries(
+            url_entries=url_entries,
+            settings=settings,
+            project=project_name,
+        )
+        if not url_entries:
+            return []
+    urls = [item["url"] for item in url_entries]
+    if not urls:
+        raise ValueError("没有找到可用的小红书账号主页链接")
+    return collect_profile_reports_with_progress(
+        urls=urls,
+        url_entries=url_entries,
+        settings=settings,
+    )
+
+
+def _format_failed_report_logs(reports: List[Dict[str, Any]], limit: int = 5) -> List[Dict[str, str]]:
+    failed_logs: List[Dict[str, str]] = []
+    for item in reports:
+        if item.get("status") == "success":
+            continue
+        failed_logs.append(
+            {
+                "url": str(item.get("requested_url") or item.get("final_url") or "").strip(),
+                "account": str((item.get("profile") or {}).get("nickname") or "").strip(),
+                "error": str(item.get("error") or item.get("message") or "unknown error").strip(),
+            }
+        )
+        if len(failed_logs) >= limit:
+            break
+    return failed_logs
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -38,13 +98,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         )
 
     try:
-        reports = load_reports_for_sync(
+        reports = _collect_reports(
             settings=settings,
             explicit_urls=args.url,
             raw_text=args.raw_text or "",
             urls_file=args.urls_file,
             project=args.project or "",
-            report_json=None,
             scheduled=args.scheduled,
         )
         if args.scheduled and not reports:
@@ -75,6 +134,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         successful_reports = [item for item in reports if item.get("status") == "success"]
         failed_reports = [item for item in reports if item.get("status") != "success"]
         if not successful_reports:
+            failed_logs = _format_failed_report_logs(reports)
+            if failed_logs:
+                print(json.dumps({"status": "failed", "errors": failed_logs}, ensure_ascii=False, indent=2))
             raise ValueError("批量抓取没有成功结果，未写入本地缓存")
 
         cache_summary = write_project_cache_bundle(reports=successful_reports, settings=settings)
