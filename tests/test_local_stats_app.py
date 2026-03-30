@@ -121,6 +121,14 @@ class LocalStatsAppTest(unittest.TestCase):
         payload = build_mobile_rankings_payload(
             dashboard_payload={
                 "updated_at": "2026-03-28T12:00:00+08:00",
+                "account_series": {
+                    "u1": [
+                        {"date": "2026-03-27", "fans": 10, "interaction": 20, "likes": 3, "comments": 1, "works": 5},
+                    ],
+                    "u2": [
+                        {"date": "2026-03-27", "fans": 50, "interaction": 60, "likes": 7, "comments": 2, "works": 8},
+                    ],
+                },
                 "rankings": {
                     "单条点赞排行": [
                         {"rank": 1, "account_id": "u1", "title": "A"},
@@ -145,6 +153,8 @@ class LocalStatsAppTest(unittest.TestCase):
         self.assertEqual(payload["rankings"]["likes"][0]["account_id"], "u2")
         self.assertEqual(len(payload["rankings"]["comments"]), 0)
         self.assertEqual(len(payload["rankings"]["growth"]), 1)
+        self.assertEqual(len(payload["calendar"]), 1)
+        self.assertEqual(payload["calendar"][0]["likes"], 7)
 
     def test_build_account_series_map(self) -> None:
         rows = [

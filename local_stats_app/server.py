@@ -1372,6 +1372,34 @@ def build_mobile_rankings_payload(
             return list(rows)
         return [dict(item) for item in rows if str(item.get("account_id") or "").strip() in project_account_ids]
 
+    daily_history: List[Dict[str, Any]] = []
+    account_series = dashboard_payload.get("account_series") or {}
+    per_date: Dict[str, Dict[str, Any]] = {}
+    for account_id in project_account_ids:
+        for point in account_series.get(account_id) or []:
+            date_text = str(point.get("date") or "").strip()
+            if not date_text:
+                continue
+            bucket = per_date.setdefault(
+                date_text,
+                {
+                    "date": date_text,
+                    "fans": 0,
+                    "interaction": 0,
+                    "likes": 0,
+                    "comments": 0,
+                    "works": 0,
+                    "accounts": 0,
+                },
+            )
+            bucket["fans"] += int(point.get("fans") or 0)
+            bucket["interaction"] += int(point.get("interaction") or 0)
+            bucket["likes"] += int(point.get("likes") or 0)
+            bucket["comments"] += int(point.get("comments") or 0)
+            bucket["works"] += int(point.get("works") or 0)
+            bucket["accounts"] += 1
+    daily_history = sorted(per_date.values(), key=lambda item: str(item.get("date") or ""))
+
     return {
         "ok": True,
         "project": normalized_project or "all",
@@ -1382,6 +1410,7 @@ def build_mobile_rankings_payload(
             "comments": filter_rows("单条评论排行"),
             "growth": filter_rows("单条第二天增长排行"),
         },
+        "calendar": daily_history,
     }
 
 
