@@ -83,6 +83,37 @@ class LocalStatsAppTest(unittest.TestCase):
             self.assertEqual(result["config"]["PROJECT_CACHE_DIR"], "/data/cache")
             self.assertIn("u2", urls_path.read_text(encoding="utf-8"))
 
+    def test_save_system_config_strips_legacy_feishu_lines(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            env_path = Path(temp_dir) / ".env"
+            urls_path = Path(temp_dir) / "urls.txt"
+            env_path.write_text(
+                "XHS_COOKIE=old_cookie\n"
+                "FEISHU_APP_ID=bad\n"
+                "FEISHU_APP_SECRET=bad\n"
+                "PROJECT_CACHE_DIR=/old/cache\n",
+                encoding="utf-8",
+            )
+
+            save_system_config(
+                str(env_path),
+                str(urls_path),
+                {
+                    "config": {
+                        "XHS_COOKIE": "new_cookie",
+                        "PROJECT_CACHE_DIR": "/data/cache",
+                        "STATE_FILE": "/data/state.json",
+                    },
+                    "urls_text": "",
+                },
+            )
+
+            text = env_path.read_text(encoding="utf-8")
+            self.assertIn("XHS_COOKIE=new_cookie", text)
+            self.assertIn("PROJECT_CACHE_DIR=/data/cache", text)
+            self.assertNotIn("FEISHU_APP_ID=", text)
+            self.assertNotIn("FEISHU_APP_SECRET=", text)
+
     def test_build_daily_series(self) -> None:
         rows = [
             {"日期文本": "2026-03-17", "账号ID": "u1", "粉丝数": 100, "首页总点赞": 20, "首页总评论": 5, "首页可见作品数": 2},

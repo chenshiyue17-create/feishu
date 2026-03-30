@@ -95,6 +95,7 @@ DEFAULT_URLS_FILE = "xhs_feishu_monitor/input/robam_multi_profile_urls.txt"
 DEFAULT_ACCOUNT_RANKING_EXPORT_DIR = "/Users/cc/Downloads/飞书缓存/账号榜单导出"
 SYSTEM_CONFIG_KEYS = ("XHS_COOKIE", "PROJECT_CACHE_DIR", "STATE_FILE")
 SYSTEM_CONFIG_HELPER_KEYS: tuple[str, ...] = ()
+LEGACY_SYSTEM_CONFIG_PREFIXES = ("FEISHU_",)
 
 DASHBOARD_SERIES_META = {
     "mode": "daily",
@@ -171,6 +172,19 @@ def _normalize_system_config_updates(updates: Dict[str, str]) -> Dict[str, str]:
     return dict(updates)
 
 
+def _filter_legacy_system_config_lines(lines: List[str]) -> List[str]:
+    filtered: List[str] = []
+    for raw in lines:
+        line = raw.rstrip("\n")
+        stripped = line.strip()
+        if stripped and "=" in stripped:
+            key = stripped.split("=", 1)[0].strip()
+            if key.startswith(LEGACY_SYSTEM_CONFIG_PREFIXES):
+                continue
+        filtered.append(line)
+    return filtered
+
+
 def save_system_config(env_file: str, urls_file: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     env_path = Path(env_file).expanduser().resolve()
     urls_path = resolve_text_path(urls_file).expanduser().resolve()
@@ -178,6 +192,7 @@ def save_system_config(env_file: str, urls_file: str, payload: Dict[str, Any]) -
     urls_path.parent.mkdir(parents=True, exist_ok=True)
 
     current_lines = env_path.read_text(encoding="utf-8").splitlines() if env_path.exists() else []
+    current_lines = _filter_legacy_system_config_lines(current_lines)
     updates = payload.get("config") or {}
     if not isinstance(updates, dict):
         raise ValueError("config 必须是对象")
