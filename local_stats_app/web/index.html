@@ -13,7 +13,7 @@
         <div>
           <p class="eyebrow">Local Stats App</p>
           <h1>小红书数据本地统计台</h1>
-          <p class="hero-copy">以项目为主维度管理账号、增长、排行和预警。本地看板负责实时运营，飞书只负责留底和协作展示。</p>
+          <p class="hero-copy">以项目为主维度管理账号、增长、排行和预警。服务器负责自动采集与缓存，网页和手机端只负责查看。</p>
         </div>
         <div class="hero-actions">
           <div class="hero-action-row">
@@ -33,12 +33,12 @@
           <div class="strategy-copy">实时查看项目概况、账号榜、作品榜和互动预警。</div>
         </article>
         <article class="strategy-card">
-          <div class="strategy-title">飞书上传</div>
-          <div class="strategy-copy">按需手动上传，用于团队查看、留底和汇报，不参与本地实时计算。</div>
-        </article>
-        <article class="strategy-card">
           <div class="strategy-title">统一口径</div>
           <div class="strategy-copy">每个账号最多采集前 30 条作品；项目增长默认看可比账号，不把新增账号误算成成长。</div>
+        </article>
+        <article class="strategy-card">
+          <div class="strategy-title">服务器采集</div>
+          <div class="strategy-copy">每天自动采集所有项目并写入本地缓存，手机端和网页端都只读取服务器已有数据。</div>
         </article>
       </section>
 
@@ -54,38 +54,6 @@
           <label class="system-config-field">
             <span class="form-label">XHS_COOKIE</span>
             <textarea id="configXhsCookie" class="monitor-input system-config-textarea" placeholder="直接粘贴当前可用 Cookie"></textarea>
-          </label>
-          <label class="system-config-field">
-            <span class="form-label">飞书 Base 链接或 Token</span>
-            <input id="configFeishuBaseLink" class="monitor-search-input" type="text" placeholder="直接粘贴 Base 链接即可自动识别" />
-          </label>
-          <label class="system-config-field">
-            <span class="form-label">排行榜 Base 链接或 Token</span>
-            <input id="configFeishuRankingBaseLink" class="monitor-search-input" type="text" placeholder="留空则默认复用上面的 Base" />
-          </label>
-          <label class="system-config-field">
-            <span class="form-label">飞书数据表链接或 Table ID</span>
-            <input id="configFeishuTableLink" class="monitor-search-input" type="text" placeholder="可直接粘贴表格链接，自动提取 tbl..." />
-          </label>
-          <label class="system-config-field">
-            <span class="form-label">FEISHU_APP_ID</span>
-            <input id="configFeishuAppId" class="monitor-search-input" type="text" />
-          </label>
-          <label class="system-config-field">
-            <span class="form-label">FEISHU_APP_SECRET</span>
-            <input id="configFeishuAppSecret" class="monitor-search-input" type="text" />
-          </label>
-          <label class="system-config-field">
-            <span class="form-label">FEISHU_BITABLE_APP_TOKEN</span>
-            <input id="configFeishuBitableToken" class="monitor-search-input" type="text" />
-          </label>
-          <label class="system-config-field">
-            <span class="form-label">FEISHU_RANKING_BITABLE_APP_TOKEN</span>
-            <input id="configFeishuRankingToken" class="monitor-search-input" type="text" />
-          </label>
-          <label class="system-config-field">
-            <span class="form-label">FEISHU_TABLE_ID</span>
-            <input id="configFeishuTableId" class="monitor-search-input" type="text" />
           </label>
           <label class="system-config-field">
             <span class="form-label">PROJECT_CACHE_DIR</span>
@@ -138,10 +106,6 @@
             <div id="proxyPoolCard" class="proxy-pool-card"></div>
             <div class="action-row">
               <button id="syncNowButton" class="primary-button secondary-button">更新本地看板</button>
-              <button id="retryUploadButton" class="monitor-inline-button" type="button">上传当前项目到飞书</button>
-              <button id="uploadAllButton" class="monitor-inline-button" type="button">上传全部项目</button>
-              <button id="uploadCalendarButton" class="monitor-inline-button" type="button">仅上传日历</button>
-              <button id="uploadRankingButton" class="monitor-inline-button" type="button">仅上传排行榜</button>
               <button id="checkLoginStateButton" class="monitor-inline-button" type="button">立即自检</button>
             </div>
             <p id="syncCooldownText" class="subtle"></p>

@@ -26,14 +26,9 @@ from ..chrome_cookies import (
     resolve_chrome_profile_root,
 )
 from ..config import load_settings
-from ..feishu import FeishuBitableClient
 from ..profile_batch_report import normalize_profile_url
 from ..profile_batch_to_feishu import (
-    has_cached_project_upload_payload,
-    has_cached_project_rankings,
     load_reports_for_sync,
-    sync_cached_project_rankings_to_feishu,
-    sync_reports_to_feishu,
 )
 from ..profile_dashboard_to_feishu import (
     build_single_work_ranking_fields,
@@ -98,24 +93,8 @@ ALERT_TABLE_NAME = "小红书评论预警"
 WEB_DIR = Path(__file__).resolve().parent / "web"
 DEFAULT_URLS_FILE = "xhs_feishu_monitor/input/robam_multi_profile_urls.txt"
 DEFAULT_ACCOUNT_RANKING_EXPORT_DIR = "/Users/cc/Downloads/飞书缓存/账号榜单导出"
-SYSTEM_CONFIG_KEYS = (
-    "XHS_COOKIE",
-    "FEISHU_APP_ID",
-    "FEISHU_APP_SECRET",
-    "FEISHU_BITABLE_APP_TOKEN",
-    "FEISHU_RANKING_BITABLE_APP_TOKEN",
-    "FEISHU_TABLE_ID",
-    "PROJECT_CACHE_DIR",
-    "STATE_FILE",
-)
-SYSTEM_CONFIG_HELPER_KEYS = (
-    "FEISHU_BASE_LINK",
-    "FEISHU_RANKING_BASE_LINK",
-    "FEISHU_TABLE_LINK",
-)
-
-_FEISHU_BASE_LINK_PATTERN = re.compile(r"/base/([A-Za-z0-9]+)")
-_FEISHU_TABLE_ID_PATTERN = re.compile(r"\b(tbl[A-Za-z0-9]+)\b")
+SYSTEM_CONFIG_KEYS = ("XHS_COOKIE", "PROJECT_CACHE_DIR", "STATE_FILE")
+SYSTEM_CONFIG_HELPER_KEYS: tuple[str, ...] = ()
 
 DASHBOARD_SERIES_META = {
     "mode": "daily",
@@ -188,57 +167,8 @@ def load_system_config(env_file: str, urls_file: str) -> Dict[str, Any]:
     }
 
 
-def _extract_feishu_base_token(value: str) -> str:
-    text = str(value or "").strip()
-    if not text:
-        return ""
-    match = _FEISHU_BASE_LINK_PATTERN.search(text)
-    if match:
-        return match.group(1)
-    if text.startswith("http://") or text.startswith("https://"):
-        return ""
-    return text
-
-
-def _extract_feishu_table_id(value: str) -> str:
-    text = str(value or "").strip()
-    if not text:
-        return ""
-    match = _FEISHU_TABLE_ID_PATTERN.search(text)
-    if match:
-        return match.group(1)
-    if text.startswith("http://") or text.startswith("https://"):
-        return ""
-    return text
-
-
 def _normalize_system_config_updates(updates: Dict[str, str]) -> Dict[str, str]:
-    normalized = dict(updates)
-    shared_base_link = str(normalized.get("FEISHU_BASE_LINK") or "").strip()
-    ranking_base_link = str(normalized.get("FEISHU_RANKING_BASE_LINK") or "").strip()
-    table_link = str(normalized.get("FEISHU_TABLE_LINK") or "").strip()
-
-    default_base_token = _extract_feishu_base_token(shared_base_link)
-    ranking_base_token = _extract_feishu_base_token(ranking_base_link) or default_base_token
-
-    if shared_base_link and default_base_token:
-        normalized["FEISHU_BITABLE_APP_TOKEN"] = default_base_token
-    elif normalized.get("FEISHU_BITABLE_APP_TOKEN"):
-        normalized["FEISHU_BITABLE_APP_TOKEN"] = _extract_feishu_base_token(str(normalized["FEISHU_BITABLE_APP_TOKEN"]))
-
-    if ranking_base_link and ranking_base_token:
-        normalized["FEISHU_RANKING_BITABLE_APP_TOKEN"] = ranking_base_token
-    elif normalized.get("FEISHU_RANKING_BITABLE_APP_TOKEN"):
-        normalized["FEISHU_RANKING_BITABLE_APP_TOKEN"] = _extract_feishu_base_token(str(normalized["FEISHU_RANKING_BITABLE_APP_TOKEN"]))
-    elif default_base_token:
-        normalized["FEISHU_RANKING_BITABLE_APP_TOKEN"] = default_base_token
-
-    if table_link:
-        normalized["FEISHU_TABLE_ID"] = _extract_feishu_table_id(table_link)
-    elif normalized.get("FEISHU_TABLE_ID"):
-        normalized["FEISHU_TABLE_ID"] = _extract_feishu_table_id(str(normalized["FEISHU_TABLE_ID"]))
-
-    return normalized
+    return dict(updates)
 
 
 def save_system_config(env_file: str, urls_file: str, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -1796,13 +1726,10 @@ class MonitoringSyncStore:
         self.sync_dashboard = sync_dashboard
         self._lock = threading.Lock()
         self._running = False
-        self._upload_running = False
         self._pending_resync = False
         self._current_sync_urls: List[str] = []
         self._current_sync_project = ""
         self._pending_sync_urls: List[str] = []
-        self._pending_upload_job: Dict[str, Any] = {}
-        self._last_upload_retry_job: Dict[str, Any] = {}
         self._manual_last_requested_at = 0.0
         self._profile_lookup_cache_rows: List[Dict[str, Any]] = []
         self._profile_lookup_cache_error = ""
@@ -1810,18 +1737,6 @@ class MonitoringSyncStore:
         self._status: Dict[str, Any] = {
             "state": "idle",
             "message": "待命",
-            "started_at": "",
-            "finished_at": "",
-            "last_success_at": "",
-            "last_error": "",
-            "pending": False,
-            "progress": {},
-            "summary": {},
-        }
-        self._upload_status: Dict[str, Any] = {
-            "state": "idle",
-            "message": "飞书上传待命",
-            "scope": "full",
             "started_at": "",
             "finished_at": "",
             "last_success_at": "",
@@ -1926,18 +1841,23 @@ class MonitoringSyncStore:
         snapshot = dict(self._status)
         snapshot.update(self._build_manual_cooldown_locked())
         snapshot["upload_status"] = {
-            **copy.deepcopy(self._upload_status),
-            "has_retry_payload": bool(self._last_upload_retry_job),
-            "has_cached_payload": self._has_cached_upload_payload_locked(),
+            "state": "disabled",
+            "message": "服务器当前仅保留本地缓存，不再上传飞书。",
+            "scope": "disabled",
+            "started_at": "",
+            "finished_at": "",
+            "last_success_at": "",
+            "last_error": "",
+            "pending": False,
+            "progress": {},
+            "summary": {},
+            "has_retry_payload": False,
+            "has_cached_payload": False,
         }
         return snapshot
 
     def _has_cached_upload_payload_locked(self) -> bool:
-        try:
-            settings = load_settings(self.env_file)
-        except Exception:
-            return False
-        return has_cached_project_upload_payload(settings=settings, include_calendar=True, include_rankings=True)
+        return False
 
     @staticmethod
     def _normalize_upload_scope(scope: str) -> str:
@@ -2012,84 +1932,11 @@ class MonitoringSyncStore:
         return "staged"
 
     def retry_feishu_upload(self, *, project: str = "", scope: str = "full") -> Dict[str, Any]:
-        normalized_project = normalize_project_name(project)
-        project_specified = bool(str(project or "").strip())
-        upload_scope = self._normalize_upload_scope(scope)
-        include_calendar = upload_scope in {"full", "calendar"}
-        include_rankings = upload_scope in {"full", "rankings"}
-        with self._lock:
-            if project_specified:
-                try:
-                    settings = load_settings(self.env_file)
-                except Exception as exc:
-                    return {
-                        "ok": False,
-                        "message": f"无法加载上传配置：{exc}",
-                        "sync_status": self._status_snapshot_locked(),
-                    }
-                if not has_cached_project_upload_payload(
-                    settings=settings,
-                    project=normalized_project,
-                    include_calendar=include_calendar,
-                    include_rankings=include_rankings,
-                ):
-                    return {
-                        "ok": False,
-                        "message": f"当前项目“{normalized_project}”没有可上传的本地缓存。",
-                        "sync_status": self._status_snapshot_locked(),
-                    }
-                self._last_upload_retry_job = {
-                    "mode": "cache",
-                    "reports": [],
-                    "settings": copy.deepcopy(settings),
-                    "project": normalized_project,
-                    "upload_scope": upload_scope,
-                    "estimated_total": 1,
-                    "latest_only": bool(normalized_project and upload_scope == "rankings"),
-                }
-            elif not self._last_upload_retry_job or upload_scope != "full":
-                try:
-                    settings = load_settings(self.env_file)
-                except Exception as exc:
-                    return {
-                        "ok": False,
-                        "message": f"无法加载上传配置：{exc}",
-                        "sync_status": self._status_snapshot_locked(),
-                    }
-                if not has_cached_project_upload_payload(
-                    settings=settings,
-                    include_calendar=include_calendar,
-                    include_rankings=include_rankings,
-                ):
-                    return {
-                        "ok": False,
-                        "message": "当前没有可上传的飞书任务，也没有本地缓存。",
-                        "sync_status": self._status_snapshot_locked(),
-                    }
-                self._last_upload_retry_job = {
-                    "mode": "cache",
-                    "reports": [],
-                    "settings": copy.deepcopy(settings),
-                    "project": "",
-                    "upload_scope": upload_scope,
-                    "estimated_total": 1 if upload_scope != "full" else 2,
-                    "latest_only": False,
-                }
-            if self._upload_running:
-                self._pending_upload_job = copy.deepcopy(self._last_upload_retry_job)
-                self._upload_status["pending"] = True
-                self._upload_status["message"] = "飞书上传已加入队列，当前上传完成后自动接力"
-                return {
-                    "ok": True,
-                    "message": "已加入飞书上传队列，当前上传完成后自动接力。",
-                    "sync_status": self._status_snapshot_locked(),
-                }
-            self._start_upload_job_locked(copy.deepcopy(self._last_upload_retry_job))
-            return {
-                "ok": True,
-                "message": f"已开始上传{self._describe_upload_scope(upload_scope, project=normalized_project if project_specified else '')}。",
-                "sync_status": self._status_snapshot_locked(),
-            }
+        return {
+            "ok": False,
+            "message": "当前服务器版本已停用飞书上传，只保留本地缓存和手机查看。",
+            "sync_status": self._status_snapshot_locked(),
+        }
 
     def _handle_upload_progress_update(self, payload: Dict[str, Any]) -> None:
         progress = build_sync_progress(
@@ -2712,22 +2559,13 @@ class MonitoringSyncStore:
                     "failed_accounts": 0,
                     "total_works": sum(len(report.get("works") or []) for report in reports),
                 }
-                upload_state = self._stage_feishu_upload(
-                    reports=reports,
-                    settings=settings,
-                    project=self._current_sync_project,
-                )
                 finished_progress = build_progress_timing(
                     started_at=self._status.get("started_at", ""),
                     overall_percent=100,
                 )
                 result = {
                     "state": "success",
-                    "message": (
-                        f"看板已更新，飞书上传任务已准备好，账号 {local_summary.get('total_accounts', 0)} 个，作品 {local_summary.get('total_works', 0)} 条"
-                        if upload_state == "staged"
-                        else f"看板已更新，新的飞书上传任务已准备好，账号 {local_summary.get('total_accounts', 0)} 个，作品 {local_summary.get('total_works', 0)} 条"
-                    ),
+                    "message": f"本地缓存已更新，账号 {local_summary.get('total_accounts', 0)} 个，作品 {local_summary.get('total_works', 0)} 条",
                     "started_at": "",
                     "finished_at": finished_at,
                     "last_success_at": finished_at,
@@ -2751,10 +2589,7 @@ class MonitoringSyncStore:
                         "eta_seconds": 0,
                         "eta_text": "",
                     },
-                    "summary": {
-                        **local_summary,
-                        "feishu_upload_state": upload_state,
-                    },
+                    "summary": dict(local_summary),
                 }
             except Exception as exc:
                 result = {
@@ -2963,35 +2798,11 @@ def _load_dashboard_payload_local_only(env_file: str) -> Dict[str, Any]:
 
 
 def load_dashboard_payload(env_file: str) -> Dict[str, Any]:
-
-    local_payload = _load_dashboard_payload_local_only(env_file)
-    if local_payload.get("accounts"):
-        return local_payload
-    settings = load_settings(env_file)
-    cached_payload = load_cached_dashboard_payload(settings)
-    if cached_payload:
-        return _normalize_dashboard_payload(cached_payload)
-    base_client = FeishuBitableClient(settings)
-    table_ids = list_table_ids(base_client)
-
-    portal_rows = fetch_table_rows(settings, table_ids, PORTAL_TABLE_NAME)
-    calendar_rows = fetch_table_rows(settings, table_ids, CALENDAR_TABLE_NAME)
-    ranking_rows = fetch_table_rows(settings, table_ids, RANKING_TABLE_NAME)
-    alert_rows = fetch_table_rows(settings, table_ids, ALERT_TABLE_NAME, required=False)
-
-    return _normalize_dashboard_payload(build_dashboard_payload_from_tables(
-        portal_rows=portal_rows,
-        calendar_rows=calendar_rows,
-        ranking_rows=ranking_rows,
-        alert_rows=alert_rows,
-    ))
+    return _normalize_dashboard_payload(_load_dashboard_payload_local_only(env_file))
 
 
 def load_profile_table_rows(env_file: str) -> List[Dict[str, Any]]:
-    settings = load_settings(env_file)
-    base_client = FeishuBitableClient(settings)
-    table_ids = list_table_ids(base_client)
-    return fetch_table_rows(settings, table_ids, PROFILE_TABLE_NAME, required=False)
+    return []
 
 
 def list_table_ids(client: FeishuBitableClient) -> Dict[str, str]:

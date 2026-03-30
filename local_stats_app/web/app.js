@@ -46,14 +46,6 @@ function renderSystemConfig() {
   const payload = state.systemConfig || {};
   const config = payload.config || {};
   document.getElementById("configXhsCookie").value = config.XHS_COOKIE || "";
-  document.getElementById("configFeishuBaseLink").value = config.FEISHU_BITABLE_APP_TOKEN || "";
-  document.getElementById("configFeishuRankingBaseLink").value = config.FEISHU_RANKING_BITABLE_APP_TOKEN || "";
-  document.getElementById("configFeishuTableLink").value = config.FEISHU_TABLE_ID || "";
-  document.getElementById("configFeishuAppId").value = config.FEISHU_APP_ID || "";
-  document.getElementById("configFeishuAppSecret").value = config.FEISHU_APP_SECRET || "";
-  document.getElementById("configFeishuBitableToken").value = config.FEISHU_BITABLE_APP_TOKEN || "";
-  document.getElementById("configFeishuRankingToken").value = config.FEISHU_RANKING_BITABLE_APP_TOKEN || "";
-  document.getElementById("configFeishuTableId").value = config.FEISHU_TABLE_ID || "";
   document.getElementById("configProjectCacheDir").value = config.PROJECT_CACHE_DIR || "";
   document.getElementById("configStateFile").value = config.STATE_FILE || "";
   document.getElementById("configUrlsText").value = payload.urls_text || "";
@@ -69,14 +61,6 @@ async function saveSystemConfig() {
     body: JSON.stringify({
       config: {
         XHS_COOKIE: document.getElementById("configXhsCookie").value,
-        FEISHU_BASE_LINK: document.getElementById("configFeishuBaseLink").value,
-        FEISHU_RANKING_BASE_LINK: document.getElementById("configFeishuRankingBaseLink").value,
-        FEISHU_TABLE_LINK: document.getElementById("configFeishuTableLink").value,
-        FEISHU_APP_ID: document.getElementById("configFeishuAppId").value,
-        FEISHU_APP_SECRET: document.getElementById("configFeishuAppSecret").value,
-        FEISHU_BITABLE_APP_TOKEN: document.getElementById("configFeishuBitableToken").value,
-        FEISHU_RANKING_BITABLE_APP_TOKEN: document.getElementById("configFeishuRankingToken").value,
-        FEISHU_TABLE_ID: document.getElementById("configFeishuTableId").value,
         PROJECT_CACHE_DIR: document.getElementById("configProjectCacheDir").value,
         STATE_FILE: document.getElementById("configStateFile").value,
       },
@@ -2739,33 +2723,7 @@ async function checkLoginState() {
 }
 
 async function retryFeishuUpload({ scope = "full", useSelectedProject = true } = {}) {
-  const resultNode = document.getElementById("addResult");
-  const projectName = getSelectedProjectName();
-  const project = useSelectedProject && projectName !== "all" ? projectName : "";
-  const actionText =
-    scope === "calendar"
-      ? project
-        ? `正在上传项目「${project}」日历到飞书...`
-        : "正在上传全部项目日历到飞书..."
-      : scope === "rankings"
-        ? project
-          ? `正在上传项目「${project}」排行榜到飞书...`
-          : "正在上传全部项目排行榜到飞书..."
-        : project
-          ? `正在上传项目「${project}」到飞书...`
-          : "正在上传全部项目到飞书...";
-  resultNode.textContent = actionText;
-  const response = await fetch("/api/monitored-accounts/retry-upload", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ project, scope }),
-  });
-  const payload = await response.json();
-  if (!response.ok || !payload.ok) {
-    throw new Error(payload.message || `飞书上传重试失败: ${response.status}`);
-  }
-  resultNode.textContent = payload.message || "已开始重试飞书上传。";
-  await loadMonitoring();
+  throw new Error("当前服务器版本已停用飞书上传。");
 }
 
 document.getElementById("refreshButton").addEventListener("click", () => loadDashboard(true));
@@ -2786,26 +2744,6 @@ document.getElementById("syncNowButton").addEventListener("click", () => {
 });
 document.getElementById("checkLoginStateButton").addEventListener("click", () => {
   checkLoginState().catch((error) => {
-    document.getElementById("addResult").textContent = error.message;
-  });
-});
-document.getElementById("retryUploadButton").addEventListener("click", () => {
-  retryFeishuUpload({ scope: "full", useSelectedProject: true }).catch((error) => {
-    document.getElementById("addResult").textContent = error.message;
-  });
-});
-document.getElementById("uploadAllButton").addEventListener("click", () => {
-  retryFeishuUpload({ scope: "full", useSelectedProject: false }).catch((error) => {
-    document.getElementById("addResult").textContent = error.message;
-  });
-});
-document.getElementById("uploadCalendarButton").addEventListener("click", () => {
-  retryFeishuUpload({ scope: "calendar", useSelectedProject: true }).catch((error) => {
-    document.getElementById("addResult").textContent = error.message;
-  });
-});
-document.getElementById("uploadRankingButton").addEventListener("click", () => {
-  retryFeishuUpload({ scope: "rankings", useSelectedProject: true }).catch((error) => {
     document.getElementById("addResult").textContent = error.message;
   });
 });

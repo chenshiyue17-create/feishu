@@ -62,7 +62,7 @@ class LocalStatsAppTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             env_path = Path(temp_dir) / ".env"
             urls_path = Path(temp_dir) / "urls.txt"
-            env_path.write_text("XHS_COOKIE=old_cookie\nFEISHU_APP_ID=old_app\n", encoding="utf-8")
+            env_path.write_text("XHS_COOKIE=old_cookie\nPROJECT_CACHE_DIR=/old/cache\n", encoding="utf-8")
             urls_path.write_text("https://www.xiaohongshu.com/user/profile/u1\n", encoding="utf-8")
             payload = load_system_config(str(env_path), str(urls_path))
             self.assertEqual(payload["config"]["XHS_COOKIE"], "old_cookie")
@@ -74,40 +74,14 @@ class LocalStatsAppTest(unittest.TestCase):
                 {
                     "config": {
                         "XHS_COOKIE": "new_cookie",
-                        "FEISHU_APP_ID": "new_app",
                         "PROJECT_CACHE_DIR": "/data/cache",
                     },
                     "urls_text": "https://www.xiaohongshu.com/user/profile/u2\n",
                 },
             )
             self.assertEqual(result["config"]["XHS_COOKIE"], "new_cookie")
-            self.assertEqual(result["config"]["FEISHU_APP_ID"], "new_app")
             self.assertEqual(result["config"]["PROJECT_CACHE_DIR"], "/data/cache")
             self.assertIn("u2", urls_path.read_text(encoding="utf-8"))
-
-    def test_save_system_config_accepts_feishu_links(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            env_path = Path(temp_dir) / ".env"
-            urls_path = Path(temp_dir) / "urls.txt"
-            env_path.write_text("", encoding="utf-8")
-            urls_path.write_text("", encoding="utf-8")
-
-            result = save_system_config(
-                str(env_path),
-                str(urls_path),
-                {
-                    "config": {
-                        "FEISHU_BASE_LINK": "https://bcngptco7wrj.feishu.cn/base/IILDbLfeVaRztqsYytSc05Gqnu9?from=from_copylink",
-                        "FEISHU_RANKING_BASE_LINK": "",
-                        "FEISHU_TABLE_LINK": "https://bcngptco7wrj.feishu.cn/base/IILDbLfeVaRztqsYytSc05Gqnu9?table=tbl6oiY6SO03mpgd&view=vew123",
-                    },
-                    "urls_text": "",
-                },
-            )
-
-            self.assertEqual(result["config"]["FEISHU_BITABLE_APP_TOKEN"], "IILDbLfeVaRztqsYytSc05Gqnu9")
-            self.assertEqual(result["config"]["FEISHU_RANKING_BITABLE_APP_TOKEN"], "IILDbLfeVaRztqsYytSc05Gqnu9")
-            self.assertEqual(result["config"]["FEISHU_TABLE_ID"], "tbl6oiY6SO03mpgd")
 
     def test_build_daily_series(self) -> None:
         rows = [
@@ -714,10 +688,10 @@ class LocalStatsAppTest(unittest.TestCase):
                 env_file=f"{temp_dir}/.env",
                 urls_file=str(path),
                 dashboard_store=DashboardStore(env_file=f"{temp_dir}/.env"),
-            )
-            payload = store.get_payload()
+        )
+        payload = store.get_payload()
         self.assertIn("upload_status", payload["sync_status"])
-        self.assertEqual(payload["sync_status"]["upload_status"]["state"], "idle")
+        self.assertEqual(payload["sync_status"]["upload_status"]["state"], "disabled")
         self.assertFalse(payload["sync_status"]["upload_status"]["has_retry_payload"])
 
     def test_status_snapshot_exposes_schedule_plan(self) -> None:
@@ -801,14 +775,11 @@ class LocalStatsAppTest(unittest.TestCase):
                     "xhs_feishu_monitor.local_stats_app.server.build_dashboard_payload_with_reports",
                     return_value={"generated_at": "2026-03-23T18:05:00+08:00", "latest_date": "2026-03-23"},
                 ),
-                patch.object(store, "_stage_feishu_upload", return_value="staged") as stage_upload,
             ):
                 store._sync_loop()
         self.assertEqual(store._status["state"], "success")
-        self.assertIn("看板已更新，飞书上传任务已准备好", store._status["message"])
-        self.assertEqual(store._status["summary"]["feishu_upload_state"], "staged")
+        self.assertIn("本地缓存已更新", store._status["message"])
         self.assertEqual(load_reports.call_args.kwargs["project"], "项目A")
-        stage_upload.assert_called_once()
 
     def test_upload_progress_does_not_override_dashboard_success_state(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -849,7 +820,7 @@ class LocalStatsAppTest(unittest.TestCase):
         self.assertEqual(store._status["message"], "看板已更新")
         self.assertEqual(store._upload_status["progress"]["phase"], "sync")
 
-    def test_retry_feishu_upload_requires_cached_job(self) -> None:
+    def test_retry_feishu_upload_is_disabled(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             path = write_monitored_entries(
                 f"{temp_dir}/urls.txt",
@@ -860,159 +831,9 @@ class LocalStatsAppTest(unittest.TestCase):
                 urls_file=str(path),
                 dashboard_store=DashboardStore(env_file=f"{temp_dir}/.env"),
             )
-            with patch("xhs_feishu_monitor.local_stats_app.server.has_cached_project_upload_payload", return_value=False):
-                result = store.retry_feishu_upload()
+            result = store.retry_feishu_upload()
         self.assertFalse(result["ok"])
-        self.assertIn("当前没有可上传的飞书任务，也没有本地缓存", result["message"])
-
-    def test_retry_feishu_upload_starts_cached_job(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            path = write_monitored_entries(
-                f"{temp_dir}/urls.txt",
-                [{"url": "https://www.xiaohongshu.com/user/profile/u1", "active": True, "project": "项目A"}],
-            )
-            store = MonitoringSyncStore(
-                env_file=f"{temp_dir}/.env",
-                urls_file=str(path),
-                dashboard_store=DashboardStore(env_file=f"{temp_dir}/.env"),
-            )
-            store._last_upload_retry_job = {
-                "reports": [{"profile": {"profile_user_id": "u1"}}],
-                "settings": SimpleNamespace(),
-                "project": "项目A",
-            }
-            with patch.object(store, "_start_upload_job_locked") as start_upload:
-                result = store.retry_feishu_upload()
-        self.assertTrue(result["ok"])
-        self.assertIn("已开始上传全部项目飞书数据", result["message"])
-        start_upload.assert_called_once()
-
-    def test_retry_feishu_upload_can_start_from_cached_rankings(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            path = write_monitored_entries(
-                f"{temp_dir}/urls.txt",
-                [{"url": "https://www.xiaohongshu.com/user/profile/u1", "active": True, "project": "项目A"}],
-            )
-            store = MonitoringSyncStore(
-                env_file=f"{temp_dir}/.env",
-                urls_file=str(path),
-                dashboard_store=DashboardStore(env_file=f"{temp_dir}/.env"),
-            )
-            settings = SimpleNamespace()
-            with (
-                patch("xhs_feishu_monitor.local_stats_app.server.load_settings", return_value=settings),
-                patch("xhs_feishu_monitor.local_stats_app.server.has_cached_project_upload_payload", return_value=True),
-                patch.object(store, "_start_upload_job_locked") as start_upload,
-            ):
-                result = store.retry_feishu_upload()
-        self.assertTrue(result["ok"])
-        self.assertIn("已开始上传全部项目飞书数据", result["message"])
-        upload_job = start_upload.call_args.args[0]
-        self.assertEqual(upload_job["mode"], "cache")
-        self.assertEqual(upload_job["upload_scope"], "full")
-        self.assertEqual(upload_job["estimated_total"], 2)
-
-    def test_retry_feishu_upload_can_start_selected_project_from_cached_rankings(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            path = write_monitored_entries(
-                f"{temp_dir}/urls.txt",
-                [{"url": "https://www.xiaohongshu.com/user/profile/u1", "active": True, "project": "东莞"}],
-            )
-            store = MonitoringSyncStore(
-                env_file=f"{temp_dir}/.env",
-                urls_file=str(path),
-                dashboard_store=DashboardStore(env_file=f"{temp_dir}/.env"),
-            )
-            settings = SimpleNamespace()
-            store._last_upload_retry_job = {
-                "mode": "cache",
-                "reports": [],
-                "settings": settings,
-                "project": "",
-                "estimated_total": 2,
-            }
-            with (
-                patch("xhs_feishu_monitor.local_stats_app.server.load_settings", return_value=settings),
-                patch("xhs_feishu_monitor.local_stats_app.server.has_cached_project_upload_payload", return_value=True) as has_cache,
-                patch.object(store, "_start_upload_job_locked") as start_upload,
-            ):
-                result = store.retry_feishu_upload(project="东莞")
-        self.assertTrue(result["ok"])
-        self.assertIn("已开始上传项目「东莞」飞书数据", result["message"])
-        self.assertIn(call(settings=settings, project="东莞", include_calendar=True, include_rankings=True), has_cache.call_args_list)
-        upload_job = start_upload.call_args.args[0]
-        self.assertEqual(upload_job["mode"], "cache")
-        self.assertEqual(upload_job["project"], "东莞")
-        self.assertEqual(upload_job["upload_scope"], "full")
-        self.assertEqual(upload_job["estimated_total"], 1)
-
-    def test_retry_feishu_upload_selected_project_requires_project_cache(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            path = write_monitored_entries(
-                f"{temp_dir}/urls.txt",
-                [{"url": "https://www.xiaohongshu.com/user/profile/u1", "active": True, "project": "东莞"}],
-            )
-            store = MonitoringSyncStore(
-                env_file=f"{temp_dir}/.env",
-                urls_file=str(path),
-                dashboard_store=DashboardStore(env_file=f"{temp_dir}/.env"),
-            )
-            settings = SimpleNamespace()
-            with (
-                patch("xhs_feishu_monitor.local_stats_app.server.load_settings", return_value=settings),
-                patch("xhs_feishu_monitor.local_stats_app.server.has_cached_project_upload_payload", return_value=False),
-            ):
-                result = store.retry_feishu_upload(project="东莞")
-        self.assertFalse(result["ok"])
-        self.assertIn("当前项目“东莞”没有可上传的本地缓存", result["message"])
-
-    def test_retry_feishu_upload_can_start_calendar_only(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            path = write_monitored_entries(
-                f"{temp_dir}/urls.txt",
-                [{"url": "https://www.xiaohongshu.com/user/profile/u1", "active": True, "project": "项目A"}],
-            )
-            store = MonitoringSyncStore(
-                env_file=f"{temp_dir}/.env",
-                urls_file=str(path),
-                dashboard_store=DashboardStore(env_file=f"{temp_dir}/.env"),
-            )
-            settings = SimpleNamespace()
-            with (
-                patch("xhs_feishu_monitor.local_stats_app.server.load_settings", return_value=settings),
-                patch("xhs_feishu_monitor.local_stats_app.server.has_cached_project_upload_payload", return_value=True) as has_cache,
-                patch.object(store, "_start_upload_job_locked") as start_upload,
-            ):
-                result = store.retry_feishu_upload(project="项目A", scope="calendar")
-        self.assertTrue(result["ok"])
-        self.assertIn("已开始上传项目「项目A」日历留底", result["message"])
-        self.assertIn(call(settings=settings, project="项目A", include_calendar=True, include_rankings=False), has_cache.call_args_list)
-        upload_job = start_upload.call_args.args[0]
-        self.assertEqual(upload_job["upload_scope"], "calendar")
-
-    def test_retry_feishu_upload_can_start_rankings_only_for_all_projects(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            path = write_monitored_entries(
-                f"{temp_dir}/urls.txt",
-                [{"url": "https://www.xiaohongshu.com/user/profile/u1", "active": True, "project": "项目A"}],
-            )
-            store = MonitoringSyncStore(
-                env_file=f"{temp_dir}/.env",
-                urls_file=str(path),
-                dashboard_store=DashboardStore(env_file=f"{temp_dir}/.env"),
-            )
-            settings = SimpleNamespace()
-            with (
-                patch("xhs_feishu_monitor.local_stats_app.server.load_settings", return_value=settings),
-                patch("xhs_feishu_monitor.local_stats_app.server.has_cached_project_upload_payload", return_value=True) as has_cache,
-                patch.object(store, "_start_upload_job_locked") as start_upload,
-            ):
-                result = store.retry_feishu_upload(scope="rankings")
-        self.assertTrue(result["ok"])
-        self.assertIn("已开始上传全部项目排行榜", result["message"])
-        self.assertIn(call(settings=settings, include_calendar=False, include_rankings=True), has_cache.call_args_list)
-        upload_job = start_upload.call_args.args[0]
-        self.assertEqual(upload_job["upload_scope"], "rankings")
+        self.assertIn("已停用飞书上传", result["message"])
 
     def test_dashboard_store_uses_stale_cache_when_refresh_fails(self) -> None:
         store = DashboardStore(env_file="/tmp/test.env", cache_seconds=0)
