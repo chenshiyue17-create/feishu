@@ -2,6 +2,7 @@ const state = {
   payload: null,
   monitoring: null,
   systemConfig: null,
+  lastServerPush: null,
   activeAccountId: "",
   rankingScope: "all",
   trendWindow: 7,
@@ -57,6 +58,28 @@ function formatPushTarget(url) {
   }
 }
 
+function loadLastServerPush() {
+  try {
+    const raw = window.localStorage.getItem("xhs_last_server_push");
+    state.lastServerPush = raw ? JSON.parse(raw) : null;
+  } catch (_error) {
+    state.lastServerPush = null;
+  }
+}
+
+function persistLastServerPush(pushPayload) {
+  state.lastServerPush = pushPayload || null;
+  try {
+    if (pushPayload) {
+      window.localStorage.setItem("xhs_last_server_push", JSON.stringify(pushPayload));
+    } else {
+      window.localStorage.removeItem("xhs_last_server_push");
+    }
+  } catch (_error) {
+    // ignore storage failures
+  }
+}
+
 async function loadSystemConfig() {
   const response = await fetch("/api/system-config");
   const payload = await response.json();
@@ -83,6 +106,13 @@ function renderSystemConfig() {
     : "当前未加载配置";
   if (cacheStateNode) {
     const cacheReady = cacheSummary.accountCount > 0 || cacheSummary.likeCount > 0 || cacheSummary.commentCount > 0;
+    const lastPush = state.lastServerPush || null;
+    const lastPushTarget = lastPush?.server_url || config.SERVER_CACHE_PUSH_URL || "";
+    const lastPushText = lastPush?.server_updated_at
+      ? `服务器确认 ${formatDateTime(lastPush.server_updated_at)}`
+      : lastPush?.pushed_at
+        ? `本机发起 ${formatDateTime(lastPush.pushed_at)}`
+        : "还没有成功推送记录";
     cacheStateNode.innerHTML = `
       <article class="system-config-status-card">
         <div class="system-config-status-label">本地缓存状态</div>
@@ -102,6 +132,12 @@ function renderSystemConfig() {
         <div class="system-config-status-label">推送目标</div>
         <div class="system-config-status-value">${formatPushTarget(config.SERVER_CACHE_PUSH_URL || "")}</div>
         <div class="system-config-status-copy">${config.SERVER_CACHE_PUSH_URL ? "点击“推送到服务器”会把当前这份本地缓存上传过去。" : "先填写 SERVER_CACHE_PUSH_URL，再推送到服务器。"}
+        </div>
+      </article>
+      <article class="system-config-status-card">
+        <div class="system-config-status-label">最近推送记录</div>
+        <div class="system-config-status-value">${lastPushText}</div>
+        <div class="system-config-status-copy">${lastPush ? `${formatPushTarget(lastPushTarget)} · ${formatNumber(lastPush.account_count || 0)} 个账号` : "推送成功后，这里会显示服务器确认时间和目标地址。"}
         </div>
       </article>
     `;
@@ -151,6 +187,13 @@ async function pushServerCache() {
   if (!response.ok) {
     throw new Error(payload.message || "推送服务器失败");
   }
+  persistLastServerPush({
+    pushed_at: new Date().toISOString(),
+    server_updated_at: payload.updated_at || "",
+    account_count: payload.account_count || cacheSummary.accountCount || 0,
+    server_url: String(config.SERVER_CACHE_PUSH_URL || "").trim(),
+  });
+  renderSystemConfig();
   document.getElementById("systemConfigResult").textContent = `已推送到服务器 · ${payload.account_count || cacheSummary.accountCount} 个账号 · 点赞榜 ${formatNumber(cacheSummary.likeCount)} 条 · 评论榜 ${formatNumber(cacheSummary.commentCount)} 条`;
 }
 
@@ -2940,6 +2983,8 @@ document.querySelectorAll(".trend-window-button").forEach((button) => {
     renderApp();
   });
 });
+
+loadLastServerPush();
 
 window.setInterval(() => {
   renderManualUpdateState(state.monitoring?.sync_status || {});
