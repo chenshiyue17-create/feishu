@@ -26,7 +26,7 @@ from ..chrome_cookies import (
     resolve_chrome_profile_directory,
     resolve_chrome_profile_root,
 )
-from ..config import load_settings
+from ..config import DEFAULT_SERVER_CACHE_PUSH_URL, load_settings
 from ..profile_cache_push import push_local_cache_to_server
 from ..profile_batch_report import normalize_profile_url
 from ..profile_batch_to_feishu import (
@@ -101,6 +101,9 @@ DEFAULT_ACCOUNT_RANKING_EXPORT_DIR = "/Users/cc/Downloads/飞书缓存/账号榜
 SYSTEM_CONFIG_KEYS = ("XHS_COOKIE", "PROJECT_CACHE_DIR", "STATE_FILE", "SERVER_CACHE_PUSH_URL", "SERVER_CACHE_UPLOAD_TOKEN")
 SYSTEM_CONFIG_HELPER_KEYS: tuple[str, ...] = ()
 LEGACY_SYSTEM_CONFIG_PREFIXES = ("FEISHU_",)
+SYSTEM_CONFIG_DEFAULTS = {
+    "SERVER_CACHE_PUSH_URL": DEFAULT_SERVER_CACHE_PUSH_URL,
+}
 
 DASHBOARD_SERIES_META = {
     "mode": "daily",
@@ -162,7 +165,7 @@ def load_system_config(env_file: str, urls_file: str) -> Dict[str, Any]:
             key, value = line.split("=", 1)
             env_values[key.strip()] = value.strip()
     urls_text = urls_path.read_text(encoding="utf-8") if urls_path.exists() else ""
-    config = {key: env_values.get(key, "") for key in SYSTEM_CONFIG_KEYS}
+    config = {key: env_values.get(key, SYSTEM_CONFIG_DEFAULTS.get(key, "")) for key in SYSTEM_CONFIG_KEYS}
     return {
         "ok": True,
         "env_file": str(env_path),
@@ -174,7 +177,10 @@ def load_system_config(env_file: str, urls_file: str) -> Dict[str, Any]:
 
 
 def _normalize_system_config_updates(updates: Dict[str, str]) -> Dict[str, str]:
-    return dict(updates)
+    normalized = dict(updates)
+    server_url = str(normalized.get("SERVER_CACHE_PUSH_URL") or "").strip()
+    normalized["SERVER_CACHE_PUSH_URL"] = server_url or DEFAULT_SERVER_CACHE_PUSH_URL
+    return normalized
 
 
 def _filter_legacy_system_config_lines(lines: List[str]) -> List[str]:

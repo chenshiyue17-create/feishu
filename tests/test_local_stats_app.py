@@ -89,6 +89,35 @@ class LocalStatsAppTest(unittest.TestCase):
             self.assertEqual(result["config"]["SERVER_CACHE_UPLOAD_TOKEN"], "token-1")
             self.assertIn("u2", urls_path.read_text(encoding="utf-8"))
 
+    def test_load_system_config_uses_default_server_push_url(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            env_path = Path(temp_dir) / ".env"
+            urls_path = Path(temp_dir) / "urls.txt"
+            env_path.write_text("XHS_COOKIE=old_cookie\n", encoding="utf-8")
+            payload = load_system_config(str(env_path), str(urls_path))
+            self.assertEqual(payload["config"]["SERVER_CACHE_PUSH_URL"], "http://47.87.68.74:8787")
+
+    def test_save_system_config_restores_default_server_push_url_when_blank(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            env_path = Path(temp_dir) / ".env"
+            urls_path = Path(temp_dir) / "urls.txt"
+            env_path.write_text("XHS_COOKIE=old_cookie\n", encoding="utf-8")
+
+            result = save_system_config(
+                str(env_path),
+                str(urls_path),
+                {
+                    "config": {
+                        "XHS_COOKIE": "new_cookie",
+                        "SERVER_CACHE_PUSH_URL": "",
+                    },
+                    "urls_text": "",
+                },
+            )
+
+            self.assertEqual(result["config"]["SERVER_CACHE_PUSH_URL"], "http://47.87.68.74:8787")
+            self.assertIn("SERVER_CACHE_PUSH_URL=http://47.87.68.74:8787", env_path.read_text(encoding="utf-8"))
+
     def test_save_system_config_strips_legacy_feishu_lines(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             env_path = Path(temp_dir) / ".env"
