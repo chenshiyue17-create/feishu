@@ -2,6 +2,7 @@ const params = new URLSearchParams(window.location.search);
 const apiBase = (params.get("api_base") || "").replace(/\/$/, "");
 const selectedProject = (params.get("project") || "默认项目").trim();
 const dashboardUrl = `${apiBase}/api/mobile-rankings?project=${encodeURIComponent(selectedProject)}`;
+let calendarExpanded = false;
 
 function formatNumber(value) {
   return new Intl.NumberFormat("zh-CN").format(Number(value || 0));
@@ -45,6 +46,7 @@ function renderCalendar(rows) {
   const count = document.getElementById("calendarCount");
   const data = (rows || []).slice().reverse();
   count.textContent = String(data.length);
+  root.classList.toggle("is-collapsed", !calendarExpanded);
   if (!data.length) {
     root.innerHTML = '<div class="empty-state">当前没有历史留底</div>';
     return;
@@ -60,6 +62,14 @@ function renderCalendar(rows) {
       </div>
     </div>
   `).join("");
+}
+
+function bindCalendarToggle() {
+  const button = document.getElementById("calendarToggleButton");
+  button.addEventListener("click", () => {
+    calendarExpanded = !calendarExpanded;
+    document.getElementById("calendarList").classList.toggle("is-collapsed", !calendarExpanded);
+  });
 }
 
 async function loadDashboard() {
@@ -88,4 +98,5 @@ async function loadDashboard() {
 }
 
 document.getElementById("refreshButton").addEventListener("click", loadDashboard);
+bindCalendarToggle();
 loadDashboard();

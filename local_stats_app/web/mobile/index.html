@@ -21,14 +21,6 @@
 
       <section class="ranking-section">
         <div class="section-header">
-          <h2>历史日历</h2>
-          <span id="calendarCount" class="count-badge">0</span>
-        </div>
-        <div id="calendarList" class="calendar-list"></div>
-      </section>
-
-      <section class="ranking-section">
-        <div class="section-header">
           <h2>今日点赞榜</h2>
           <span id="likesCount" class="count-badge">0</span>
         </div>
@@ -49,6 +41,14 @@
           <span id="growthCount" class="count-badge">0</span>
         </div>
         <div id="growthList" class="ranking-list"></div>
+      </section>
+
+      <section class="ranking-section">
+        <button id="calendarToggleButton" class="calendar-toggle" type="button">
+          <span>历史日历</span>
+          <span id="calendarCount" class="count-badge">0</span>
+        </button>
+        <div id="calendarList" class="calendar-list is-collapsed"></div>
       </section>
     </main>
 

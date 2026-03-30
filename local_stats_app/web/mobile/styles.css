@@ -74,6 +74,19 @@ h1 {
   align-items: center;
   margin-bottom: 10px;
 }
+.calendar-toggle {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  padding: 0;
+  font-size: 18px;
+  font-weight: 700;
+}
 .section-header h2 {
   margin: 0;
   font-size: 18px;
@@ -97,6 +110,9 @@ h1 {
   border-radius: 18px;
   padding: 12px;
   border: 1px solid rgba(255,255,255,0.05);
+}
+.calendar-list.is-collapsed {
+  display: none;
 }
 .calendar-date {
   margin: 0 0 8px;
