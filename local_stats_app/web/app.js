@@ -32,6 +32,31 @@ function formatDateTime(value) {
   return String(value).replace("T", " ").slice(0, 19);
 }
 
+function getLocalCacheSummary() {
+  const payload = state.payload || {};
+  const rankings = payload.rankings || {};
+  return {
+    accountCount: Number((payload.accounts || []).length || 0),
+    likeCount: Number((rankings["单条点赞排行"] || []).length || 0),
+    commentCount: Number((rankings["单条评论排行"] || []).length || 0),
+    growthCount: Number((rankings["单条第二天增长排行"] || []).length || 0),
+    latestDate: payload.latest_date || "",
+    updatedAt: payload.updated_at || payload.generated_at || "",
+    stale: Boolean(payload.stale),
+  };
+}
+
+function formatPushTarget(url) {
+  const value = String(url || "").trim();
+  if (!value) return "未设置";
+  try {
+    const parsed = new URL(value);
+    return parsed.port ? `${parsed.hostname}:${parsed.port}` : parsed.hostname;
+  } catch (_error) {
+    return value;
+  }
+}
+
 async function loadSystemConfig() {
   const response = await fetch("/api/system-config");
   const payload = await response.json();
@@ -45,6 +70,8 @@ async function loadSystemConfig() {
 function renderSystemConfig() {
   const payload = state.systemConfig || {};
   const config = payload.config || {};
+  const cacheSummary = getLocalCacheSummary();
+  const cacheStateNode = document.getElementById("systemConfigCacheStatus");
   document.getElementById("configXhsCookie").value = config.XHS_COOKIE || "";
   document.getElementById("configProjectCacheDir").value = config.PROJECT_CACHE_DIR || "";
   document.getElementById("configStateFile").value = config.STATE_FILE || "";
@@ -52,8 +79,33 @@ function renderSystemConfig() {
   document.getElementById("configServerCacheUploadToken").value = config.SERVER_CACHE_UPLOAD_TOKEN || "";
   document.getElementById("configUrlsText").value = payload.urls_text || "";
   document.getElementById("systemConfigSummary").textContent = payload.env_file
-    ? `当前配置：${payload.env_file}`
+    ? `当前配置：${payload.env_file}${cacheSummary.updatedAt ? ` · 本地缓存更新于 ${formatDateTime(cacheSummary.updatedAt)}` : ""}`
     : "当前未加载配置";
+  if (cacheStateNode) {
+    const cacheReady = cacheSummary.accountCount > 0 || cacheSummary.likeCount > 0 || cacheSummary.commentCount > 0;
+    cacheStateNode.innerHTML = `
+      <article class="system-config-status-card">
+        <div class="system-config-status-label">本地缓存状态</div>
+        <div class="system-config-status-value">${cacheReady ? `${formatNumber(cacheSummary.accountCount)} 个账号` : "暂无缓存"}</div>
+        <div class="system-config-status-copy">
+          ${cacheReady
+            ? `点赞榜 ${formatNumber(cacheSummary.likeCount)} 条 · 评论榜 ${formatNumber(cacheSummary.commentCount)} 条 · 增长榜 ${formatNumber(cacheSummary.growthCount)} 条`
+            : "如果你刚更新过本地看板，这里应该会显示账号数和榜单条数。"}
+        </div>
+      </article>
+      <article class="system-config-status-card">
+        <div class="system-config-status-label">最近本地更新</div>
+        <div class="system-config-status-value">${cacheSummary.updatedAt ? formatDateTime(cacheSummary.updatedAt) : "未检测到"}</div>
+        <div class="system-config-status-copy">${cacheSummary.latestDate ? `最新留底 ${cacheSummary.latestDate}${cacheSummary.stale ? " · 当前显示缓存" : ""}` : "还没有可用的本地看板数据。"}</div>
+      </article>
+      <article class="system-config-status-card">
+        <div class="system-config-status-label">推送目标</div>
+        <div class="system-config-status-value">${formatPushTarget(config.SERVER_CACHE_PUSH_URL || "")}</div>
+        <div class="system-config-status-copy">${config.SERVER_CACHE_PUSH_URL ? "点击“推送到服务器”会把当前这份本地缓存上传过去。" : "先填写 SERVER_CACHE_PUSH_URL，再推送到服务器。"}
+        </div>
+      </article>
+    `;
+  }
 }
 
 async function saveSystemConfig() {
@@ -77,11 +129,19 @@ async function saveSystemConfig() {
   }
   state.systemConfig = payload;
   renderSystemConfig();
-  document.getElementById("systemConfigResult").textContent = "配置已保存";
+  document.getElementById("systemConfigResult").textContent = "配置已保存，本地缓存未自动推送";
   await Promise.all([loadMonitoring(), loadDashboard(true)]);
 }
 
 async function pushServerCache() {
+  const config = state.systemConfig?.config || {};
+  const cacheSummary = getLocalCacheSummary();
+  if (!String(config.SERVER_CACHE_PUSH_URL || "").trim()) {
+    throw new Error("请先填写服务器地址，再推送");
+  }
+  if (cacheSummary.accountCount <= 0) {
+    throw new Error("本地还没有可推送的数据，请先更新本地看板");
+  }
   const response = await fetch("/api/server-cache-push", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -91,7 +151,7 @@ async function pushServerCache() {
   if (!response.ok) {
     throw new Error(payload.message || "推送服务器失败");
   }
-  document.getElementById("systemConfigResult").textContent = `已推送到服务器 · ${payload.account_count || 0} 个账号`;
+  document.getElementById("systemConfigResult").textContent = `已推送到服务器 · ${payload.account_count || cacheSummary.accountCount} 个账号 · 点赞榜 ${formatNumber(cacheSummary.likeCount)} 条 · 评论榜 ${formatNumber(cacheSummary.commentCount)} 条`;
 }
 
 function formatScheduleWindow(plan = {}) {
@@ -415,6 +475,9 @@ function schedulePolling() {
 }
 
 function renderApp() {
+  if (state.systemConfig) {
+    renderSystemConfig();
+  }
   renderMeta();
   renderOperationsHub();
   renderProjectHome();

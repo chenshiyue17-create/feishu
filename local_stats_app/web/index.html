@@ -13,7 +13,7 @@
         <div>
           <p class="eyebrow">Local Stats App</p>
           <h1>小红书数据本地统计台</h1>
-          <p class="hero-copy">以项目为主维度管理账号、增长、排行和预警。服务器负责自动采集与缓存，网页和手机端只负责查看。</p>
+          <p class="hero-copy">以项目为主维度管理账号、增长、排行和预警。本机负责采集与本地缓存，服务器只接收缓存并提供网页和手机端查看。</p>
         </div>
         <div class="hero-actions">
           <div class="hero-action-row">
@@ -37,8 +37,8 @@
           <div class="strategy-copy">每个账号最多采集前 30 条作品；项目增长默认看可比账号，不把新增账号误算成成长。</div>
         </article>
         <article class="strategy-card">
-          <div class="strategy-title">服务器采集</div>
-          <div class="strategy-copy">每天自动采集所有项目并写入本地缓存，手机端和网页端都只读取服务器已有数据。</div>
+          <div class="strategy-title">服务器查看</div>
+          <div class="strategy-copy">先在本机更新本地看板，再把缓存推到服务器；手机端和服务器网页都只读取这份缓存。</div>
         </article>
       </section>
 
@@ -72,6 +72,7 @@
             <input id="configServerCacheUploadToken" class="monitor-search-input" type="text" placeholder="可选上传令牌" />
           </label>
         </div>
+        <div id="systemConfigCacheStatus" class="system-config-status-grid"></div>
         <label class="system-config-field">
           <span class="form-label">账号清单</span>
           <textarea id="configUrlsText" class="monitor-input system-config-textarea" placeholder="一行一个主页链接，或保留项目格式"></textarea>
