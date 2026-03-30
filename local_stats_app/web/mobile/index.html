@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>XHS Mobile Rankings</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="hero">
+        <div>
+          <p class="eyebrow">手机版榜单</p>
+          <h1 id="pageTitle">项目排行榜</h1>
+          <p id="pageSummary" class="summary">加载中</p>
+        </div>
+        <button id="refreshButton" class="refresh-button" type="button">刷新</button>
+      </header>
+
+      <section id="statusCard" class="status-card"></section>
+
+      <section class="ranking-section">
+        <div class="section-header">
+          <h2>历史日历</h2>
+          <span id="calendarCount" class="count-badge">0</span>
+        </div>
+        <div id="calendarList" class="calendar-list"></div>
+      </section>
+
+      <section class="ranking-section">
+        <div class="section-header">
+          <h2>今日点赞榜</h2>
+          <span id="likesCount" class="count-badge">0</span>
+        </div>
+        <div id="likesList" class="ranking-list"></div>
+      </section>
+
+      <section class="ranking-section">
+        <div class="section-header">
+          <h2>今日评论榜</h2>
+          <span id="commentsCount" class="count-badge">0</span>
+        </div>
+        <div id="commentsList" class="ranking-list"></div>
+      </section>
+
+      <section class="ranking-section">
+        <div class="section-header">
+          <h2>每日互动增长榜</h2>
+          <span id="growthCount" class="count-badge">0</span>
+        </div>
+        <div id="growthList" class="ranking-list"></div>
+      </section>
+    </main>
+
+    <script src="./app.js"></script>
+  </body>
+</html>
