@@ -11,6 +11,12 @@ PORT="${PORT:-8787}"
 PYTHON_BIN="${PYTHON_BIN:-${REPO_DIR}/.venv/bin/python}"
 
 cd "${REPO_PARENT}"
+
+if command -v pkill >/dev/null 2>&1; then
+  pkill -f "xhs_feishu_monitor.local_stats_app" 2>/dev/null || true
+  sleep 1
+fi
+
 exec "${PYTHON_BIN}" -m xhs_feishu_monitor.local_stats_app \
   --env-file "${ENV_FILE}" \
   --urls-file "${URLS_FILE}" \
