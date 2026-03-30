@@ -63,6 +63,14 @@
             <span class="form-label">STATE_FILE</span>
             <input id="configStateFile" class="monitor-search-input" type="text" />
           </label>
+          <label class="system-config-field">
+            <span class="form-label">SERVER_CACHE_PUSH_URL</span>
+            <input id="configServerCachePushUrl" class="monitor-search-input" type="text" placeholder="http://47.87.68.74:8787" />
+          </label>
+          <label class="system-config-field">
+            <span class="form-label">SERVER_CACHE_UPLOAD_TOKEN</span>
+            <input id="configServerCacheUploadToken" class="monitor-search-input" type="text" placeholder="可选上传令牌" />
+          </label>
         </div>
         <label class="system-config-field">
           <span class="form-label">账号清单</span>
@@ -71,6 +79,7 @@
         <div class="form-actions">
           <button id="reloadSystemConfigButton" class="primary-button secondary-button">导入当前项目配置</button>
           <button id="saveSystemConfigButton" class="primary-button">保存配置</button>
+          <button id="pushServerCacheButton" class="primary-button secondary-button">推送到服务器</button>
           <span id="systemConfigResult" class="subtle"></span>
         </div>
       </section>

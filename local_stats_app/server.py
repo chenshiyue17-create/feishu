@@ -26,6 +26,7 @@ from ..chrome_cookies import (
     resolve_chrome_profile_root,
 )
 from ..config import load_settings
+from ..profile_cache_push import push_local_cache_to_server
 from ..profile_batch_report import normalize_profile_url
 from ..profile_batch_to_feishu import (
     load_reports_for_sync,
@@ -96,7 +97,7 @@ ALERT_TABLE_NAME = "小红书评论预警"
 WEB_DIR = Path(__file__).resolve().parent / "web"
 DEFAULT_URLS_FILE = "xhs_feishu_monitor/input/robam_multi_profile_urls.txt"
 DEFAULT_ACCOUNT_RANKING_EXPORT_DIR = "/Users/cc/Downloads/飞书缓存/账号榜单导出"
-SYSTEM_CONFIG_KEYS = ("XHS_COOKIE", "PROJECT_CACHE_DIR", "STATE_FILE")
+SYSTEM_CONFIG_KEYS = ("XHS_COOKIE", "PROJECT_CACHE_DIR", "STATE_FILE", "SERVER_CACHE_PUSH_URL", "SERVER_CACHE_UPLOAD_TOKEN")
 SYSTEM_CONFIG_HELPER_KEYS: tuple[str, ...] = ()
 LEGACY_SYSTEM_CONFIG_PREFIXES = ("FEISHU_",)
 
@@ -2848,6 +2849,21 @@ def save_uploaded_server_cache(*, env_file: str, urls_file: str, payload: Dict[s
     }
 
 
+def push_current_cache_to_server(*, env_file: str, urls_file: str) -> Dict[str, Any]:
+    settings = load_settings(env_file)
+    server_url = str(getattr(settings, "server_cache_push_url", "") or "").strip()
+    if not server_url:
+        raise ValueError("缺少 SERVER_CACHE_PUSH_URL，请先在系统配置里填写服务器地址")
+    token = str(getattr(settings, "server_cache_upload_token", "") or "").strip()
+    result = push_local_cache_to_server(
+        env_file=env_file,
+        urls_file=urls_file,
+        server_url=server_url,
+        token=token,
+    )
+    return {"ok": True, **result}
+
+
 def load_dashboard_payload(env_file: str) -> Dict[str, Any]:
     return _normalize_dashboard_payload(_load_dashboard_payload_local_only(env_file))
 
@@ -3076,6 +3092,13 @@ def build_handler(
                 if path == "/api/system-config":
                     payload = self.read_json_body()
                     result = save_system_config(monitoring_store.env_file, monitoring_store.urls_file, payload)
+                    self.send_json_response(HTTPStatus.OK, result)
+                    return
+                if path == "/api/server-cache-push":
+                    result = push_current_cache_to_server(
+                        env_file=monitoring_store.env_file,
+                        urls_file=monitoring_store.urls_file,
+                    )
                     self.send_json_response(HTTPStatus.OK, result)
                     return
                 if path == "/api/server-cache-upload":

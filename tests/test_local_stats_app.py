@@ -47,6 +47,7 @@ from xhs_feishu_monitor.local_stats_app.server import (
     run_login_state_self_check,
     refresh_project_export_snapshots,
     save_uploaded_server_cache,
+    push_current_cache_to_server,
     update_monitored_metadata,
     wait_for_xiaohongshu_login,
     write_monitored_entries,
@@ -76,12 +77,16 @@ class LocalStatsAppTest(unittest.TestCase):
                     "config": {
                         "XHS_COOKIE": "new_cookie",
                         "PROJECT_CACHE_DIR": "/data/cache",
+                        "SERVER_CACHE_PUSH_URL": "http://127.0.0.1:8787",
+                        "SERVER_CACHE_UPLOAD_TOKEN": "token-1",
                     },
                     "urls_text": "https://www.xiaohongshu.com/user/profile/u2\n",
                 },
             )
             self.assertEqual(result["config"]["XHS_COOKIE"], "new_cookie")
             self.assertEqual(result["config"]["PROJECT_CACHE_DIR"], "/data/cache")
+            self.assertEqual(result["config"]["SERVER_CACHE_PUSH_URL"], "http://127.0.0.1:8787")
+            self.assertEqual(result["config"]["SERVER_CACHE_UPLOAD_TOKEN"], "token-1")
             self.assertIn("u2", urls_path.read_text(encoding="utf-8"))
 
     def test_save_system_config_strips_legacy_feishu_lines(self) -> None:
@@ -155,6 +160,23 @@ class LocalStatsAppTest(unittest.TestCase):
             self.assertIn("默认项目", urls_path.read_text(encoding="utf-8"))
             self.assertTrue(Path(result["metadata_path"]).exists())
             self.assertEqual(result["account_count"], 1)
+
+    def test_push_current_cache_to_server_uses_configured_target(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            env_path = Path(temp_dir) / ".env"
+            urls_path = Path(temp_dir) / "urls.txt"
+            env_path.write_text(
+                "SERVER_CACHE_PUSH_URL=http://127.0.0.1:8787\n"
+                "SERVER_CACHE_UPLOAD_TOKEN=token-1\n",
+                encoding="utf-8",
+            )
+            with patch(
+                "xhs_feishu_monitor.local_stats_app.server.push_local_cache_to_server",
+                return_value={"ok": True, "account_count": 3},
+            ) as push_mock:
+                result = push_current_cache_to_server(env_file=str(env_path), urls_file=str(urls_path))
+        self.assertTrue(result["ok"])
+        push_mock.assert_called_once()
 
     def test_build_daily_series(self) -> None:
         rows = [

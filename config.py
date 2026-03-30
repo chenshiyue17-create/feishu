@@ -100,6 +100,7 @@ class Settings:
     state_file: str = "xhs_feishu_monitor/.state.json"
     project_cache_dir: str = "/Users/cc/Downloads/飞书缓存"
     server_cache_upload_token: str = ""
+    server_cache_push_url: str = ""
 
     def validate_for_sync(self) -> None:
         missing = []
@@ -207,6 +208,7 @@ def load_settings(env_file: Optional[str] = None) -> Settings:
         state_file=_resolve_path(_env("STATE_FILE", env_values) or default_state_file, base_dir),
         project_cache_dir=_resolve_path(_env("PROJECT_CACHE_DIR", env_values) or "/Users/cc/Downloads/飞书缓存", base_dir),
         server_cache_upload_token=_env("SERVER_CACHE_UPLOAD_TOKEN", env_values),
+        server_cache_push_url=_env("SERVER_CACHE_PUSH_URL", env_values),
     )
     return settings
 

@@ -28,17 +28,10 @@ def _load_dashboard_payload(env_file: str, urls_file: str) -> dict:
     raise ValueError("本地暂无可上传的缓存，请先完成一次采集")
 
 
-def main(argv: Optional[List[str]] = None) -> int:
-    parser = argparse.ArgumentParser(description="把本地缓存上传到服务器，供网页和手机端查看。")
-    parser.add_argument("--env-file", default="xhs_feishu_monitor/.env")
-    parser.add_argument("--urls-file", default="xhs_feishu_monitor/input/robam_multi_profile_urls.txt")
-    parser.add_argument("--server-url", required=True, help="服务器基础地址，例如 http://47.87.68.74:8787")
-    parser.add_argument("--token", default="", help="可选上传令牌，对应 SERVER_CACHE_UPLOAD_TOKEN")
-    args = parser.parse_args(argv)
-
-    dashboard_payload = _load_dashboard_payload(args.env_file, args.urls_file)
-    monitored_entries = parse_monitored_entries(args.urls_file)
-    monitored_metadata = load_monitored_metadata(args.urls_file)
+def push_local_cache_to_server(*, env_file: str, urls_file: str, server_url: str, token: str = "") -> dict:
+    dashboard_payload = _load_dashboard_payload(env_file, urls_file)
+    monitored_entries = parse_monitored_entries(urls_file)
+    monitored_metadata = load_monitored_metadata(urls_file)
 
     request_body = json.dumps(
         {
@@ -48,18 +41,34 @@ def main(argv: Optional[List[str]] = None) -> int:
         },
         ensure_ascii=False,
     ).encode("utf-8")
-    server_url = str(args.server_url or "").rstrip("/")
+    server_url = str(server_url or "").rstrip("/")
     request = urllib.request.Request(
         f"{server_url}/api/server-cache-upload",
         data=request_body,
         headers={
             "Content-Type": "application/json; charset=utf-8",
-            **({"X-Upload-Token": str(args.token or "").strip()} if str(args.token or "").strip() else {}),
+            **({"X-Upload-Token": str(token or "").strip()} if str(token or "").strip() else {}),
         },
         method="POST",
     )
     with urllib.request.urlopen(request, timeout=60) as response:
-        payload = json.loads(response.read().decode("utf-8"))
+        return json.loads(response.read().decode("utf-8"))
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    parser = argparse.ArgumentParser(description="把本地缓存上传到服务器，供网页和手机端查看。")
+    parser.add_argument("--env-file", default="xhs_feishu_monitor/.env")
+    parser.add_argument("--urls-file", default="xhs_feishu_monitor/input/robam_multi_profile_urls.txt")
+    parser.add_argument("--server-url", required=True, help="服务器基础地址，例如 http://47.87.68.74:8787")
+    parser.add_argument("--token", default="", help="可选上传令牌，对应 SERVER_CACHE_UPLOAD_TOKEN")
+    args = parser.parse_args(argv)
+
+    payload = push_local_cache_to_server(
+        env_file=args.env_file,
+        urls_file=args.urls_file,
+        server_url=args.server_url,
+        token=args.token,
+    )
     print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 0
 

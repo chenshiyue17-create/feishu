@@ -48,6 +48,8 @@ function renderSystemConfig() {
   document.getElementById("configXhsCookie").value = config.XHS_COOKIE || "";
   document.getElementById("configProjectCacheDir").value = config.PROJECT_CACHE_DIR || "";
   document.getElementById("configStateFile").value = config.STATE_FILE || "";
+  document.getElementById("configServerCachePushUrl").value = config.SERVER_CACHE_PUSH_URL || "";
+  document.getElementById("configServerCacheUploadToken").value = config.SERVER_CACHE_UPLOAD_TOKEN || "";
   document.getElementById("configUrlsText").value = payload.urls_text || "";
   document.getElementById("systemConfigSummary").textContent = payload.env_file
     ? `当前配置：${payload.env_file}`
@@ -63,6 +65,8 @@ async function saveSystemConfig() {
         XHS_COOKIE: document.getElementById("configXhsCookie").value,
         PROJECT_CACHE_DIR: document.getElementById("configProjectCacheDir").value,
         STATE_FILE: document.getElementById("configStateFile").value,
+        SERVER_CACHE_PUSH_URL: document.getElementById("configServerCachePushUrl").value,
+        SERVER_CACHE_UPLOAD_TOKEN: document.getElementById("configServerCacheUploadToken").value,
       },
       urls_text: document.getElementById("configUrlsText").value,
     }),
@@ -75,6 +79,19 @@ async function saveSystemConfig() {
   renderSystemConfig();
   document.getElementById("systemConfigResult").textContent = "配置已保存";
   await Promise.all([loadMonitoring(), loadDashboard(true)]);
+}
+
+async function pushServerCache() {
+  const response = await fetch("/api/server-cache-push", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({}),
+  });
+  const payload = await response.json();
+  if (!response.ok) {
+    throw new Error(payload.message || "推送服务器失败");
+  }
+  document.getElementById("systemConfigResult").textContent = `已推送到服务器 · ${payload.account_count || 0} 个账号`;
 }
 
 function formatScheduleWindow(plan = {}) {
@@ -2839,6 +2856,12 @@ document.getElementById("reloadSystemConfigButton").addEventListener("click", ()
 });
 document.getElementById("saveSystemConfigButton").addEventListener("click", () => {
   saveSystemConfig().catch((error) => {
+    document.getElementById("systemConfigResult").textContent = error.message;
+  });
+});
+document.getElementById("pushServerCacheButton").addEventListener("click", () => {
+  document.getElementById("systemConfigResult").textContent = "推送中...";
+  pushServerCache().catch((error) => {
     document.getElementById("systemConfigResult").textContent = error.message;
   });
 });
