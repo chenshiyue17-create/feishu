@@ -129,6 +129,40 @@ def iso_now() -> str:
     return datetime.now().astimezone().isoformat(timespec="seconds")
 
 
+def build_empty_dashboard_payload(*, load_error: str = "") -> Dict[str, Any]:
+    return {
+        "generated_at": iso_now(),
+        "latest_date": "",
+        "updated_at": "",
+        "series_meta": copy.deepcopy(DASHBOARD_SERIES_META),
+        "portal": {
+            "updated_at": "",
+            "accounts": 0,
+            "fans": 0,
+            "interaction": 0,
+            "works": 0,
+            "likes": 0,
+            "comments": 0,
+            "average_likes": 0,
+            "average_comments": 0,
+            "weekly_summary": "",
+            "top_title": "",
+            "top_account": "",
+            "top_like": 0,
+            "top_url": "",
+        },
+        "series": [],
+        "account_series": {},
+        "accounts": [],
+        "rankings": {},
+        "alerts": [],
+        "stale": True,
+        "local_override": False,
+        "cache_age_seconds": 0,
+        "load_error": load_error,
+    }
+
+
 def load_system_config(env_file: str, urls_file: str) -> Dict[str, Any]:
     env_path = Path(env_file).expanduser().resolve()
     urls_path = resolve_text_path(urls_file).expanduser().resolve()
@@ -1497,7 +1531,7 @@ class DashboardStore:
                     payload["cache_age_seconds"] = int(now - self._cached_at)
                     payload["load_error"] = self._last_error
                     return payload
-            raise
+                return build_empty_dashboard_payload(load_error=self._last_error)
         with self._lock:
             self._payload = payload
             self._cached_at = time.time()
@@ -2885,6 +2919,31 @@ def load_dashboard_payload(env_file: str) -> Dict[str, Any]:
     cached_account_ids = _payload_account_ids(cached_payload) if cached_payload else set()
     if cached_payload and len(cached_payload.get("accounts") or []) >= expected_accounts and cached_account_ids.issuperset(expected_account_ids):
         return _normalize_dashboard_payload(cached_payload)
+    try:
+        rebuilt_payload = rebuild_dashboard_cache_from_project_dirs(settings)
+        rebuilt_account_ids = _payload_account_ids(rebuilt_payload)
+        if rebuilt_payload and (
+            not expected_account_ids
+            or rebuilt_account_ids.issuperset(expected_account_ids)
+            or len(rebuilt_payload.get("accounts") or []) >= expected_accounts
+        ):
+            return _normalize_dashboard_payload(rebuilt_payload)
+    except Exception:
+        pass
+    try:
+        repaired_payload = repair_dashboard_cache_from_exports(
+            settings=settings,
+            monitored_metadata=monitored_metadata,
+        )
+        repaired_account_ids = _payload_account_ids(repaired_payload)
+        if repaired_payload and (
+            not expected_account_ids
+            or repaired_account_ids.issuperset(expected_account_ids)
+            or len(repaired_payload.get("accounts") or []) >= expected_accounts
+        ):
+            return _normalize_dashboard_payload(repaired_payload)
+    except Exception:
+        pass
     if cached_payload:
         try:
             rebuilt_payload = rebuild_dashboard_cache_from_project_dirs(settings)

@@ -24,6 +24,7 @@ from xhs_feishu_monitor.local_stats_app.server import (
     DashboardStore,
     LoginStateStore,
     MonitoringSyncStore,
+    build_empty_dashboard_payload,
     build_mobile_rankings_payload,
     build_dashboard_account_index,
     build_dashboard_payload_with_reports,
@@ -155,6 +156,14 @@ class LocalStatsAppTest(unittest.TestCase):
         self.assertEqual(len(payload["rankings"]["growth"]), 1)
         self.assertEqual(len(payload["calendar"]), 1)
         self.assertEqual(payload["calendar"][0]["likes"], 7)
+
+    def test_dashboard_store_returns_empty_payload_when_loading_fails_without_cache(self) -> None:
+        store = DashboardStore(env_file="/tmp/missing.env", cache_seconds=30)
+        with patch("xhs_feishu_monitor.local_stats_app.server.load_dashboard_payload", side_effect=ValueError("invalid param")):
+            payload = store.get_payload(force=True)
+        self.assertEqual(payload["accounts"], [])
+        self.assertTrue(payload["stale"])
+        self.assertEqual(payload["load_error"], "invalid param")
 
     def test_build_account_series_map(self) -> None:
         rows = [
