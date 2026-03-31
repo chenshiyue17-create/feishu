@@ -118,6 +118,27 @@ class LocalStatsAppTest(unittest.TestCase):
             self.assertEqual(result["config"]["SERVER_CACHE_PUSH_URL"], "http://47.87.68.74")
             self.assertIn("SERVER_CACHE_PUSH_URL=http://47.87.68.74", env_path.read_text(encoding="utf-8"))
 
+    def test_save_system_config_normalizes_legacy_8787_server_push_url(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            env_path = Path(temp_dir) / ".env"
+            urls_path = Path(temp_dir) / "urls.txt"
+            env_path.write_text("XHS_COOKIE=old_cookie\n", encoding="utf-8")
+
+            result = save_system_config(
+                str(env_path),
+                str(urls_path),
+                {
+                    "config": {
+                        "XHS_COOKIE": "new_cookie",
+                        "SERVER_CACHE_PUSH_URL": "http://47.87.68.74:8787",
+                    },
+                    "urls_text": "",
+                },
+            )
+
+            self.assertEqual(result["config"]["SERVER_CACHE_PUSH_URL"], "http://47.87.68.74")
+            self.assertIn("SERVER_CACHE_PUSH_URL=http://47.87.68.74", env_path.read_text(encoding="utf-8"))
+
     def test_save_system_config_strips_legacy_feishu_lines(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             env_path = Path(temp_dir) / ".env"

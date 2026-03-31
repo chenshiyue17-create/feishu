@@ -34,6 +34,15 @@ DEFAULT_FIELD_MAP = {
 DEFAULT_SERVER_CACHE_PUSH_URL = "http://47.87.68.74"
 
 
+def normalize_server_cache_push_url(value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return DEFAULT_SERVER_CACHE_PUSH_URL
+    if text in {"http://47.87.68.74:8787", "https://47.87.68.74:8787"}:
+        return DEFAULT_SERVER_CACHE_PUSH_URL
+    return text
+
+
 @dataclass
 class Settings:
     xhs_cookie: str = ""
@@ -210,7 +219,7 @@ def load_settings(env_file: Optional[str] = None) -> Settings:
         state_file=_resolve_path(_env("STATE_FILE", env_values) or default_state_file, base_dir),
         project_cache_dir=_resolve_path(_env("PROJECT_CACHE_DIR", env_values) or "/Users/cc/Downloads/飞书缓存", base_dir),
         server_cache_upload_token=_env("SERVER_CACHE_UPLOAD_TOKEN", env_values),
-        server_cache_push_url=_env("SERVER_CACHE_PUSH_URL", env_values) or DEFAULT_SERVER_CACHE_PUSH_URL,
+        server_cache_push_url=normalize_server_cache_push_url(_env("SERVER_CACHE_PUSH_URL", env_values)),
     )
     return settings
 

@@ -26,7 +26,7 @@ from ..chrome_cookies import (
     resolve_chrome_profile_directory,
     resolve_chrome_profile_root,
 )
-from ..config import DEFAULT_SERVER_CACHE_PUSH_URL, load_settings
+from ..config import DEFAULT_SERVER_CACHE_PUSH_URL, load_settings, normalize_server_cache_push_url
 from ..profile_cache_push import push_local_cache_to_server
 from ..profile_batch_report import normalize_profile_url
 from ..profile_batch_to_feishu import (
@@ -178,8 +178,7 @@ def load_system_config(env_file: str, urls_file: str) -> Dict[str, Any]:
 
 def _normalize_system_config_updates(updates: Dict[str, str]) -> Dict[str, str]:
     normalized = dict(updates)
-    server_url = str(normalized.get("SERVER_CACHE_PUSH_URL") or "").strip()
-    normalized["SERVER_CACHE_PUSH_URL"] = server_url or DEFAULT_SERVER_CACHE_PUSH_URL
+    normalized["SERVER_CACHE_PUSH_URL"] = normalize_server_cache_push_url(normalized.get("SERVER_CACHE_PUSH_URL") or "")
     return normalized
 
 
