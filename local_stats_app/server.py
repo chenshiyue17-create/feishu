@@ -3440,7 +3440,10 @@ def is_server_view_auth_enabled(settings) -> bool:
 
 def is_server_view_auth_exempt_path(path: str) -> bool:
     normalized = str(path or "").split("?", 1)[0].strip() or "/"
-    return normalized in {"/api/health", "/api/server-cache-upload"}
+    return (
+        normalized in {"/api/health", "/api/server-cache-upload", "/api/mobile-rankings", "/mobile"}
+        or normalized.startswith("/mobile/")
+    )
 
 
 def validate_server_view_auth_header(authorization_header: str, settings) -> bool:

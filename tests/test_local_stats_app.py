@@ -85,6 +85,8 @@ class LocalStatsAppTest(unittest.TestCase):
     def test_server_view_auth_exempt_paths(self) -> None:
         self.assertTrue(is_server_view_auth_exempt_path("/api/health"))
         self.assertTrue(is_server_view_auth_exempt_path("/api/server-cache-upload"))
+        self.assertTrue(is_server_view_auth_exempt_path("/api/mobile-rankings"))
+        self.assertTrue(is_server_view_auth_exempt_path("/mobile/index.html"))
         self.assertFalse(is_server_view_auth_exempt_path("/"))
         self.assertFalse(is_server_view_auth_exempt_path("/api/dashboard"))
 
