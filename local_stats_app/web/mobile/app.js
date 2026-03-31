@@ -48,12 +48,35 @@ function buildMobileStatusSummary(payload) {
   return pieces.join(" · ");
 }
 
+function formatDateLabel(value) {
+  const text = String(value || "").trim();
+  return text || "未选择日期";
+}
+
+function formatTimeLabel(value) {
+  const text = String(value || "").trim();
+  if (!text) return "等待加载";
+  if (text.includes("T")) return formatDateTime(text);
+  return text;
+}
+
 function applyVersion(payload) {
   const version = String(payload?.version || "").trim();
   if (version) {
     const node = document.getElementById("versionChip");
     if (node) node.textContent = version;
   }
+}
+
+function renderHeadline(payload, detail) {
+  const activeAccount = (payload.accounts || []).find((item) => String(item.account_id || "") === selectedAccountId);
+  const selectedDate = selectedHistoryDate || payload.latest_date || "";
+  document.getElementById("headlineDate").textContent = formatDateLabel(selectedDate);
+  document.getElementById("headlineTime").textContent = formatTimeLabel(detail?.snapshot_time || payload.updated_at || payload.generated_at || "");
+  document.getElementById("headlineServerTime").textContent = formatTimeLabel(payload.server_received_at || payload.updated_at || payload.generated_at || "");
+  document.getElementById("headlineAccountScope").textContent = activeAccount
+    ? `${activeAccount.account || activeAccount.account_id} · 账号内`
+    : `${selectedProject || "全部项目"} · 全部账号`;
 }
 
 function renderList(rootId, countId, rows, metricLabel) {
@@ -125,6 +148,7 @@ function renderCalendar(rows) {
 
 function renderHistoryDetails(payload) {
   const detail = (payload.history_rankings || {})[selectedHistoryDate] || {};
+  renderHeadline(payload, detail);
   document.getElementById("historyDetailDate").textContent = selectedHistoryDate || "-";
   document.getElementById("historyDetailTitle").textContent = selectedHistoryDate ? `${selectedHistoryDate} 排行榜` : "当天排行榜";
   document.getElementById("historyDetailSummary").textContent = selectedHistoryDate
@@ -180,6 +204,38 @@ function renderAccountDetails(payload, detail) {
   renderList("accountGrowthList", "accountGrowthCount", filterRowsByAccount(detail.growth || [], selectedAccountId), "增长");
 }
 
+async function exportLongImage() {
+  const button = document.getElementById("exportLongImageButton");
+  const originalText = button.textContent;
+  button.disabled = true;
+  button.textContent = "导出中...";
+  try {
+    const htmlToImage = window.htmlToImage;
+    if (!htmlToImage || typeof htmlToImage.toPng !== "function") {
+      throw new Error("长图组件未加载完成");
+    }
+    const node = document.querySelector(".app-shell");
+    const dataUrl = await htmlToImage.toPng(node, {
+      cacheBust: true,
+      pixelRatio: 2,
+      backgroundColor: "#111318",
+      skipFonts: true,
+    });
+    const selectedDate = selectedHistoryDate || (window.__mobilePayload || {}).latest_date || "latest";
+    const link = document.createElement("a");
+    link.href = dataUrl;
+    link.download = `xhs-mobile-${selectedProject || "project"}-${selectedDate}.png`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+  } catch (error) {
+    window.alert(`导出失败：${error.message}`);
+  } finally {
+    button.disabled = false;
+    button.textContent = originalText;
+  }
+}
+
 async function loadDashboard() {
   const statusCard = document.getElementById("statusCard");
   statusCard.textContent = "正在加载榜单...";
@@ -213,6 +269,7 @@ async function loadDashboard() {
 }
 
 document.getElementById("refreshButton").addEventListener("click", loadDashboard);
+document.getElementById("exportLongImageButton").addEventListener("click", exportLongImage);
 document.getElementById("projectSelect").addEventListener("change", (event) => {
   selectedProject = String(event.target.value || "").trim() || selectedProject;
   selectedAccountId = "all";

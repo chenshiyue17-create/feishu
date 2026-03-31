@@ -27,8 +27,22 @@
             </select>
           </label>
           <button id="refreshButton" class="refresh-button" type="button">刷新</button>
+          <button id="exportLongImageButton" class="refresh-button export-button" type="button">导出长图</button>
         </div>
       </header>
+
+      <section class="headline-board">
+        <div class="headline-main">
+          <div class="headline-label">当前查看</div>
+          <div id="headlineDate" class="headline-date">-</div>
+          <div id="headlineTime" class="headline-time">-</div>
+        </div>
+        <div class="headline-side">
+          <div class="headline-side-label">服务器时间</div>
+          <div id="headlineServerTime" class="headline-side-value">-</div>
+          <div id="headlineAccountScope" class="headline-side-copy">全部账号</div>
+        </div>
+      </section>
 
       <section id="statusCard" class="status-card"></section>
 
@@ -127,6 +141,7 @@
       </section>
     </main>
 
+    <script src="https://unpkg.com/html-to-image@1.11.11/dist/html-to-image.js"></script>
     <script src="./app.js"></script>
   </body>
 </html>
