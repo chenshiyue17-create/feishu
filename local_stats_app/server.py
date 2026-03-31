@@ -3203,9 +3203,89 @@ def _normalize_dashboard_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     return normalized
 
 
+def _filter_dashboard_payload_by_monitored_entries(
+    payload: Dict[str, Any],
+    monitored_entries: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    normalized_entries = [dict(item or {}) for item in (monitored_entries or []) if isinstance(item, dict)]
+    allowed_account_ids = {
+        str(item.get("account_id") or extract_profile_user_id(str(item.get("url") or "")) or "").strip()
+        for item in normalized_entries
+        if str(item.get("account_id") or extract_profile_user_id(str(item.get("url") or "")) or "").strip()
+    }
+    if not allowed_account_ids:
+        return payload
+
+    project_by_account_id = {
+        str(item.get("account_id") or extract_profile_user_id(str(item.get("url") or "")) or "").strip(): normalize_project_name(
+            str(item.get("project") or DEFAULT_PROJECT_NAME)
+        )
+        for item in normalized_entries
+        if str(item.get("account_id") or extract_profile_user_id(str(item.get("url") or "")) or "").strip()
+    }
+
+    filtered_payload = copy.deepcopy(payload or {})
+    filtered_accounts = []
+    for item in filtered_payload.get("accounts") or []:
+        row = dict(item or {})
+        account_id = str(row.get("account_id") or "").strip()
+        if not account_id or account_id not in allowed_account_ids:
+            continue
+        if not str(row.get("project") or "").strip():
+            row["project"] = project_by_account_id.get(account_id, DEFAULT_PROJECT_NAME)
+        filtered_accounts.append(row)
+    filtered_payload["accounts"] = filtered_accounts
+    filtered_payload["account_series"] = {
+        str(account_id): points
+        for account_id, points in (filtered_payload.get("account_series") or {}).items()
+        if str(account_id or "").strip() in allowed_account_ids
+    }
+    filtered_payload["rankings"] = {
+        str(rank_type): [
+            dict(item)
+            for item in (rows or [])
+            if str((item or {}).get("account_id") or "").strip() in allowed_account_ids
+        ]
+        for rank_type, rows in (filtered_payload.get("rankings") or {}).items()
+    }
+    filtered_payload["alerts"] = [
+        dict(item)
+        for item in (filtered_payload.get("alerts") or [])
+        if str((item or {}).get("account_id") or "").strip() in allowed_account_ids
+    ]
+    history_rankings = {}
+    for project_name, project_history in (filtered_payload.get("history_rankings") or {}).items():
+        if not isinstance(project_history, dict):
+            continue
+        filtered_history = {}
+        for date_text, snapshot in project_history.items():
+            if not isinstance(snapshot, dict):
+                continue
+            filtered_snapshot = copy.deepcopy(snapshot)
+            for rank_key in ("likes", "comments", "growth"):
+                filtered_snapshot[rank_key] = [
+                    dict(item)
+                    for item in (snapshot.get(rank_key) or [])
+                    if str((item or {}).get("account_id") or "").strip() in allowed_account_ids
+                ]
+            filtered_history[str(date_text)] = filtered_snapshot
+        history_rankings[str(project_name)] = filtered_history
+    filtered_payload["history_rankings"] = history_rankings
+    updated_at = str(filtered_payload.get("updated_at") or filtered_payload.get("generated_at") or "").strip()
+    filtered_payload["portal"] = build_portal_from_accounts_and_rankings(
+        accounts=filtered_payload.get("accounts") or [],
+        rankings=filtered_payload.get("rankings") or {},
+        base_portal=filtered_payload.get("portal") or {},
+        updated_at=updated_at,
+    )
+    filtered_payload["series"] = rebuild_daily_series_from_account_series(filtered_payload.get("account_series") or {})
+    return filtered_payload
+
+
 def _load_dashboard_payload_local_only(env_file: str) -> Dict[str, Any]:
     settings = load_settings(env_file)
     cached_payload = load_cached_dashboard_payload(settings)
+    monitored_entries = parse_monitored_entries(DEFAULT_URLS_FILE)
     metadata_path = resolve_text_path(DEFAULT_URLS_FILE + ".meta.json")
     monitored_metadata: Dict[str, Any] = {}
     if metadata_path.exists():
@@ -3221,7 +3301,7 @@ def _load_dashboard_payload_local_only(env_file: str) -> Dict[str, Any]:
     expected_accounts = max(1, len(expected_account_ids) or (len(monitored_metadata) // 2))
     cached_account_ids = _payload_account_ids(cached_payload) if cached_payload else set()
     if cached_payload and len(cached_payload.get("accounts") or []) >= expected_accounts and cached_account_ids.issuperset(expected_account_ids):
-        return _normalize_dashboard_payload(cached_payload)
+        return _filter_dashboard_payload_by_monitored_entries(_normalize_dashboard_payload(cached_payload), monitored_entries)
     try:
         rebuilt_payload = rebuild_dashboard_cache_from_project_dirs(settings)
         rebuilt_account_ids = _payload_account_ids(rebuilt_payload)
@@ -3230,7 +3310,7 @@ def _load_dashboard_payload_local_only(env_file: str) -> Dict[str, Any]:
             or rebuilt_account_ids.issuperset(expected_account_ids)
             or len(rebuilt_payload.get("accounts") or []) >= expected_accounts
         ):
-            return _normalize_dashboard_payload(rebuilt_payload)
+            return _filter_dashboard_payload_by_monitored_entries(_normalize_dashboard_payload(rebuilt_payload), monitored_entries)
     except Exception:
         pass
     try:
@@ -3244,11 +3324,11 @@ def _load_dashboard_payload_local_only(env_file: str) -> Dict[str, Any]:
             or repaired_account_ids.issuperset(expected_account_ids)
             or len(repaired_payload.get("accounts") or []) >= expected_accounts
         ):
-            return _normalize_dashboard_payload(repaired_payload)
+            return _filter_dashboard_payload_by_monitored_entries(_normalize_dashboard_payload(repaired_payload), monitored_entries)
     except Exception:
         pass
     if cached_payload:
-        return _normalize_dashboard_payload(cached_payload)
+        return _filter_dashboard_payload_by_monitored_entries(_normalize_dashboard_payload(cached_payload), monitored_entries)
     return build_empty_dashboard_payload(load_error="本地暂无可用缓存")
 
 

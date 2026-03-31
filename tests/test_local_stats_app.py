@@ -25,6 +25,7 @@ from xhs_feishu_monitor.local_stats_app.server import (
     DashboardStore,
     LoginStateStore,
     MonitoringSyncStore,
+    _filter_dashboard_payload_by_monitored_entries,
     build_auto_project_schedule,
     build_empty_dashboard_payload,
     build_mobile_rankings_payload,
@@ -63,6 +64,51 @@ from xhs_feishu_monitor.project_sync_status import update_project_sync_status
 
 
 class LocalStatsAppTest(unittest.TestCase):
+    def test_filter_dashboard_payload_by_monitored_entries_removes_stale_accounts(self) -> None:
+        payload = {
+            "updated_at": "2026-03-31T18:45:29+08:00",
+            "accounts": [
+                {"account_id": "u1", "account": "账号A"},
+                {"account_id": "u2", "account": "账号B"},
+            ],
+            "account_series": {
+                "u1": [{"date": "2026-03-31", "fans": 1, "interaction": 2, "likes": 3, "comments": 4, "works": 5}],
+                "u2": [{"date": "2026-03-31", "fans": 10, "interaction": 20, "likes": 30, "comments": 40, "works": 50}],
+            },
+            "rankings": {
+                "单条点赞排行": [
+                    {"account_id": "u1", "metric": 999},
+                    {"account_id": "u2", "metric": 30},
+                ],
+            },
+            "alerts": [
+                {"account_id": "u1", "title": "old"},
+                {"account_id": "u2", "title": "keep"},
+            ],
+            "history_rankings": {
+                "默认项目": {
+                    "2026-03-31": {
+                        "likes": [{"account_id": "u1", "metric": 999}, {"account_id": "u2", "metric": 30}],
+                        "comments": [],
+                        "growth": [],
+                    }
+                }
+            },
+        }
+        monitored_entries = [
+            {"url": "https://www.xiaohongshu.com/user/profile/u2", "project": "默认项目", "account_id": "u2", "active": True},
+        ]
+        result = _filter_dashboard_payload_by_monitored_entries(payload, monitored_entries)
+        self.assertEqual([item["account_id"] for item in result["accounts"]], ["u2"])
+        self.assertEqual(result["accounts"][0]["project"], "默认项目")
+        self.assertEqual(set(result["account_series"].keys()), {"u2"})
+        self.assertEqual([item["account_id"] for item in result["rankings"]["单条点赞排行"]], ["u2"])
+        self.assertEqual([item["account_id"] for item in result["alerts"]], ["u2"])
+        self.assertEqual(
+            [item["account_id"] for item in result["history_rankings"]["默认项目"]["2026-03-31"]["likes"]],
+            ["u2"],
+        )
+
     def test_build_auto_project_schedule_runs_all_projects_immediately_when_spread_disabled(self) -> None:
         now = datetime.fromisoformat("2026-03-31T14:12:00+08:00")
         settings = Settings(
