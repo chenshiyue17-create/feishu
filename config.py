@@ -31,7 +31,7 @@ DEFAULT_FIELD_MAP = {
     "raw_json": "原始数据",
 }
 
-APP_VERSION = "XHS-26.3.31-V1"
+APP_VERSION = "XHS-26.3.31-V2"
 DEFAULT_SERVER_CACHE_PUSH_URL = "http://47.87.68.74"
 
 

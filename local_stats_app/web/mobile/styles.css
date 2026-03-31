@@ -104,12 +104,12 @@ h1 {
   box-shadow: 0 12px 30px rgba(0,0,0,0.18);
 }
 .headline-board {
-  display: grid;
-  grid-template-columns: 1.2fr 0.8fr;
-  gap: 12px;
   margin-bottom: 14px;
 }
-.headline-main,
+.headline-side--single {
+  width: 100%;
+  margin-bottom: 14px;
+}
 .headline-side {
   background: linear-gradient(180deg, rgba(255, 204, 102, 0.14), rgba(32, 38, 50, 0.92));
   border: 1px solid rgba(255, 204, 102, 0.16);
@@ -117,36 +117,17 @@ h1 {
   padding: 16px;
   box-shadow: 0 12px 30px rgba(0,0,0,0.18);
 }
-.headline-label,
 .headline-side-label {
   color: var(--muted);
   font-size: 12px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
-.headline-date {
-  margin-top: 8px;
-  font-size: 32px;
-  line-height: 1;
-  font-weight: 800;
-  color: var(--text);
-}
-.headline-time {
-  margin-top: 10px;
-  font-size: 15px;
-  color: var(--accent);
-  font-weight: 700;
-}
 .headline-side-value {
   margin-top: 8px;
   font-size: 18px;
   line-height: 1.3;
   font-weight: 700;
-}
-.headline-side-copy {
-  margin-top: 10px;
-  font-size: 13px;
-  color: var(--muted);
 }
 .status-card {
   color: var(--muted);
@@ -179,40 +160,50 @@ h1 {
   text-align: center;
   font-size: 12px;
 }
-.ranking-list,
-.calendar-list {
+.ranking-list {
   display: grid;
   gap: 10px;
 }
-.calendar-card {
-  width: 100%;
-  text-align: left;
-  background: var(--panel-strong);
+.calendar-picker-shell {
   border-radius: 18px;
-  padding: 12px;
-  border: 1px solid rgba(255,255,255,0.05);
+  border: 1px solid rgba(255,255,255,0.06);
+  background: var(--panel-strong);
+  overflow: hidden;
+}
+.calendar-picker-summary {
+  list-style: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px;
+  cursor: pointer;
   color: var(--text);
-}
-.calendar-card.is-active {
-  border-color: rgba(255, 204, 102, 0.45);
-  box-shadow: inset 0 0 0 1px rgba(255, 204, 102, 0.18);
-}
-.calendar-date {
-  margin: 0 0 8px;
-  font-size: 15px;
   font-weight: 700;
 }
-.calendar-meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
+.calendar-picker-summary::-webkit-details-marker {
+  display: none;
+}
+.calendar-selected-date {
+  color: var(--accent);
+}
+.calendar-picker-body {
+  padding: 0 14px 14px;
+}
+.calendar-picker-label {
+  display: block;
+  margin-bottom: 8px;
   color: var(--muted);
   font-size: 12px;
 }
-.calendar-chip {
-  padding: 4px 8px;
-  border-radius: 999px;
+.calendar-date-select {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 12px;
   background: rgba(255,255,255,0.06);
+  color: var(--text);
+  padding: 12px;
+  font-size: 15px;
 }
 .rank-card {
   display: grid;
@@ -272,9 +263,4 @@ h1 {
 .history-detail-grid {
   display: grid;
   gap: 14px;
-}
-@media (max-width: 480px) {
-  .headline-board {
-    grid-template-columns: 1fr;
-  }
 }

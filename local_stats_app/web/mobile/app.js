@@ -48,11 +48,6 @@ function buildMobileStatusSummary(payload) {
   return pieces.join(" · ");
 }
 
-function formatDateLabel(value) {
-  const text = String(value || "").trim();
-  return text || "未选择日期";
-}
-
 function formatTimeLabel(value) {
   const text = String(value || "").trim();
   if (!text) return "等待加载";
@@ -69,14 +64,7 @@ function applyVersion(payload) {
 }
 
 function renderHeadline(payload, detail) {
-  const activeAccount = (payload.accounts || []).find((item) => String(item.account_id || "") === selectedAccountId);
-  const selectedDate = selectedHistoryDate || payload.latest_date || "";
-  document.getElementById("headlineDate").textContent = formatDateLabel(selectedDate);
-  document.getElementById("headlineTime").textContent = formatTimeLabel(detail?.snapshot_time || payload.updated_at || payload.generated_at || "");
   document.getElementById("headlineServerTime").textContent = formatTimeLabel(payload.server_received_at || payload.updated_at || payload.generated_at || "");
-  document.getElementById("headlineAccountScope").textContent = activeAccount
-    ? `${activeAccount.account || activeAccount.account_id} · 账号内`
-    : `${selectedProject || "全部项目"} · 全部账号`;
 }
 
 function renderList(rootId, countId, rows, metricLabel) {
@@ -114,36 +102,27 @@ function filterRowsByAccount(rows, accountId) {
 }
 
 function renderCalendar(rows) {
-  const root = document.getElementById("calendarList");
+  const select = document.getElementById("calendarDateSelect");
   const count = document.getElementById("calendarCount");
+  const selectedLabel = document.getElementById("calendarSelectedDate");
   const data = (rows || []).slice().reverse();
   count.textContent = String(data.length);
   if (!data.length) {
-    root.innerHTML = '<div class="empty-state">当前没有历史留底</div>';
+    select.innerHTML = '<option value="">当前没有历史留底</option>';
+    select.disabled = true;
+    selectedLabel.textContent = "暂无日期";
     return;
   }
+  select.disabled = false;
   const preferredDate = String((window.__mobilePayload || {}).latest_date || "").trim();
   if (!selectedHistoryDate || !data.some((item) => item.date === selectedHistoryDate)) {
     selectedHistoryDate = data.some((item) => item.date === preferredDate) ? preferredDate : (data[0].date || "");
   }
-  root.innerHTML = data.map((item) => `
-    <button class="calendar-card ${item.date === selectedHistoryDate ? "is-active" : ""}" type="button" data-history-date="${item.date || ""}">
-      <p class="calendar-date">${item.date || "未知日期"}</p>
-      <div class="calendar-meta">
-        <span class="calendar-chip">账号 ${formatNumber(item.accounts)}</span>
-        <span class="calendar-chip">点赞 ${formatNumber(item.likes)}</span>
-        <span class="calendar-chip">评论 ${formatNumber(item.comments)}</span>
-        <span class="calendar-chip">作品 ${formatNumber(item.works)}</span>
-      </div>
-    </button>
-  `).join("");
-  root.querySelectorAll("[data-history-date]").forEach((button) => {
-    button.addEventListener("click", () => {
-      selectedHistoryDate = String(button.getAttribute("data-history-date") || "").trim();
-      renderCalendar(rows);
-      renderHistoryDetails(window.__mobilePayload || {});
-    });
-  });
+  select.innerHTML = data
+    .map((item) => `<option value="${item.date || ""}">${item.date || "未知日期"}</option>`)
+    .join("");
+  select.value = selectedHistoryDate;
+  selectedLabel.textContent = selectedHistoryDate || "未选择日期";
 }
 
 function renderHistoryDetails(payload) {
@@ -270,6 +249,11 @@ async function loadDashboard() {
 
 document.getElementById("refreshButton").addEventListener("click", loadDashboard);
 document.getElementById("exportLongImageButton").addEventListener("click", exportLongImage);
+document.getElementById("calendarDateSelect").addEventListener("change", (event) => {
+  selectedHistoryDate = String(event.target.value || "").trim();
+  document.getElementById("calendarSelectedDate").textContent = selectedHistoryDate || "未选择日期";
+  renderHistoryDetails(window.__mobilePayload || {});
+});
 document.getElementById("projectSelect").addEventListener("change", (event) => {
   selectedProject = String(event.target.value || "").trim() || selectedProject;
   selectedAccountId = "all";
