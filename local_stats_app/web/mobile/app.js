@@ -1,7 +1,6 @@
 const params = new URLSearchParams(window.location.search);
 const apiBase = (params.get("api_base") || "").replace(/\/$/, "");
 let selectedProject = (params.get("project") || "默认项目").trim();
-let calendarExpanded = false;
 let selectedHistoryDate = "";
 
 function buildDashboardUrl() {
@@ -76,13 +75,13 @@ function renderCalendar(rows) {
   const count = document.getElementById("calendarCount");
   const data = (rows || []).slice().reverse();
   count.textContent = String(data.length);
-  root.classList.toggle("is-collapsed", !calendarExpanded);
   if (!data.length) {
     root.innerHTML = '<div class="empty-state">当前没有历史留底</div>';
     return;
   }
+  const preferredDate = String((window.__mobilePayload || {}).latest_date || "").trim();
   if (!selectedHistoryDate || !data.some((item) => item.date === selectedHistoryDate)) {
-    selectedHistoryDate = data[0].date || "";
+    selectedHistoryDate = data.some((item) => item.date === preferredDate) ? preferredDate : (data[0].date || "");
   }
   root.innerHTML = data.map((item) => `
     <button class="calendar-card ${item.date === selectedHistoryDate ? "is-active" : ""}" type="button" data-history-date="${item.date || ""}">
@@ -114,14 +113,6 @@ function renderHistoryDetails(payload) {
   renderList("historyLikesList", "historyLikesCount", detail.likes || [], "点赞");
   renderList("historyCommentsList", "historyCommentsCount", detail.comments || [], "评论");
   renderList("historyGrowthList", "historyGrowthCount", detail.growth || [], "增长");
-}
-
-function bindCalendarToggle() {
-  const button = document.getElementById("calendarToggleButton");
-  button.addEventListener("click", () => {
-    calendarExpanded = !calendarExpanded;
-    document.getElementById("calendarList").classList.toggle("is-collapsed", !calendarExpanded);
-  });
 }
 
 function renderProjectOptions(projects) {
@@ -176,5 +167,4 @@ document.getElementById("projectSelect").addEventListener("change", (event) => {
   selectedProject = String(event.target.value || "").trim() || selectedProject;
   loadDashboard();
 });
-bindCalendarToggle();
 loadDashboard();
