@@ -1043,66 +1043,12 @@ function renderProjectCalendar() {
     return;
   }
 
-  const active = getActiveAccount();
-  const snapshot = getCalendarRankingSnapshot(projectName, selected.date);
-  const fallbackToCurrent = !snapshot && selected.date === String(state.payload?.latest_date || "").trim();
-  const detailSource = snapshot || {
-    snapshot_time: String(state.payload?.updated_at || state.payload?.generated_at || "").trim(),
-    likes: state.payload?.rankings?.["单条点赞排行"] || [],
-    comments: state.payload?.rankings?.["单条评论排行"] || [],
-    growth: state.payload?.rankings?.["单条第二天增长排行"] || [],
-  };
-  const likesRows = getScopedRankingRows(detailSource.likes || [], active, active ? "account" : "all", projectName).slice(0, 5);
-  const commentsRows = getScopedRankingRows(detailSource.comments || [], active, active ? "account" : "all", projectName).slice(0, 5);
-  const growthRows = getScopedRankingRows(detailSource.growth || [], active, active ? "account" : "all", projectName).slice(0, 5);
-  const hasAnyRankingRows = likesRows.length || commentsRows.length || growthRows.length;
-  const scopeLabel = active ? active.account : projectName;
-  const summaryBits = [`${selected.date} · ${scopeLabel}`];
-  if (detailSource.snapshot_time) {
-    summaryBits.push(detailSource.snapshot_time);
-  }
-  if (fallbackToCurrent) {
-    summaryBits.push("当前榜单回退");
-  }
-
-  if (!hasAnyRankingRows) {
-    detailNode.innerHTML = `
-      <div class="project-calendar-detail-head">
-        <div>
-          <div class="project-calendar-detail-title">${selected.date} 排行榜</div>
-          <div class="project-calendar-detail-meta">${summaryBits.join(" · ")}</div>
-        </div>
-      </div>
-      <div class="project-calendar-account-list">
-        ${selected.accounts
-          .slice(0, 8)
-          .map(
-            (item) => `
-              <article class="project-calendar-account-item">
-                <div class="project-calendar-account-title">
-                  ${item.profile_url ? `<a class="note-link" href="${item.profile_url}" target="_blank" rel="noreferrer">${item.account}</a>` : item.account}
-                </div>
-                <div class="project-calendar-account-meta">粉丝 ${formatNumber(item.fans)} · 获赞 ${formatNumber(item.interaction)} · 点赞 ${formatNumber(item.likes)} · 评论 ${formatNumber(item.comments)} · 作品 ${formatNumber(item.works)}</div>
-              </article>
-            `,
-          )
-          .join("")}
-      </div>
-    `;
-    return;
-  }
-
   detailNode.innerHTML = `
     <div class="project-calendar-detail-head">
       <div>
-        <div class="project-calendar-detail-title">${selected.date} 排行榜</div>
-        <div class="project-calendar-detail-meta">${summaryBits.join(" · ")}</div>
+        <div class="project-calendar-detail-title">已选择 ${selected.date}</div>
+        <div class="project-calendar-detail-meta">下方榜单中心已同步切换到该日期，避免与这里重复显示。</div>
       </div>
-    </div>
-    <div class="project-calendar-detail-rankings">
-      ${buildCalendarRankingColumn("当天点赞榜", likesRows, "点赞")}
-      ${buildCalendarRankingColumn("当天评论榜", commentsRows, "评论")}
-      ${buildCalendarRankingColumn("当天增长榜", growthRows, "增长")}
     </div>
   `;
 }
@@ -1122,6 +1068,24 @@ function getCalendarRankingSnapshot(projectName, dateText) {
     return directSnapshot;
   }
   return null;
+}
+
+function getSelectedRankingSource(projectName = getSelectedProjectName()) {
+  const selectedDate = String(state.calendarSelectedDate || "").trim();
+  const latestDate = String(state.payload?.latest_date || "").trim();
+  const snapshot = selectedDate ? getCalendarRankingSnapshot(projectName, selectedDate) : null;
+  const fallbackToCurrent = !snapshot && Boolean(selectedDate) && selectedDate === latestDate;
+  const resolvedSnapshot = snapshot || {
+    snapshot_time: String(state.payload?.updated_at || state.payload?.generated_at || "").trim(),
+    likes: state.payload?.rankings?.["单条点赞排行"] || [],
+    comments: state.payload?.rankings?.["单条评论排行"] || [],
+    growth: state.payload?.rankings?.["单条第二天增长排行"] || [],
+  };
+  return {
+    date: selectedDate || latestDate,
+    snapshot: resolvedSnapshot,
+    fallbackToCurrent,
+  };
 }
 
 function buildCalendarRankingColumn(title, rows, metricLabel) {
@@ -2394,7 +2358,6 @@ function renderTrendChart() {
 }
 
 function renderRankingList() {
-  const rankings = state.payload?.rankings || {};
   const active = getActiveAccount();
   const root = document.getElementById("rankingList");
   const rankingTitle = document.getElementById("rankingTitle");
@@ -2408,15 +2371,22 @@ function renderRankingList() {
     root.innerHTML = `<div class="empty-state">请选择单个项目后查看项目榜单。</div>`;
     return;
   }
+  const rankingSource = getSelectedRankingSource(projectName);
+  const rankingDate = rankingSource.date || String(state.payload?.latest_date || "").trim() || "未选择日期";
+  const rankings = {
+    "单条点赞排行": rankingSource.snapshot?.likes || [],
+    "单条评论排行": rankingSource.snapshot?.comments || [],
+    "单条第二天增长排行": rankingSource.snapshot?.growth || [],
+  };
   rankingTitle.textContent =
     state.rankingScope === "all"
-      ? `榜单中心 · 项目 ${projectName}`
-      : `榜单中心 · ${active ? active.account : `项目 ${projectName} 暂无已同步账号`}`;
+      ? `${rankingDate} · 项目 ${projectName} 排行榜`
+      : `${rankingDate} · ${active ? active.account : `项目 ${projectName} 暂无已同步账号`}`;
   rankingSummaryText.textContent =
     state.rankingScope === "all"
-      ? `当前查看项目「${projectName}」内的内容榜单。`
+      ? `当前查看项目「${projectName}」在 ${rankingDate} 的内容榜单。${rankingSource.fallbackToCurrent ? " 当天历史榜单缺失，已回退到当前榜单。" : ""}`
       : active
-        ? `当前查看账号「${active.account}」在项目「${projectName}」范围下的内容表现。`
+        ? `当前查看账号「${active.account}」在 ${rankingDate} 的内容表现。${rankingSource.fallbackToCurrent ? " 当天历史榜单缺失，已回退到当前榜单。" : ""}`
         : `项目「${projectName}」下暂无已同步账号，暂时无法切换到账号维度。`;
 
   const summaryItems = rankingConfigs
