@@ -3585,6 +3585,12 @@ def build_handler(
         def __init__(self, *args: Any, **kwargs: Any) -> None:
             super().__init__(*args, directory=str(WEB_DIR), **kwargs)
 
+        def end_headers(self) -> None:
+            self.send_header("Cache-Control", "no-store, max-age=0")
+            self.send_header("Pragma", "no-cache")
+            self.send_header("Expires", "0")
+            super().end_headers()
+
         def send_json_response(self, status_code: int, payload: Dict[str, Any]) -> None:
             body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
             self.send_response(status_code)
@@ -3684,7 +3690,6 @@ def build_handler(
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(body)))
-            self.send_header("Cache-Control", "public, max-age=3600")
             self.end_headers()
             self.wfile.write(body)
 
