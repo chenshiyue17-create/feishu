@@ -57,6 +57,7 @@ from xhs_feishu_monitor.local_stats_app.server import (
     save_system_config,
 )
 from xhs_feishu_monitor.local_stats_app.login_state import is_transient_self_check_failure
+from xhs_feishu_monitor.local_daily_sync_status import write_local_daily_sync_status
 from xhs_feishu_monitor.project_sync_status import update_project_sync_status
 
 
@@ -1040,6 +1041,39 @@ class LocalStatsAppTest(unittest.TestCase):
         push_status = payload["sync_status"]["server_cache_push_status"]
         self.assertEqual(push_status["daily_at"], "14:00")
         self.assertTrue(push_status["next_auto_run_at"])
+
+    def test_status_snapshot_exposes_launchd_runtime_status(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            env_path = Path(temp_dir) / ".env"
+            state_path = Path(temp_dir) / ".state.json"
+            env_path.write_text(
+                f"STATE_FILE={state_path}\nXHS_SCHEDULE_DRIVER=launchd\nXHS_BATCH_WINDOW_START=14:00\n",
+                encoding="utf-8",
+            )
+            path = write_monitored_entries(
+                f"{temp_dir}/urls.txt",
+                [{"url": "https://www.xiaohongshu.com/user/profile/u1", "active": True, "project": "项目A"}],
+            )
+            write_local_daily_sync_status(
+                env_file=str(env_path),
+                state_file_path=str(state_path),
+                payload={
+                    "state": "success",
+                    "message": "自动采集完成",
+                    "last_success_at": "2026-03-31T14:33:00+08:00",
+                    "last_upload_success_at": "2026-03-31T14:35:00+08:00",
+                },
+            )
+            store = MonitoringSyncStore(
+                env_file=str(env_path),
+                urls_file=str(path),
+                dashboard_store=DashboardStore(env_file=str(env_path)),
+            )
+            payload = store.get_payload()
+
+        self.assertEqual(payload["sync_status"]["schedule_driver"], "launchd")
+        self.assertEqual(payload["sync_status"]["launchd_status"]["state"], "success")
+        self.assertEqual(payload["sync_status"]["launchd_status"]["last_upload_success_at"], "2026-03-31T14:35:00+08:00")
 
     def test_push_server_cache_updates_manual_status(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

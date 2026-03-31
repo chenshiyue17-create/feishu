@@ -6,6 +6,7 @@ __all__ = [
     "feishu",
     "launchd",
     "local_daily_sync",
+    "local_daily_sync_status",
     "models",
     "profile_report",
     "profile_to_feishu",

@@ -95,6 +95,8 @@ function renderSystemConfig() {
   const config = payload.config || {};
   const cacheSummary = getLocalCacheSummary();
   const autoPushStatus = state.monitoring?.sync_status?.server_cache_push_status || {};
+  const launchdStatus = state.monitoring?.sync_status?.launchd_status || {};
+  const scheduleDriver = String(state.monitoring?.sync_status?.schedule_driver || "app").trim().toLowerCase() || "app";
   const cacheStateNode = document.getElementById("systemConfigCacheStatus");
   document.getElementById("configXhsCookie").value = config.XHS_COOKIE || "";
   document.getElementById("configProjectCacheDir").value = config.PROJECT_CACHE_DIR || "";
@@ -114,16 +116,28 @@ function renderSystemConfig() {
       : lastPush?.pushed_at
         ? `本机发起 ${formatDateTime(lastPush.pushed_at)}`
         : "还没有成功推送记录";
-    const autoPushText = autoPushStatus?.last_success_at
-      ? `上次自动上传 ${formatDateTime(autoPushStatus.last_success_at)}`
-      : autoPushStatus?.next_auto_run_at
-        ? `下次自动上传 ${formatDateTime(autoPushStatus.next_auto_run_at)}`
-        : "每天 14:00 自动上传到服务器";
-    const autoPushCopy = autoPushStatus?.state === "error"
-      ? `自动上传失败：${autoPushStatus.last_error || autoPushStatus.message || "未知错误"}`
-      : autoPushStatus?.state === "running"
-        ? autoPushStatus.message || "自动上传进行中"
-        : `${formatPushTarget(config.SERVER_CACHE_PUSH_URL || "")} · 每天 ${autoPushStatus.daily_at || "14:00"} 自动上传`;
+    const autoPushText = scheduleDriver === "launchd"
+      ? (launchdStatus?.last_success_at
+          ? `上次自动采集 ${formatDateTime(launchdStatus.last_success_at)}`
+          : autoPushStatus?.next_auto_run_at
+            ? `下次自动采集 ${formatDateTime(autoPushStatus.next_auto_run_at)}`
+            : "等待 launchd 定时执行")
+      : autoPushStatus?.last_success_at
+        ? `上次自动上传 ${formatDateTime(autoPushStatus.last_success_at)}`
+        : autoPushStatus?.next_auto_run_at
+          ? `下次自动上传 ${formatDateTime(autoPushStatus.next_auto_run_at)}`
+          : "每天 14:00 自动上传到服务器";
+    const autoPushCopy = scheduleDriver === "launchd"
+      ? launchdStatus?.state === "running"
+        ? launchdStatus.message || "launchd 自动采集中"
+        : launchdStatus?.state === "partial"
+          ? `自动任务未完成：${launchdStatus.last_error || launchdStatus.upload_message || launchdStatus.message || "请查看日志"}`
+          : `${formatPushTarget(config.SERVER_CACHE_PUSH_URL || "")} · ${launchdStatus?.last_upload_success_at ? `上次自动上传 ${formatDateTime(launchdStatus.last_upload_success_at)}` : `每天 ${autoPushStatus.daily_at || "14:00"} 自动采集成功后上传`}`
+      : autoPushStatus?.state === "error"
+        ? `自动上传失败：${autoPushStatus.last_error || autoPushStatus.message || "未知错误"}`
+        : autoPushStatus?.state === "running"
+          ? autoPushStatus.message || "自动上传进行中"
+          : `${formatPushTarget(config.SERVER_CACHE_PUSH_URL || "")} · 每天 ${autoPushStatus.daily_at || "14:00"} 自动上传`;
     cacheStateNode.innerHTML = `
       <article class="system-config-status-card">
         <div class="system-config-status-label">本地缓存状态</div>
@@ -152,7 +166,7 @@ function renderSystemConfig() {
         </div>
       </article>
       <article class="system-config-status-card">
-        <div class="system-config-status-label">自动上传计划</div>
+        <div class="system-config-status-label">${scheduleDriver === "launchd" ? "自动采集与上传" : "自动上传计划"}</div>
         <div class="system-config-status-value">${autoPushText}</div>
         <div class="system-config-status-copy">${autoPushCopy}</div>
       </article>

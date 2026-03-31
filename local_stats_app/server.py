@@ -27,6 +27,7 @@ from ..chrome_cookies import (
     resolve_chrome_profile_root,
 )
 from ..config import APP_VERSION, DEFAULT_SERVER_CACHE_PUSH_URL, load_settings, normalize_server_cache_push_url
+from ..local_daily_sync_status import load_local_daily_sync_status
 from ..profile_cache_push import push_local_cache_to_server
 from ..profile_batch_report import normalize_profile_url
 from ..profile_batch_to_feishu import (
@@ -1930,6 +1931,24 @@ class MonitoringSyncStore:
                     export_dir="",
                 )
             sync_status = self._status_snapshot_locked()
+            schedule_driver = str(getattr(settings, "xhs_schedule_driver", "app") or "app").strip().lower() or "app"
+            sync_status["schedule_driver"] = schedule_driver
+            if schedule_driver == "launchd":
+                current = datetime.now().astimezone()
+                next_run = self._daily_clock_datetime(current, str(getattr(settings, "xhs_batch_window_start", "14:00") or "14:00"))
+                if next_run <= current:
+                    next_run = self._daily_clock_datetime(current + timedelta(days=1), str(getattr(settings, "xhs_batch_window_start", "14:00") or "14:00"))
+                sync_status["server_cache_push_status"] = {
+                    **(sync_status.get("server_cache_push_status") or {}),
+                    "daily_at": str(getattr(settings, "xhs_batch_window_start", "14:00") or "14:00"),
+                    "next_auto_run_at": next_run.isoformat(timespec="seconds"),
+                    "message": "当前由 launchd 在 14:00-15:00 自动采集并在成功后上传服务器",
+                    "mode": "launchd",
+                }
+            sync_status["launchd_status"] = load_local_daily_sync_status(
+                env_file=self.env_file,
+                state_file_path=str(getattr(settings, "state_file", "") or ""),
+            )
             sync_status["schedule_plan"] = build_collection_schedule_plan(
                 settings=settings,
                 entries=enriched_entries,

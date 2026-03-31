@@ -25,6 +25,10 @@ from .local_stats_app.server import (
     wait_for_xiaohongshu_login,
 )
 from .profile_batch_collect import collect_profiles_to_local_cache
+from .local_daily_sync_status import (
+    load_local_daily_sync_status,
+    write_local_daily_sync_status,
+)
 
 
 DEFAULT_LOCAL_DAILY_SYNC_LABEL = "com.cc.xhs-local-daily-sync"
@@ -140,14 +144,45 @@ def _sleep_until(target_time: datetime) -> None:
 
 def run_local_daily_sync(*, env_file: str, urls_file: str) -> Dict[str, Any]:
     settings = load_settings(env_file)
+    state_file_path = str(getattr(settings, "state_file", "") or "")
+    persisted_status = load_local_daily_sync_status(env_file=env_file, state_file_path=state_file_path)
     entries = parse_monitored_entries(urls_file)
     plan = build_auto_project_schedule(settings=settings, entries=entries)
+    started_at = datetime.now().astimezone().isoformat(timespec="seconds")
+    runtime_status = {
+        **persisted_status,
+        "state": "running",
+        "message": "等待项目时间窗口并准备自动采集",
+        "started_at": started_at,
+        "finished_at": "",
+        "project_count": len(plan),
+        "successful_projects": 0,
+        "failed_projects": 0,
+        "current_project": "",
+        "upload_state": "",
+        "upload_message": "",
+        "last_error": "",
+        "last_upload_error": "",
+    }
+    write_local_daily_sync_status(env_file=env_file, state_file_path=state_file_path, payload=runtime_status)
     if not plan:
-        return {
+        result = {
             "status": "skipped",
             "message": "当前没有可自动采集的项目",
             "project_count": 0,
         }
+        write_local_daily_sync_status(
+            env_file=env_file,
+            state_file_path=state_file_path,
+            payload={
+                **runtime_status,
+                "state": "skipped",
+                "message": result["message"],
+                "finished_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+                "current_project": "",
+            },
+        )
+        return result
 
     project_results: List[Dict[str, Any]] = []
     failures: List[Dict[str, Any]] = []
@@ -156,6 +191,18 @@ def run_local_daily_sync(*, env_file: str, urls_file: str) -> Dict[str, Any]:
         urls = list(payload.get("urls") or [])
         if not urls:
             continue
+        write_local_daily_sync_status(
+            env_file=env_file,
+            state_file_path=state_file_path,
+            payload={
+                **runtime_status,
+                "state": "running",
+                "message": f"等待项目「{project_name}」进入采集时间",
+                "current_project": project_name,
+                "successful_projects": len(project_results),
+                "failed_projects": len(failures),
+            },
+        )
         _sleep_until(scheduled_at)
         login_payload = wait_for_xiaohongshu_login(
             env_file=env_file,
@@ -169,6 +216,19 @@ def run_local_daily_sync(*, env_file: str, urls_file: str) -> Dict[str, Any]:
                     "project": project_name,
                     "error": login_payload.get("message") or "登录态未恢复",
                 }
+            )
+            write_local_daily_sync_status(
+                env_file=env_file,
+                state_file_path=state_file_path,
+                payload={
+                    **runtime_status,
+                    "state": "partial",
+                    "message": f"项目「{project_name}」登录态未恢复，已跳过本项目",
+                    "current_project": project_name,
+                    "successful_projects": len(project_results),
+                    "failed_projects": len(failures),
+                    "last_error": login_payload.get("message") or "登录态未恢复",
+                },
             )
             continue
         try:
@@ -188,6 +248,18 @@ def run_local_daily_sync(*, env_file: str, urls_file: str) -> Dict[str, Any]:
                     **summary,
                 }
             )
+            write_local_daily_sync_status(
+                env_file=env_file,
+                state_file_path=state_file_path,
+                payload={
+                    **runtime_status,
+                    "state": "running",
+                    "message": f"项目「{project_name}」采集完成",
+                    "current_project": project_name,
+                    "successful_projects": len(project_results),
+                    "failed_projects": len(failures),
+                },
+            )
         except Exception as exc:
             failures.append(
                 {
@@ -196,9 +268,22 @@ def run_local_daily_sync(*, env_file: str, urls_file: str) -> Dict[str, Any]:
                     "error": str(exc),
                 }
             )
+            write_local_daily_sync_status(
+                env_file=env_file,
+                state_file_path=state_file_path,
+                payload={
+                    **runtime_status,
+                    "state": "partial",
+                    "message": f"项目「{project_name}」采集失败",
+                    "current_project": project_name,
+                    "successful_projects": len(project_results),
+                    "failed_projects": len(failures),
+                    "last_error": str(exc),
+                },
+            )
 
     if failures:
-        return {
+        result = {
             "status": "partial",
             "message": "存在项目采集失败，本轮不自动上传服务器",
             "project_count": len(plan),
@@ -207,15 +292,80 @@ def run_local_daily_sync(*, env_file: str, urls_file: str) -> Dict[str, Any]:
             "projects": project_results,
             "failures": failures,
         }
+        write_local_daily_sync_status(
+            env_file=env_file,
+            state_file_path=state_file_path,
+            payload={
+                **runtime_status,
+                "state": "partial",
+                "message": result["message"],
+                "finished_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+                "current_project": "",
+                "successful_projects": len(project_results),
+                "failed_projects": len(failures),
+                "last_error": str((failures[0] or {}).get("error") or ""),
+                "upload_state": "skipped",
+                "upload_message": "本轮存在采集失败，未自动上传服务器",
+            },
+        )
+        return result
 
-    upload_result = push_current_cache_to_server(env_file=env_file, urls_file=urls_file)
-    return {
+    try:
+        upload_result = push_current_cache_to_server(env_file=env_file, urls_file=urls_file)
+    except Exception as exc:
+        result = {
+            "status": "partial",
+            "message": "本地自动采集完成，但上传服务器失败",
+            "project_count": len(project_results),
+            "projects": project_results,
+            "upload_error": str(exc),
+        }
+        write_local_daily_sync_status(
+            env_file=env_file,
+            state_file_path=state_file_path,
+            payload={
+                **runtime_status,
+                "state": "partial",
+                "message": result["message"],
+                "finished_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+                "current_project": "",
+                "successful_projects": len(project_results),
+                "failed_projects": 0,
+                "upload_state": "error",
+                "upload_message": "上传服务器失败",
+                "last_upload_error": str(exc),
+            },
+        )
+        return result
+
+    finished_at = datetime.now().astimezone().isoformat(timespec="seconds")
+    result = {
         "status": "success",
         "message": "本地自动采集完成，并已上传服务器",
         "project_count": len(project_results),
         "projects": project_results,
         "upload": upload_result,
     }
+    write_local_daily_sync_status(
+        env_file=env_file,
+        state_file_path=state_file_path,
+        payload={
+            **runtime_status,
+            "state": "success",
+            "message": result["message"],
+            "finished_at": finished_at,
+            "last_success_at": finished_at,
+            "current_project": "",
+            "successful_projects": len(project_results),
+            "failed_projects": 0,
+            "upload_state": "success",
+            "upload_message": "自动上传服务器成功",
+            "last_upload_success_at": str(upload_result.get("updated_at") or finished_at),
+            "last_upload_error": "",
+            "last_error": "",
+        },
+    )
+    return result
 
 
 def main(argv: Optional[List[str]] = None) -> int:

@@ -14,6 +14,7 @@ from xhs_feishu_monitor.local_daily_sync import (
     run_local_daily_sync,
     uninstall_local_daily_sync_launchd,
 )
+from xhs_feishu_monitor.local_daily_sync_status import load_local_daily_sync_status
 
 
 SHANGHAI_TZ = timezone(timedelta(hours=8))
@@ -92,34 +93,43 @@ class LocalDailySyncTest(unittest.TestCase):
             },
         }
 
-        with patch(
-            "xhs_feishu_monitor.local_daily_sync.load_settings",
-            return_value=SimpleNamespace(),
-        ), patch(
-            "xhs_feishu_monitor.local_daily_sync.parse_monitored_entries",
-            return_value=[{"project": "默认项目", "url": "u1", "active": True}],
-        ), patch(
-            "xhs_feishu_monitor.local_daily_sync.build_auto_project_schedule",
-            return_value=plan,
-        ), patch(
-            "xhs_feishu_monitor.local_daily_sync._sleep_until"
-        ) as sleep_mock, patch(
-            "xhs_feishu_monitor.local_daily_sync.wait_for_xiaohongshu_login",
-            return_value={"state": "ok", "message": "ok"},
-        ) as wait_mock, patch(
-            "xhs_feishu_monitor.local_daily_sync.login_state_requires_interactive_login",
-            return_value=False,
-        ), patch(
-            "xhs_feishu_monitor.local_daily_sync.collect_profiles_to_local_cache",
-            side_effect=[
-                {"status": "success", "successful_accounts": 1},
-                {"status": "success", "successful_accounts": 2},
-            ],
-        ) as collect_mock, patch(
-            "xhs_feishu_monitor.local_daily_sync.push_current_cache_to_server",
-            return_value={"ok": True, "account_count": 3},
-        ) as push_mock:
-            result = run_local_daily_sync(env_file="/tmp/.env", urls_file="/tmp/urls.txt")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            env_path = Path(temp_dir) / ".env"
+            state_path = Path(temp_dir) / ".state.json"
+            env_path.write_text(f"STATE_FILE={state_path}\n", encoding="utf-8")
+
+            with patch(
+                "xhs_feishu_monitor.local_daily_sync.load_settings",
+                return_value=SimpleNamespace(state_file=str(state_path)),
+            ), patch(
+                "xhs_feishu_monitor.local_daily_sync.parse_monitored_entries",
+                return_value=[{"project": "默认项目", "url": "u1", "active": True}],
+            ), patch(
+                "xhs_feishu_monitor.local_daily_sync.build_auto_project_schedule",
+                return_value=plan,
+            ), patch(
+                "xhs_feishu_monitor.local_daily_sync._sleep_until"
+            ) as sleep_mock, patch(
+                "xhs_feishu_monitor.local_daily_sync.wait_for_xiaohongshu_login",
+                return_value={"state": "ok", "message": "ok"},
+            ) as wait_mock, patch(
+                "xhs_feishu_monitor.local_daily_sync.login_state_requires_interactive_login",
+                return_value=False,
+            ), patch(
+                "xhs_feishu_monitor.local_daily_sync.collect_profiles_to_local_cache",
+                side_effect=[
+                    {"status": "success", "successful_accounts": 1},
+                    {"status": "success", "successful_accounts": 2},
+                ],
+            ) as collect_mock, patch(
+                "xhs_feishu_monitor.local_daily_sync.push_current_cache_to_server",
+                return_value={"ok": True, "account_count": 3},
+            ) as push_mock:
+                result = run_local_daily_sync(env_file=str(env_path), urls_file="/tmp/urls.txt")
+            persisted = load_local_daily_sync_status(
+                env_file=str(env_path),
+                state_file_path=str(state_path),
+            )
 
         self.assertEqual(result["status"], "success")
         self.assertEqual(result["project_count"], 2)
@@ -128,7 +138,10 @@ class LocalDailySyncTest(unittest.TestCase):
         self.assertEqual(wait_mock.call_count, 2)
         self.assertEqual(wait_mock.call_args.kwargs["timeout_seconds"], 0)
         self.assertEqual(collect_mock.call_count, 2)
-        push_mock.assert_called_once_with(env_file="/tmp/.env", urls_file="/tmp/urls.txt")
+        push_mock.assert_called_once_with(env_file=str(env_path), urls_file="/tmp/urls.txt")
+        self.assertEqual(persisted["state"], "success")
+        self.assertTrue(persisted["last_success_at"])
+        self.assertEqual(persisted["upload_state"], "success")
 
     def test_run_local_daily_sync_skips_upload_when_any_project_fails(self) -> None:
         now = datetime(2026, 3, 31, 14, 0, tzinfo=SHANGHAI_TZ)
@@ -143,39 +156,50 @@ class LocalDailySyncTest(unittest.TestCase):
             },
         }
 
-        with patch(
-            "xhs_feishu_monitor.local_daily_sync.load_settings",
-            return_value=SimpleNamespace(),
-        ), patch(
-            "xhs_feishu_monitor.local_daily_sync.parse_monitored_entries",
-            return_value=[{"project": "默认项目", "url": "u1", "active": True}],
-        ), patch(
-            "xhs_feishu_monitor.local_daily_sync.build_auto_project_schedule",
-            return_value=plan,
-        ), patch(
-            "xhs_feishu_monitor.local_daily_sync._sleep_until"
-        ), patch(
-            "xhs_feishu_monitor.local_daily_sync.wait_for_xiaohongshu_login",
-            return_value={"state": "ok", "message": "ok"},
-        ), patch(
-            "xhs_feishu_monitor.local_daily_sync.login_state_requires_interactive_login",
-            return_value=False,
-        ), patch(
-            "xhs_feishu_monitor.local_daily_sync.collect_profiles_to_local_cache",
-            side_effect=[
-                {"status": "success", "successful_accounts": 1},
-                RuntimeError("东莞采集失败"),
-            ],
-        ), patch(
-            "xhs_feishu_monitor.local_daily_sync.push_current_cache_to_server"
-        ) as push_mock:
-            result = run_local_daily_sync(env_file="/tmp/.env", urls_file="/tmp/urls.txt")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            env_path = Path(temp_dir) / ".env"
+            state_path = Path(temp_dir) / ".state.json"
+            env_path.write_text(f"STATE_FILE={state_path}\n", encoding="utf-8")
+
+            with patch(
+                "xhs_feishu_monitor.local_daily_sync.load_settings",
+                return_value=SimpleNamespace(state_file=str(state_path)),
+            ), patch(
+                "xhs_feishu_monitor.local_daily_sync.parse_monitored_entries",
+                return_value=[{"project": "默认项目", "url": "u1", "active": True}],
+            ), patch(
+                "xhs_feishu_monitor.local_daily_sync.build_auto_project_schedule",
+                return_value=plan,
+            ), patch(
+                "xhs_feishu_monitor.local_daily_sync._sleep_until"
+            ), patch(
+                "xhs_feishu_monitor.local_daily_sync.wait_for_xiaohongshu_login",
+                return_value={"state": "ok", "message": "ok"},
+            ), patch(
+                "xhs_feishu_monitor.local_daily_sync.login_state_requires_interactive_login",
+                return_value=False,
+            ), patch(
+                "xhs_feishu_monitor.local_daily_sync.collect_profiles_to_local_cache",
+                side_effect=[
+                    {"status": "success", "successful_accounts": 1},
+                    RuntimeError("东莞采集失败"),
+                ],
+            ), patch(
+                "xhs_feishu_monitor.local_daily_sync.push_current_cache_to_server"
+            ) as push_mock:
+                result = run_local_daily_sync(env_file=str(env_path), urls_file="/tmp/urls.txt")
+            persisted = load_local_daily_sync_status(
+                env_file=str(env_path),
+                state_file_path=str(state_path),
+            )
 
         self.assertEqual(result["status"], "partial")
         self.assertEqual(result["successful_projects"], 1)
         self.assertEqual(result["failed_projects"], 1)
         self.assertIn("东莞采集失败", result["failures"][0]["error"])
         push_mock.assert_not_called()
+        self.assertEqual(persisted["state"], "partial")
+        self.assertEqual(persisted["upload_state"], "skipped")
 
 
 if __name__ == "__main__":
