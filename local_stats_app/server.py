@@ -1746,6 +1746,7 @@ def build_sync_progress(
 ) -> Dict[str, Any]:
     safe_total = max(1, int(total or 0))
     safe_current = max(0, min(int(current or 0), safe_total))
+    normalized_status = str(status or "").strip().lower()
     phase_label = "准备中"
     overall_percent = 0
     detail_text = "准备开始同步"
@@ -1756,9 +1757,15 @@ def build_sync_progress(
         detail_text = status or "检测到小红书未登录，已弹出网页登录窗口，完成登录后会自动继续采集。"
     elif phase == "collect":
         phase_label = "抓取账号数据"
-        phase_percent = round((safe_current / safe_total) * 100)
-        overall_percent = round((safe_current / safe_total) * 50)
-        detail_text = f"正在抓取账号 {safe_current}/{safe_total}"
+        if normalized_status == "running" and safe_current > 0:
+            effective_current = max(0.0, safe_current - 0.5)
+            phase_percent = round((effective_current / safe_total) * 100)
+            overall_percent = round((effective_current / safe_total) * 50)
+            detail_text = f"正在抓取第 {safe_current}/{safe_total} 个账号"
+        else:
+            phase_percent = round((safe_current / safe_total) * 100)
+            overall_percent = round((safe_current / safe_total) * 50)
+            detail_text = f"正在抓取账号 {safe_current}/{safe_total}"
     elif phase == "sync":
         phase_label = "写入飞书"
         phase_percent = round((safe_current / safe_total) * 100)
@@ -1771,7 +1778,7 @@ def build_sync_progress(
         detail_text += f" · {account}"
     if works:
         detail_text += f" · {works} 条作品"
-    if status and status != detail_text:
+    if status and status != detail_text and normalized_status not in {"running", "success", "failed"}:
         detail_text += f" · {status}"
 
     timing = build_progress_timing(started_at=started_at, overall_percent=overall_percent, now=now)

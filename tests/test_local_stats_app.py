@@ -1988,6 +1988,20 @@ class LocalStatsAppTest(unittest.TestCase):
         self.assertEqual(progress["detail_text"], "检测到小红书未登录，已弹出网页登录窗口，完成登录后会自动继续采集。")
         self.assertEqual(progress["elapsed_text"], "1分")
 
+    def test_build_sync_progress_supports_collect_running_phase(self) -> None:
+        progress = build_sync_progress(
+            phase="collect",
+            current=1,
+            total=10,
+            account="项目A",
+            status="running",
+            started_at="2026-03-31T15:40:00+08:00",
+            now=datetime.fromisoformat("2026-03-31T15:40:30+08:00"),
+        )
+        self.assertEqual(progress["phase_label"], "抓取账号数据")
+        self.assertEqual(progress["detail_text"], "正在抓取第 1/10 个账号 · 项目A")
+        self.assertEqual(progress["overall_percent"], 2)
+
 
 if __name__ == "__main__":
     unittest.main()

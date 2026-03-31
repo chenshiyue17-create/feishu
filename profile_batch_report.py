@@ -415,6 +415,15 @@ def collect_profile_reports_with_progress(
         for group_index, group in enumerate(project_batches):
             for entry in group:
                 url = entry["url"]
+                _emit_collect_started(
+                    progress_callback=progress_callback,
+                    current=current + 1,
+                    total=total,
+                    url=url,
+                    project=str(entry.get("project") or "").strip(),
+                    success_count=success_count,
+                    failed_count=failed_count,
+                )
                 item = _attach_project_to_item(
                     _collect_single_profile_report_with_throttle(url=url, settings=runtime_settings, throttle=throttle),
                     project=str(entry.get("project") or "").strip(),
@@ -448,6 +457,15 @@ def collect_profile_reports_with_progress(
                 _sleep_between_project_batches(project_cooldown_seconds=project_cooldown_seconds)
         for retry_indexes in (sorted(normal_retry_indexes), sorted(slow_retry_indexes)):
             for index in retry_indexes:
+                _emit_collect_started(
+                    progress_callback=progress_callback,
+                    current=current + 1,
+                    total=total,
+                    url=ordered_urls[index],
+                    project=url_to_project.get(ordered_urls[index], ""),
+                    success_count=success_count,
+                    failed_count=failed_count,
+                )
                 retried = _attach_project_to_item(
                     _retry_failed_item_if_needed(
                         item=indexed_results[index],
@@ -794,6 +812,39 @@ def _emit_collect_progress(
             ),
             "works": len(item.get("works") or []),
             "error": str(item.get("error") or ""),
+            "success_count": max(0, int(success_count or 0)),
+            "failed_count": max(0, int(failed_count or 0)),
+        }
+    )
+
+
+def _emit_collect_started(
+    *,
+    progress_callback: Optional[Callable[[Dict[str, Any]], None]],
+    current: int,
+    total: int,
+    url: str,
+    project: str,
+    success_count: int,
+    failed_count: int,
+) -> None:
+    if progress_callback is None:
+        return
+    progress_callback(
+        {
+            "phase": "collect",
+            "current": current,
+            "total": total,
+            "status": "running",
+            "url": str(url or ""),
+            "profile_url": str(url or ""),
+            "account": str(project or url or ""),
+            "account_id": "",
+            "fans_text": "",
+            "interaction_text": "",
+            "works_text": "",
+            "works": 0,
+            "error": "",
             "success_count": max(0, int(success_count or 0)),
             "failed_count": max(0, int(failed_count or 0)),
         }
