@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import time
 import unittest
@@ -219,6 +220,78 @@ class LocalStatsAppTest(unittest.TestCase):
             self.assertTrue(Path(result["metadata_path"]).exists())
             self.assertEqual(result["account_count"], 1)
 
+    def test_save_uploaded_server_cache_partial_merge_preserves_other_accounts(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            env_path = Path(temp_dir) / ".env"
+            urls_path = Path(temp_dir) / "urls.txt"
+            cache_dir = Path(temp_dir) / "cache"
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            env_path.write_text(
+                f"PROJECT_CACHE_DIR={cache_dir}\nSTATE_FILE={Path(temp_dir) / '.state.json'}\n",
+                encoding="utf-8",
+            )
+            urls_path.write_text(
+                "默认项目\thttps://www.xiaohongshu.com/user/profile/u1\n"
+                "默认项目\thttps://www.xiaohongshu.com/user/profile/u2\n",
+                encoding="utf-8",
+            )
+            (cache_dir / "dashboard_all.json").write_text(
+                json.dumps(
+                    {
+                        "accounts": [
+                            {"account_id": "u1", "account": "账号A", "likes": 10},
+                            {"account_id": "u2", "account": "账号B", "likes": 20},
+                        ],
+                        "rankings": {
+                            "单条点赞排行": [
+                                {"account_id": "u1", "metric": 10, "title": "A"},
+                                {"account_id": "u2", "metric": 20, "title": "B"},
+                            ]
+                        },
+                        "account_series": {"u1": [{"date": "2026-03-31", "likes": 10}], "u2": [{"date": "2026-03-31", "likes": 20}]},
+                        "alerts": [],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            save_uploaded_server_cache(
+                env_file=str(env_path),
+                urls_file=str(urls_path),
+                payload={
+                    "merge_mode": "partial",
+                    "account_ids": ["u1"],
+                    "dashboard_payload": {
+                        "accounts": [{"account_id": "u1", "account": "账号A", "likes": 99}],
+                        "rankings": {"单条点赞排行": [{"account_id": "u1", "metric": 99, "title": "A-new"}]},
+                        "account_series": {"u1": [{"date": "2026-03-31", "likes": 99}]},
+                        "alerts": [],
+                    },
+                    "monitored_entries": [
+                        {
+                            "url": "https://www.xiaohongshu.com/user/profile/u1",
+                            "active": True,
+                            "project": "默认项目",
+                        }
+                    ],
+                    "monitored_metadata": {
+                        "https://www.xiaohongshu.com/user/profile/u1": {
+                            "account": "账号A",
+                            "account_id": "u1",
+                            "fetch_state": "ok",
+                        }
+                    },
+                },
+            )
+
+            payload = json.loads((cache_dir / "dashboard_all.json").read_text(encoding="utf-8"))
+            accounts = {item["account_id"]: item for item in payload["accounts"]}
+            self.assertEqual(accounts["u1"]["likes"], 99)
+            self.assertEqual(accounts["u2"]["likes"], 20)
+            ranking_rows = payload["rankings"]["单条点赞排行"]
+            self.assertTrue(any(str(item.get("account_id")) == "u2" for item in ranking_rows))
+
     def test_push_current_cache_to_server_uses_configured_target(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             env_path = Path(temp_dir) / ".env"
@@ -235,6 +308,18 @@ class LocalStatsAppTest(unittest.TestCase):
                 result = push_current_cache_to_server(env_file=str(env_path), urls_file=str(urls_path))
         self.assertTrue(result["ok"])
         push_mock.assert_called_once()
+
+    def test_push_current_cache_to_server_accepts_account_filter(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            env_path = Path(temp_dir) / ".env"
+            urls_path = Path(temp_dir) / "urls.txt"
+            env_path.write_text("SERVER_CACHE_PUSH_URL=http://127.0.0.1\n", encoding="utf-8")
+            with patch(
+                "xhs_feishu_monitor.local_stats_app.server.push_local_cache_to_server",
+                return_value={"ok": True, "account_count": 1},
+            ) as push_mock:
+                push_current_cache_to_server(env_file=str(env_path), urls_file=str(urls_path), account_ids=["u1"])
+        self.assertEqual(push_mock.call_args.kwargs["account_ids"], ["u1"])
 
     def test_build_daily_series(self) -> None:
         rows = [
@@ -832,10 +917,11 @@ class LocalStatsAppTest(unittest.TestCase):
             )
             captured = {}
 
-            def fake_request_sync_locked(*, reason, urls=None, project=""):
+            def fake_request_sync_locked(*, reason, urls=None, project="", mode="manual"):
                 captured["reason"] = reason
                 captured["urls"] = urls or []
                 captured["project"] = project
+                captured["mode"] = mode
                 return True
 
             with patch.object(store, "_request_sync_locked", side_effect=fake_request_sync_locked):
@@ -843,6 +929,7 @@ class LocalStatsAppTest(unittest.TestCase):
             self.assertTrue(result["ok"])
             self.assertEqual(captured["urls"], ["https://www.xiaohongshu.com/user/profile/u1"])
             self.assertEqual(captured["project"], "项目A")
+            self.assertEqual(captured["mode"], "manual")
             self.assertIn("项目「项目A」", captured["reason"])
 
     def test_retry_account_triggers_single_account_sync(self) -> None:
@@ -990,9 +1077,9 @@ class LocalStatsAppTest(unittest.TestCase):
                 dashboard_store=DashboardStore(env_file=f"{temp_dir}/.env"),
             )
             now = datetime.fromisoformat("2026-03-31T14:05:00+08:00")
-            store._last_auto_server_push_attempt_at = datetime.fromisoformat("2026-03-31T14:02:00+08:00").timestamp()
+            store._auto_project_last_attempt_at["项目A"] = datetime.fromisoformat("2026-03-31T14:02:00+08:00").timestamp()
             next_run = store._compute_next_auto_server_push_locked(now)
-        self.assertEqual(next_run.isoformat(timespec="seconds"), "2026-03-31T14:17:00+08:00")
+        self.assertEqual(next_run.isoformat(timespec="seconds"), "2026-03-31T14:12:00+08:00")
 
     def test_status_snapshot_exposes_schedule_plan(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

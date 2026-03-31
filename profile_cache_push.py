@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from .config import load_settings
-from .local_stats_app.monitored_accounts import load_monitored_metadata, parse_monitored_entries
+from .local_stats_app.monitored_accounts import extract_profile_user_id, load_monitored_metadata, parse_monitored_entries
 from .project_cache import (
     load_cached_dashboard_payload,
     rebuild_dashboard_cache_from_project_dirs,
@@ -159,18 +159,86 @@ def _load_dashboard_payload(env_file: str, urls_file: str) -> dict:
     raise ValueError("本地暂无可上传的缓存，请先完成一次采集")
 
 
-def push_local_cache_to_server(*, env_file: str, urls_file: str, server_url: str, token: str = "") -> dict:
+def _filter_history_rankings(history_payload: dict, account_ids: set[str]) -> dict:
+    if not isinstance(history_payload, dict) or not account_ids:
+        return history_payload if isinstance(history_payload, dict) else {}
+    filtered: dict = {}
+    for project_name, project_history in history_payload.items():
+        if not isinstance(project_history, dict):
+            continue
+        date_rows: dict = {}
+        for date_text, snapshot in project_history.items():
+            if not isinstance(snapshot, dict):
+                continue
+            date_rows[date_text] = {
+                **snapshot,
+                "likes": [dict(item) for item in (snapshot.get("likes") or []) if str(item.get("account_id") or "").strip() in account_ids],
+                "comments": [dict(item) for item in (snapshot.get("comments") or []) if str(item.get("account_id") or "").strip() in account_ids],
+                "growth": [dict(item) for item in (snapshot.get("growth") or []) if str(item.get("account_id") or "").strip() in account_ids],
+            }
+        filtered[project_name] = date_rows
+    return filtered
+
+
+def _build_upload_payload(*, env_file: str, urls_file: str, account_ids: Optional[List[str]] = None) -> dict:
     dashboard_payload = dict(_load_dashboard_payload(env_file, urls_file))
     monitored_entries = parse_monitored_entries(urls_file)
     monitored_metadata = load_monitored_metadata(urls_file)
-    dashboard_payload["history_rankings"] = load_project_snapshot_history()
+    normalized_account_ids = {
+        str(item or "").strip()
+        for item in (account_ids or [])
+        if str(item or "").strip()
+    }
+    if normalized_account_ids:
+        dashboard_payload["accounts"] = [
+            dict(item)
+            for item in (dashboard_payload.get("accounts") or [])
+            if str(item.get("account_id") or "").strip() in normalized_account_ids
+        ]
+        dashboard_payload["account_series"] = {
+            account_id: [dict(point) for point in points]
+            for account_id, points in (dashboard_payload.get("account_series") or {}).items()
+            if str(account_id or "").strip() in normalized_account_ids
+        }
+        dashboard_payload["rankings"] = {
+            rank_type: [
+                dict(item)
+                for item in (rows or [])
+                if str(item.get("account_id") or "").strip() in normalized_account_ids
+            ]
+            for rank_type, rows in (dashboard_payload.get("rankings") or {}).items()
+        }
+        dashboard_payload["alerts"] = [
+            dict(item)
+            for item in (dashboard_payload.get("alerts") or [])
+            if str(item.get("account_id") or "").strip() in normalized_account_ids
+        ]
+        monitored_entries = [
+            dict(item)
+            for item in monitored_entries
+            if str(item.get("account_id") or extract_profile_user_id(str(item.get("url") or "")) or "").strip() in normalized_account_ids
+        ]
+        monitored_metadata = {
+            url: dict(meta)
+            for url, meta in (monitored_metadata or {}).items()
+            if str((meta or {}).get("account_id") or extract_profile_user_id(url) or "").strip() in normalized_account_ids
+        }
+    history_payload = load_project_snapshot_history()
+    dashboard_payload["history_rankings"] = _filter_history_rankings(history_payload, normalized_account_ids)
+    return {
+        "dashboard_payload": dashboard_payload,
+        "monitored_entries": monitored_entries,
+        "monitored_metadata": monitored_metadata,
+        "merge_mode": "partial" if normalized_account_ids else "replace",
+        "account_ids": sorted(normalized_account_ids),
+    }
+
+
+def push_local_cache_to_server(*, env_file: str, urls_file: str, server_url: str, token: str = "", account_ids: Optional[List[str]] = None) -> dict:
+    payload = _build_upload_payload(env_file=env_file, urls_file=urls_file, account_ids=account_ids)
 
     request_body = json.dumps(
-        {
-            "dashboard_payload": dashboard_payload,
-            "monitored_entries": monitored_entries,
-            "monitored_metadata": monitored_metadata,
-        },
+        payload,
         ensure_ascii=False,
     ).encode("utf-8")
     compressed_body = gzip.compress(request_body)
@@ -195,6 +263,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--urls-file", default="xhs_feishu_monitor/input/robam_multi_profile_urls.txt")
     parser.add_argument("--server-url", required=True, help="服务器基础地址，例如 http://47.87.68.74")
     parser.add_argument("--token", default="", help="可选上传令牌，对应 SERVER_CACHE_UPLOAD_TOKEN")
+    parser.add_argument("--account-id", action="append", default=[], help="仅上传指定账号，可重复传多个")
     args = parser.parse_args(argv)
 
     payload = push_local_cache_to_server(
@@ -202,6 +271,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         urls_file=args.urls_file,
         server_url=args.server_url,
         token=args.token,
+        account_ids=list(args.account_id or []),
     )
     print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 0

@@ -188,6 +188,7 @@ async function saveSystemConfig() {
 async function pushServerCache() {
   const config = state.systemConfig?.config || {};
   const cacheSummary = getLocalCacheSummary();
+  const activeAccount = getActiveAccount();
   if (!String(config.SERVER_CACHE_PUSH_URL || "").trim()) {
     throw new Error("请先填写服务器地址，再推送");
   }
@@ -197,7 +198,7 @@ async function pushServerCache() {
   const response = await fetch("/api/server-cache-push", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({}),
+    body: JSON.stringify(activeAccount?.account_id ? { account_id: activeAccount.account_id } : {}),
   });
   const payload = await response.json();
   if (!response.ok) {
@@ -211,7 +212,9 @@ async function pushServerCache() {
   });
   await loadMonitoring();
   renderSystemConfig();
-  document.getElementById("systemConfigResult").textContent = `已推送到服务器 · ${payload.account_count || cacheSummary.accountCount} 个账号 · 点赞榜 ${formatNumber(cacheSummary.likeCount)} 条 · 评论榜 ${formatNumber(cacheSummary.commentCount)} 条`;
+  document.getElementById("systemConfigResult").textContent = activeAccount?.account_id
+    ? `已把当前账号推送到服务器 · ${activeAccount.account || activeAccount.account_id}`
+    : `已推送到服务器 · ${payload.account_count || cacheSummary.accountCount} 个账号 · 点赞榜 ${formatNumber(cacheSummary.likeCount)} 条 · 评论榜 ${formatNumber(cacheSummary.commentCount)} 条`;
 }
 
 function formatScheduleWindow(plan = {}) {

@@ -115,6 +115,7 @@ DASHBOARD_SERIES_META = {
 AUTO_SERVER_CACHE_PUSH_DAILY_AT = "14:00"
 AUTO_SERVER_CACHE_PUSH_RETRY_SECONDS = 15 * 60
 AUTO_SERVER_CACHE_PUSH_POLL_SECONDS = 20
+AUTO_PROJECT_SYNC_RETRY_SECONDS = 10 * 60
 
 
 def iso_now() -> str:
@@ -1824,6 +1825,9 @@ class MonitoringSyncStore:
         self._current_sync_project = ""
         self._pending_sync_urls: List[str] = []
         self._manual_last_requested_at = 0.0
+        self._current_sync_mode = ""
+        self._auto_project_success_dates: Dict[str, str] = {}
+        self._auto_project_last_attempt_at: Dict[str, float] = {}
         self._profile_lookup_cache_rows: List[Dict[str, Any]] = []
         self._profile_lookup_cache_error = ""
         self._profile_lookup_cache_loaded_at = 0.0
@@ -1843,7 +1847,7 @@ class MonitoringSyncStore:
         self._last_auto_server_push_attempt_at = 0.0
         self._server_push_status: Dict[str, Any] = {
             "state": "idle",
-            "message": "每天 14:00 自动上传服务器缓存",
+            "message": "每天 14:00-15:00 自动全量采集，成功后自动上传服务器",
             "started_at": "",
             "finished_at": "",
             "last_success_at": "",
@@ -1854,7 +1858,7 @@ class MonitoringSyncStore:
         }
         with self._lock:
             self._update_server_push_schedule_locked()
-        threading.Thread(target=self._auto_server_cache_push_loop, daemon=True).start()
+        threading.Thread(target=self._auto_collection_loop, daemon=True).start()
 
     def get_payload(self) -> Dict[str, Any]:
         with self._lock:
@@ -1976,16 +1980,34 @@ class MonitoringSyncStore:
 
     def _compute_next_auto_server_push_locked(self, now: Optional[datetime] = None) -> datetime:
         current = now or datetime.now().astimezone()
-        scheduled_today = self._daily_clock_datetime(current, AUTO_SERVER_CACHE_PUSH_DAILY_AT)
+        settings = load_settings(self.env_file)
+        entries = parse_monitored_entries(self.urls_file)
+        plan = self._build_auto_project_plan(settings=settings, entries=entries, now=current)
+        if not plan:
+            return self._daily_clock_datetime(current + timedelta(days=1), AUTO_SERVER_CACHE_PUSH_DAILY_AT)
         today_text = current.date().isoformat()
-        if current < scheduled_today:
-            return scheduled_today
+        pending_runs: List[datetime] = []
+        for project_name, payload in plan.items():
+            success_date = self._auto_project_success_dates.get(project_name, "")
+            if success_date == today_text:
+                continue
+            scheduled_at: datetime = payload["scheduled_at"]
+            last_attempt_at = float(self._auto_project_last_attempt_at.get(project_name) or 0.0)
+            if current < scheduled_at:
+                pending_runs.append(scheduled_at)
+                continue
+            if last_attempt_at > 0:
+                retry_at = datetime.fromtimestamp(last_attempt_at, tz=current.tzinfo) + timedelta(seconds=AUTO_PROJECT_SYNC_RETRY_SECONDS)
+                pending_runs.append(max(current, retry_at))
+            else:
+                pending_runs.append(current)
+        if pending_runs:
+            return min(pending_runs)
         if self._last_auto_server_push_success_date == today_text:
-            return scheduled_today + timedelta(days=1)
+            return self._daily_clock_datetime(current + timedelta(days=1), AUTO_SERVER_CACHE_PUSH_DAILY_AT)
         if self._last_auto_server_push_attempt_at > 0:
             retry_at = datetime.fromtimestamp(self._last_auto_server_push_attempt_at, tz=current.tzinfo) + timedelta(seconds=AUTO_SERVER_CACHE_PUSH_RETRY_SECONDS)
-            if retry_at > current:
-                return retry_at
+            return max(current, retry_at)
         return current
 
     def _update_server_push_schedule_locked(self, now: Optional[datetime] = None) -> None:
@@ -1993,8 +2015,79 @@ class MonitoringSyncStore:
         self._server_push_status["daily_at"] = AUTO_SERVER_CACHE_PUSH_DAILY_AT
         self._server_push_status["next_auto_run_at"] = next_run.isoformat(timespec="seconds")
 
-    def push_server_cache(self, *, auto: bool = False) -> Dict[str, Any]:
+    @staticmethod
+    def _build_project_url_map(entries: List[Dict[str, Any]]) -> Dict[str, List[str]]:
+        grouped: Dict[str, List[str]] = {}
+        for entry in entries:
+            if not entry.get("active"):
+                continue
+            normalized = normalize_project_name(entry.get("project"))
+            grouped.setdefault(normalized, []).append(str(entry.get("url") or "").strip())
+        return {key: [url for url in urls if url] for key, urls in grouped.items() if any(urls)}
+
+    def _build_auto_project_plan(self, *, settings, entries: List[Dict[str, Any]], now: Optional[datetime] = None) -> Dict[str, Dict[str, Any]]:
+        current = now or datetime.now().astimezone()
+        if not bool(getattr(settings, "xhs_spread_schedule_enabled", True)):
+            return {}
+        project_url_map = self._build_project_url_map(entries)
+        if not project_url_map:
+            return {}
+        start_minutes = _parse_clock_minutes(str(getattr(settings, "xhs_batch_window_start", "14:00") or "14:00"), "14:00")
+        end_minutes = _parse_clock_minutes(str(getattr(settings, "xhs_batch_window_end", "15:00") or "15:00"), "15:00")
+        start_at = current.replace(hour=start_minutes // 60, minute=start_minutes % 60, second=0, microsecond=0)
+        if end_minutes <= start_minutes:
+            end_at = (start_at + timedelta(days=1)).replace(hour=end_minutes // 60, minute=end_minutes % 60, second=0, microsecond=0)
+        else:
+            end_at = current.replace(hour=end_minutes // 60, minute=end_minutes % 60, second=0, microsecond=0)
+        duration_seconds = max(60, int((end_at - start_at).total_seconds()))
+        project_names = sorted(project_url_map)
+        slot_gap_seconds = max(5, duration_seconds // max(1, len(project_names)))
+        plan: Dict[str, Dict[str, Any]] = {}
+        for index, project_name in enumerate(project_names):
+            plan[project_name] = {
+                "urls": list(project_url_map.get(project_name) or []),
+                "scheduled_at": start_at + timedelta(seconds=index * slot_gap_seconds),
+                "slot_gap_seconds": slot_gap_seconds,
+            }
+        return plan
+
+    def _pick_due_auto_project_locked(self, now: datetime) -> tuple[str, List[str]]:
+        settings = load_settings(self.env_file)
+        entries = parse_monitored_entries(self.urls_file)
+        plan = self._build_auto_project_plan(settings=settings, entries=entries, now=now)
+        self._update_server_push_schedule_locked(now)
+        if not plan:
+            self._server_push_status["message"] = "当前没有可自动采集的项目，采集成功后仍会自动上传"
+            return "", []
+        today_text = now.date().isoformat()
+        for project_name, payload in plan.items():
+            if self._auto_project_success_dates.get(project_name, "") == today_text:
+                continue
+            scheduled_at: datetime = payload["scheduled_at"]
+            if now < scheduled_at:
+                continue
+            last_attempt_at = float(self._auto_project_last_attempt_at.get(project_name) or 0.0)
+            if last_attempt_at and now.timestamp() - last_attempt_at < AUTO_PROJECT_SYNC_RETRY_SECONDS:
+                continue
+            self._auto_project_last_attempt_at[project_name] = now.timestamp()
+            self._server_push_status.update(
+                {
+                    "state": "waiting_sync",
+                    "message": f"项目「{project_name}」自动采集中，完成后再上传服务器",
+                    "mode": "auto",
+                    "last_error": "",
+                }
+            )
+            return project_name, list(payload["urls"])
+        return "", []
+
+    def push_server_cache(self, *, auto: bool = False, account_ids: Optional[List[str]] = None) -> Dict[str, Any]:
         started_at = iso_now()
+        normalized_account_ids = [
+            str(item or "").strip()
+            for item in (account_ids or [])
+            if str(item or "").strip()
+        ]
         with self._lock:
             if self._server_push_running:
                 if auto:
@@ -2004,7 +2097,13 @@ class MonitoringSyncStore:
             self._server_push_status.update(
                 {
                     "state": "running",
-                    "message": "自动上传到服务器中" if auto else "手动上传到服务器中",
+                    "message": (
+                        "自动采集已完成，正在上传到服务器"
+                        if auto
+                        else f"正在上传 {len(normalized_account_ids)} 个账号到服务器"
+                        if normalized_account_ids
+                        else "手动上传到服务器中"
+                    ),
                     "started_at": started_at,
                     "finished_at": "",
                     "last_error": "",
@@ -2016,13 +2115,23 @@ class MonitoringSyncStore:
                 self._last_auto_server_push_attempt_at = time.time()
             self._update_server_push_schedule_locked()
         try:
-            result = push_current_cache_to_server(env_file=self.env_file, urls_file=self.urls_file)
+            result = push_current_cache_to_server(
+                env_file=self.env_file,
+                urls_file=self.urls_file,
+                account_ids=normalized_account_ids,
+            )
             finished_at = iso_now()
             with self._lock:
                 self._server_push_status.update(
                     {
                         "state": "success",
-                        "message": "服务器缓存自动上传完成" if auto else "服务器缓存手动上传完成",
+                        "message": (
+                            "服务器缓存自动上传完成"
+                            if auto
+                            else f"已把 {len(normalized_account_ids)} 个账号增量上传到服务器"
+                            if normalized_account_ids
+                            else "服务器缓存手动上传完成"
+                        ),
                         "started_at": started_at,
                         "finished_at": finished_at,
                         "last_success_at": finished_at,
@@ -2054,7 +2163,7 @@ class MonitoringSyncStore:
             with self._lock:
                 self._server_push_running = False
 
-    def _auto_server_cache_push_loop(self) -> None:
+    def _auto_collection_loop(self) -> None:
         while True:
             time.sleep(AUTO_SERVER_CACHE_PUSH_POLL_SECONDS)
             try:
@@ -2062,14 +2171,29 @@ class MonitoringSyncStore:
                 server_url = str(getattr(settings, "server_cache_push_url", "") or "").strip()
                 now = datetime.now().astimezone()
                 with self._lock:
-                    self._update_server_push_schedule_locked(now)
-                    next_run_text = str(self._server_push_status.get("next_auto_run_at") or "").strip()
-                    should_run = bool(server_url) and not self._server_push_running and next_run_text and next_run_text <= now.isoformat(timespec="seconds")
-                if should_run:
-                    try:
-                        self.push_server_cache(auto=True)
-                    except Exception:
+                    if not server_url:
+                        self._server_push_status.update(
+                            {
+                                "state": "idle",
+                                "message": "已开启每天 14:00-15:00 自动采集；填写服务器地址后会在采集成功后自动上传",
+                                "mode": "",
+                                "last_error": "",
+                            }
+                        )
+                        self._update_server_push_schedule_locked(now)
                         continue
+                    if self._running:
+                        self._update_server_push_schedule_locked(now)
+                        continue
+                    project_name, urls = self._pick_due_auto_project_locked(now)
+                    if not project_name or not urls:
+                        continue
+                    self._request_sync_locked(
+                        reason=f"按计划自动同步项目「{project_name}」的 {len(urls)} 个账号",
+                        urls=urls,
+                        project=project_name,
+                        mode="auto",
+                    )
             except Exception:
                 continue
 
@@ -2600,7 +2724,7 @@ class MonitoringSyncStore:
                 if normalized_project
                 else f"立即同步 {len(urls)} 个账号"
             )
-            started = self._request_sync_locked(reason=reason, urls=urls, project=normalized_project)
+            started = self._request_sync_locked(reason=reason, urls=urls, project=normalized_project, mode="manual")
             if started:
                 self._manual_last_requested_at = time.time()
             return {
@@ -2616,7 +2740,7 @@ class MonitoringSyncStore:
                 "sync_status": self._status_snapshot_locked(),
             }
 
-    def _request_sync_locked(self, *, reason: str, urls: Optional[List[str]] = None, project: str = "") -> bool:
+    def _request_sync_locked(self, *, reason: str, urls: Optional[List[str]] = None, project: str = "", mode: str = "manual") -> bool:
         if self._running:
             self._pending_resync = True
             self._pending_sync_urls = list(urls or [])
@@ -2627,6 +2751,7 @@ class MonitoringSyncStore:
         self._pending_resync = False
         self._current_sync_urls = list(urls or [])
         self._current_sync_project = str(project or "").strip()
+        self._current_sync_mode = str(mode or "manual").strip() or "manual"
         self._pending_sync_urls = []
         started_at = iso_now()
         if self._current_sync_project:
@@ -2713,6 +2838,7 @@ class MonitoringSyncStore:
     def _sync_loop(self) -> None:
         while True:
             finished_at = iso_now()
+            should_auto_push = False
             try:
                 settings = load_settings(self.env_file)
                 settings.validate_for_sync()
@@ -2855,11 +2981,25 @@ class MonitoringSyncStore:
                     }
                     continue
                 current_project = self._current_sync_project
+                current_mode = self._current_sync_mode
                 self._running = False
                 self._current_sync_urls = []
                 self._current_sync_project = ""
+                self._current_sync_mode = ""
                 self._pending_sync_urls = []
                 self._status = result
+                if current_mode == "auto" and current_project:
+                    today_text = datetime.now().astimezone().date().isoformat()
+                    if result.get("state") == "success":
+                        self._auto_project_success_dates[current_project] = today_text
+                        active_projects = sorted(self._build_project_url_map(parse_monitored_entries(self.urls_file)))
+                        all_collected = bool(active_projects) and all(
+                            self._auto_project_success_dates.get(project_name, "") == today_text
+                            for project_name in active_projects
+                        )
+                        if all_collected and self._last_auto_server_push_success_date != today_text:
+                            should_auto_push = True
+                    self._update_server_push_schedule_locked()
                 if current_project:
                     if result.get("state") == "success":
                         summary = result.get("summary") or {}
@@ -2881,7 +3021,12 @@ class MonitoringSyncStore:
                             finished_at=result.get("finished_at", ""),
                             last_error=result.get("last_error", ""),
                         )
-                break
+            if should_auto_push:
+                try:
+                    self.push_server_cache(auto=True)
+                except Exception:
+                    pass
+            break
 
     def _handle_progress_update(self, payload: Dict[str, Any]) -> None:
         phase = str(payload.get("phase") or "").strip()
@@ -3018,6 +3163,12 @@ def save_uploaded_server_cache(*, env_file: str, urls_file: str, payload: Dict[s
     dashboard_payload = dict(payload.get("dashboard_payload") or {})
     monitored_entries = payload.get("monitored_entries") or []
     monitored_metadata = payload.get("monitored_metadata") or {}
+    merge_mode = str(payload.get("merge_mode") or "replace").strip().lower()
+    partial_account_ids = {
+        str(item or "").strip()
+        for item in (payload.get("account_ids") or [])
+        if str(item or "").strip()
+    }
     if not isinstance(dashboard_payload, dict) or not dashboard_payload:
         raise ValueError("dashboard_payload 不能为空")
     if monitored_entries and not isinstance(monitored_entries, list):
@@ -3028,14 +3179,51 @@ def save_uploaded_server_cache(*, env_file: str, urls_file: str, payload: Dict[s
     settings = load_settings(env_file)
     cache_dir = resolve_project_cache_dir(settings)
     cache_dir.mkdir(parents=True, exist_ok=True)
+    dashboard_payload = _merge_uploaded_dashboard_payload(
+        settings=settings,
+        incoming_payload=dashboard_payload,
+        account_ids=partial_account_ids,
+        merge_mode=merge_mode,
+    )
     dashboard_payload["server_received_at"] = iso_now()
     dashboard_path = cache_dir / "dashboard_all.json"
     dashboard_path.write_text(json.dumps(dashboard_payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
     if monitored_entries:
-        write_monitored_entries(urls_file, monitored_entries)
+        if merge_mode == "partial" and partial_account_ids:
+            existing_entries = parse_monitored_entries(urls_file)
+            merged_entries = {
+                str(item.get("url") or "").strip(): dict(item)
+                for item in existing_entries
+                if str(item.get("url") or "").strip()
+            }
+            for item in monitored_entries:
+                normalized_url = normalize_profile_url(str((item or {}).get("url") or ""))
+                if not normalized_url:
+                    continue
+                merged_entries[normalized_url] = {
+                    "url": normalized_url,
+                    "active": bool((item or {}).get("active", True)),
+                    "project": normalize_project_name((item or {}).get("project")),
+                }
+            write_monitored_entries(urls_file, list(merged_entries.values()))
+        else:
+            write_monitored_entries(urls_file, monitored_entries)
     if monitored_metadata:
-        write_monitored_metadata(urls_file, monitored_metadata)
+        if merge_mode == "partial" and partial_account_ids:
+            update_monitored_metadata(
+                urls_file,
+                [
+                    {
+                        "url": url,
+                        **dict(meta or {}),
+                    }
+                    for url, meta in monitored_metadata.items()
+                    if isinstance(meta, dict)
+                ],
+            )
+        else:
+            write_monitored_metadata(urls_file, monitored_metadata)
 
     return {
         "ok": True,
@@ -3048,7 +3236,7 @@ def save_uploaded_server_cache(*, env_file: str, urls_file: str, payload: Dict[s
     }
 
 
-def push_current_cache_to_server(*, env_file: str, urls_file: str) -> Dict[str, Any]:
+def push_current_cache_to_server(*, env_file: str, urls_file: str, account_ids: Optional[List[str]] = None) -> Dict[str, Any]:
     settings = load_settings(env_file)
     server_url = str(getattr(settings, "server_cache_push_url", "") or "").strip()
     if not server_url:
@@ -3059,6 +3247,7 @@ def push_current_cache_to_server(*, env_file: str, urls_file: str) -> Dict[str, 
         urls_file=urls_file,
         server_url=server_url,
         token=token,
+        account_ids=account_ids,
     )
     return {"ok": True, **result}
 
@@ -3095,6 +3284,122 @@ def fetch_table_rows(
         return []
     client = FeishuBitableClient(replace(settings, feishu_table_id=table_id))
     return [record.get("fields") or {} for record in client.list_records(page_size=500)]
+
+
+def _merge_history_rankings(
+    *,
+    existing_history: Dict[str, Any],
+    incoming_history: Dict[str, Any],
+    account_ids: set[str],
+) -> Dict[str, Any]:
+    if not account_ids:
+        return copy.deepcopy(incoming_history or existing_history or {})
+    merged = copy.deepcopy(existing_history or {})
+    for project_name, raw_project_history in (incoming_history or {}).items():
+        if not isinstance(raw_project_history, dict):
+            continue
+        target_project_history = copy.deepcopy(merged.get(project_name) or {})
+        for date_text, snapshot in raw_project_history.items():
+            if not isinstance(snapshot, dict):
+                continue
+            existing_snapshot = copy.deepcopy(target_project_history.get(date_text) or {})
+            merged_snapshot = copy.deepcopy(existing_snapshot)
+            for rank_key in ("likes", "comments", "growth"):
+                incoming_rows = [dict(item) for item in (snapshot.get(rank_key) or [])]
+                existing_rows = [dict(item) for item in (existing_snapshot.get(rank_key) or [])]
+                preserved = [
+                    item for item in existing_rows
+                    if str(item.get("account_id") or "").strip() not in account_ids
+                ]
+                merged_snapshot[rank_key] = preserved + incoming_rows
+            for key, value in snapshot.items():
+                if key not in {"likes", "comments", "growth"}:
+                    merged_snapshot[key] = copy.deepcopy(value)
+            target_project_history[date_text] = merged_snapshot
+        merged[project_name] = target_project_history
+    return merged
+
+
+def _merge_uploaded_dashboard_payload(*, settings, incoming_payload: Dict[str, Any], account_ids: set[str], merge_mode: str) -> Dict[str, Any]:
+    normalized_mode = str(merge_mode or "replace").strip().lower()
+    if normalized_mode != "partial" or not account_ids:
+        return dict(incoming_payload)
+    existing_payload = load_cached_dashboard_payload(settings)
+    if not existing_payload:
+        return dict(incoming_payload)
+
+    existing_accounts = {
+        str(item.get("account_id") or "").strip(): dict(item)
+        for item in (existing_payload.get("accounts") or [])
+        if str(item.get("account_id") or "").strip()
+    }
+    for item in (incoming_payload.get("accounts") or []):
+        account_id = str(item.get("account_id") or "").strip()
+        if not account_id:
+            continue
+        existing_accounts[account_id] = dict(item)
+    merged_account_series = {
+        str(account_id or "").strip(): [dict(point) for point in points]
+        for account_id, points in (existing_payload.get("account_series") or {}).items()
+        if str(account_id or "").strip()
+    }
+    for account_id, points in (incoming_payload.get("account_series") or {}).items():
+        normalized_account_id = str(account_id or "").strip()
+        if not normalized_account_id:
+            continue
+        merged_account_series[normalized_account_id] = [dict(point) for point in points]
+    merged_rankings = copy.deepcopy(existing_payload.get("rankings") or {})
+    for rank_type, rows in (incoming_payload.get("rankings") or {}).items():
+        existing_rows = [dict(item) for item in (merged_rankings.get(rank_type) or [])]
+        preserved_rows = [
+            item for item in existing_rows
+            if str(item.get("account_id") or "").strip() not in account_ids
+        ]
+        incoming_rows = [dict(item) for item in (rows or [])]
+        combined_rows = preserved_rows + incoming_rows
+        combined_rows.sort(key=lambda item: ranking_sort_key(rank_type, item), reverse=True)
+        merged_rankings[rank_type] = combined_rows
+    existing_alerts = [dict(item) for item in (existing_payload.get("alerts") or [])]
+    preserved_alerts = [
+        item for item in existing_alerts
+        if str(item.get("account_id") or "").strip() not in account_ids
+    ]
+    incoming_alerts = [dict(item) for item in (incoming_payload.get("alerts") or [])]
+    merged_alerts = preserved_alerts + incoming_alerts
+    merged_payload = {
+        **copy.deepcopy(existing_payload),
+        **copy.deepcopy(incoming_payload),
+        "accounts": list(existing_accounts.values()),
+        "account_series": merged_account_series,
+        "rankings": merged_rankings,
+        "alerts": merged_alerts,
+    }
+    merged_payload["history_rankings"] = _merge_history_rankings(
+        existing_history=existing_payload.get("history_rankings") or {},
+        incoming_history=incoming_payload.get("history_rankings") or {},
+        account_ids=account_ids,
+    )
+    merged_payload["portal"] = build_portal_from_accounts_and_rankings(
+        accounts=merged_payload["accounts"],
+        rankings=merged_rankings,
+        base_portal=merged_payload.get("portal") or {},
+        updated_at=str(merged_payload.get("updated_at") or incoming_payload.get("updated_at") or existing_payload.get("updated_at") or ""),
+    )
+    merged_payload["series"] = rebuild_daily_series_from_account_series(merged_account_series)
+    merged_payload["generated_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
+    merged_payload["latest_date"] = str(
+        incoming_payload.get("latest_date")
+        or existing_payload.get("latest_date")
+        or ""
+    ).strip()
+    merged_payload["updated_at"] = str(
+        incoming_payload.get("updated_at")
+        or incoming_payload.get("generated_at")
+        or existing_payload.get("updated_at")
+        or existing_payload.get("generated_at")
+        or ""
+    ).strip()
+    return merged_payload
 
 
 def build_handler(
@@ -3301,7 +3606,11 @@ def build_handler(
                     self.send_json_response(HTTPStatus.OK, result)
                     return
                 if path == "/api/server-cache-push":
-                    result = monitoring_store.push_server_cache(auto=False)
+                    payload = self.read_json_body()
+                    result = monitoring_store.push_server_cache(
+                        auto=False,
+                        account_ids=[str(payload.get("account_id") or "").strip()] if str(payload.get("account_id") or "").strip() else [],
+                    )
                     self.send_json_response(HTTPStatus.OK, result)
                     return
                 if path == "/api/server-cache-upload":
