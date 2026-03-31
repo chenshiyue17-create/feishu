@@ -1366,6 +1366,40 @@ def build_mobile_rankings_payload(
             for item in (monitored_entries or [])
             if str(item.get("account_id") or extract_profile_user_id(str(item.get("url") or "")) or "").strip()
         }
+    project_accounts: List[Dict[str, Any]] = []
+    for item in dashboard_payload.get("accounts") or []:
+        if not isinstance(item, dict):
+            continue
+        account_id = str(item.get("account_id") or "").strip()
+        if not account_id or (project_account_ids and account_id not in project_account_ids):
+            continue
+        project_accounts.append(
+            {
+                "account_id": account_id,
+                "account": str(item.get("account") or account_id).strip() or account_id,
+                "profile_url": str(item.get("profile_url") or "").strip(),
+            }
+        )
+    if not project_accounts:
+        account_name_index = {
+            str(item.get("account_id") or "").strip(): str(item.get("account") or "").strip()
+            for item in (dashboard_payload.get("accounts") or [])
+            if isinstance(item, dict) and str(item.get("account_id") or "").strip()
+        }
+        for item in (monitored_entries or []):
+            if not isinstance(item, dict):
+                continue
+            account_id = str(item.get("account_id") or extract_profile_user_id(str(item.get("url") or "")) or "").strip()
+            if not account_id or (project_account_ids and account_id not in project_account_ids):
+                continue
+            project_accounts.append(
+                {
+                    "account_id": account_id,
+                    "account": account_name_index.get(account_id) or account_id,
+                    "profile_url": str(item.get("url") or "").strip(),
+                }
+            )
+    project_accounts.sort(key=lambda item: str(item.get("account") or ""))
 
     def filter_rows(rank_type: str) -> List[Dict[str, Any]]:
         rows = rankings.get(rank_type) or []
@@ -1431,6 +1465,7 @@ def build_mobile_rankings_payload(
         "server_received_at": str(dashboard_payload.get("server_received_at") or "").strip(),
         "latest_date": latest_date,
         "account_count": len(project_account_ids),
+        "accounts": project_accounts,
         "rankings": {
             "likes": filter_rows("单条点赞排行"),
             "comments": filter_rows("单条评论排行"),

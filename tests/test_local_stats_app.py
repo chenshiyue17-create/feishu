@@ -280,6 +280,7 @@ class LocalStatsAppTest(unittest.TestCase):
         self.assertEqual(payload["project"], "东莞")
         self.assertEqual(payload["projects"], ["东莞", "默认项目"])
         self.assertEqual(payload["view_mode"], "server_cache_only")
+        self.assertEqual(payload["accounts"][0]["account_id"], "u2")
         self.assertEqual(len(payload["rankings"]["likes"]), 1)
         self.assertEqual(payload["rankings"]["likes"][0]["account_id"], "u2")
         self.assertEqual(len(payload["rankings"]["comments"]), 0)

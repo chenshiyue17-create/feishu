@@ -1,6 +1,7 @@
 const params = new URLSearchParams(window.location.search);
 const apiBase = (params.get("api_base") || "").replace(/\/$/, "");
 let selectedProject = (params.get("project") || "默认项目").trim();
+let selectedAccountId = (params.get("account_id") || "all").trim() || "all";
 let selectedHistoryDate = "";
 
 function buildDashboardUrl() {
@@ -10,6 +11,11 @@ function buildDashboardUrl() {
 function updateUrlProject(project) {
   const next = new URL(window.location.href);
   next.searchParams.set("project", project);
+  if (selectedAccountId && selectedAccountId !== "all") {
+    next.searchParams.set("account_id", selectedAccountId);
+  } else {
+    next.searchParams.delete("account_id");
+  }
   window.history.replaceState({}, "", next.toString());
 }
 
@@ -70,6 +76,12 @@ function renderList(rootId, countId, rows, metricLabel) {
   }).join("");
 }
 
+function filterRowsByAccount(rows, accountId) {
+  const normalized = String(accountId || "").trim();
+  if (!normalized || normalized === "all") return (rows || []).slice();
+  return (rows || []).filter((item) => String(item.account_id || "").trim() === normalized);
+}
+
 function renderCalendar(rows) {
   const root = document.getElementById("calendarList");
   const count = document.getElementById("calendarCount");
@@ -113,6 +125,7 @@ function renderHistoryDetails(payload) {
   renderList("historyLikesList", "historyLikesCount", detail.likes || [], "点赞");
   renderList("historyCommentsList", "historyCommentsCount", detail.comments || [], "评论");
   renderList("historyGrowthList", "historyGrowthCount", detail.growth || [], "增长");
+  renderAccountDetails(payload, detail);
 }
 
 function renderProjectOptions(projects) {
@@ -132,6 +145,33 @@ function renderProjectOptions(projects) {
   select.value = selectedProject;
 }
 
+function renderAccountOptions(accounts) {
+  const select = document.getElementById("accountSelect");
+  const items = (accounts || []).filter((item) => item && item.account_id);
+  if (selectedAccountId !== "all" && !items.some((item) => item.account_id === selectedAccountId)) {
+    selectedAccountId = "all";
+  }
+  select.innerHTML = [
+    '<option value="all">全部账号</option>',
+    ...items.map((item) => `<option value="${item.account_id}">${item.account || item.account_id}</option>`),
+  ].join("");
+  select.value = selectedAccountId;
+}
+
+function renderAccountDetails(payload, detail) {
+  const accounts = payload.accounts || [];
+  const activeAccount = accounts.find((item) => String(item.account_id || "") === selectedAccountId);
+  const label = activeAccount ? (activeAccount.account || activeAccount.account_id) : "全部账号";
+  document.getElementById("accountDetailTitle").textContent = activeAccount ? `${label} 账号内榜单` : "账号内榜单";
+  document.getElementById("accountDetailBadge").textContent = label;
+  document.getElementById("accountDetailSummary").textContent = activeAccount
+    ? `${selectedHistoryDate || payload.latest_date || ""} · ${label}`
+    : "选择一个账号，查看账号内榜单";
+  renderList("accountLikesList", "accountLikesCount", filterRowsByAccount(detail.likes || [], selectedAccountId), "点赞");
+  renderList("accountCommentsList", "accountCommentsCount", filterRowsByAccount(detail.comments || [], selectedAccountId), "评论");
+  renderList("accountGrowthList", "accountGrowthCount", filterRowsByAccount(detail.growth || [], selectedAccountId), "增长");
+}
+
 async function loadDashboard() {
   const statusCard = document.getElementById("statusCard");
   statusCard.textContent = "正在加载榜单...";
@@ -141,6 +181,7 @@ async function loadDashboard() {
     const payload = await response.json();
     window.__mobilePayload = payload;
     renderProjectOptions(payload.projects || []);
+    renderAccountOptions(payload.accounts || []);
     selectedProject = payload.project || selectedProject;
     updateUrlProject(selectedProject);
     document.getElementById("pageTitle").textContent = `${selectedProject} 排行榜`;
@@ -165,6 +206,12 @@ async function loadDashboard() {
 document.getElementById("refreshButton").addEventListener("click", loadDashboard);
 document.getElementById("projectSelect").addEventListener("change", (event) => {
   selectedProject = String(event.target.value || "").trim() || selectedProject;
+  selectedAccountId = "all";
   loadDashboard();
+});
+document.getElementById("accountSelect").addEventListener("change", (event) => {
+  selectedAccountId = String(event.target.value || "").trim() || "all";
+  updateUrlProject(selectedProject);
+  renderHistoryDetails(window.__mobilePayload || {});
 });
 loadDashboard();
