@@ -97,6 +97,14 @@ class LocalStatsAppTest(unittest.TestCase):
             payload = load_system_config(str(env_path), str(urls_path))
             self.assertEqual(payload["config"]["SERVER_CACHE_PUSH_URL"], "http://47.87.68.74")
 
+    def test_load_system_config_normalizes_legacy_8787_server_push_url(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            env_path = Path(temp_dir) / ".env"
+            urls_path = Path(temp_dir) / "urls.txt"
+            env_path.write_text("SERVER_CACHE_PUSH_URL=http://47.87.68.74:8787\n", encoding="utf-8")
+            payload = load_system_config(str(env_path), str(urls_path))
+            self.assertEqual(payload["config"]["SERVER_CACHE_PUSH_URL"], "http://47.87.68.74")
+
     def test_save_system_config_restores_default_server_push_url_when_blank(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             env_path = Path(temp_dir) / ".env"

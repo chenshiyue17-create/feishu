@@ -166,6 +166,7 @@ def load_system_config(env_file: str, urls_file: str) -> Dict[str, Any]:
             env_values[key.strip()] = value.strip()
     urls_text = urls_path.read_text(encoding="utf-8") if urls_path.exists() else ""
     config = {key: env_values.get(key, SYSTEM_CONFIG_DEFAULTS.get(key, "")) for key in SYSTEM_CONFIG_KEYS}
+    config = _normalize_system_config_updates(config)
     return {
         "ok": True,
         "env_file": str(env_path),
