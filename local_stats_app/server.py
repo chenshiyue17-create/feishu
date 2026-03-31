@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import csv
 import copy
 import gzip
+import hmac
 import json
 import os
 import re
@@ -3425,6 +3427,42 @@ def push_current_cache_to_server(*, env_file: str, urls_file: str, account_ids: 
     return {"ok": True, **result}
 
 
+def get_server_view_auth_credentials(settings) -> tuple[str, str]:
+    username = str(getattr(settings, "server_view_username", "") or "xhs").strip() or "xhs"
+    password = str(getattr(settings, "server_view_password", "") or "").strip()
+    return username, password
+
+
+def is_server_view_auth_enabled(settings) -> bool:
+    _username, password = get_server_view_auth_credentials(settings)
+    return bool(password)
+
+
+def is_server_view_auth_exempt_path(path: str) -> bool:
+    normalized = str(path or "").split("?", 1)[0].strip() or "/"
+    return normalized in {"/api/health", "/api/server-cache-upload"}
+
+
+def validate_server_view_auth_header(authorization_header: str, settings) -> bool:
+    username, password = get_server_view_auth_credentials(settings)
+    if not password:
+        return True
+    header = str(authorization_header or "").strip()
+    if not header.startswith("Basic "):
+        return False
+    encoded = header[6:].strip()
+    if not encoded:
+        return False
+    try:
+        decoded = base64.b64decode(encoded).decode("utf-8")
+    except Exception:
+        return False
+    if ":" not in decoded:
+        return False
+    provided_username, provided_password = decoded.split(":", 1)
+    return hmac.compare_digest(provided_username, username) and hmac.compare_digest(provided_password, password)
+
+
 def load_dashboard_payload(env_file: str) -> Dict[str, Any]:
     return _normalize_dashboard_payload(_load_dashboard_payload_local_only(env_file))
 
@@ -3585,6 +3623,24 @@ def build_handler(
         def __init__(self, *args: Any, **kwargs: Any) -> None:
             super().__init__(*args, directory=str(WEB_DIR), **kwargs)
 
+        def authorize_if_needed(self, path: str) -> bool:
+            if is_server_view_auth_exempt_path(path):
+                return True
+            settings = load_settings(monitoring_store.env_file)
+            if not is_server_view_auth_enabled(settings):
+                return True
+            authorization = self.headers.get("Authorization") or ""
+            if validate_server_view_auth_header(authorization, settings):
+                return True
+            self.send_response(HTTPStatus.UNAUTHORIZED)
+            self.send_header("WWW-Authenticate", 'Basic realm="XHS Local Stats", charset="UTF-8"')
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            body = "需要访问密码".encode("utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return False
+
         def end_headers(self) -> None:
             self.send_header("Cache-Control", "no-store, max-age=0")
             self.send_header("Pragma", "no-cache")
@@ -3619,6 +3675,8 @@ def build_handler(
 
         def do_GET(self) -> None:  # noqa: N802
             path = self.path.split("?", 1)[0]
+            if not self.authorize_if_needed(path):
+                return
             if path == "/api/dashboard":
                 force = "refresh=1" in self.path
                 payload = dashboard_store.get_payload(force=force)
@@ -3695,6 +3753,8 @@ def build_handler(
 
         def do_POST(self) -> None:  # noqa: N802
             path = self.path.split("?", 1)[0]
+            if not self.authorize_if_needed(path):
+                return
             try:
                 if path == "/api/monitored-accounts":
                     payload = self.read_json_body()

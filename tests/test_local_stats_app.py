@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import tempfile
 import time
@@ -41,6 +42,9 @@ from xhs_feishu_monitor.local_stats_app.server import (
     export_project_rankings,
     export_single_account_rankings,
     extract_profile_user_id,
+    get_server_view_auth_credentials,
+    is_server_view_auth_enabled,
+    is_server_view_auth_exempt_path,
     login_state_requires_interactive_login,
     load_monitored_urls,
     merge_monitored_entries,
@@ -57,6 +61,7 @@ from xhs_feishu_monitor.local_stats_app.server import (
     write_monitored_urls,
     load_system_config,
     save_system_config,
+    validate_server_view_auth_header,
 )
 from xhs_feishu_monitor.local_stats_app.login_state import is_transient_self_check_failure
 from xhs_feishu_monitor.local_daily_sync_status import write_local_daily_sync_status
@@ -64,6 +69,25 @@ from xhs_feishu_monitor.project_sync_status import update_project_sync_status
 
 
 class LocalStatsAppTest(unittest.TestCase):
+    def test_server_view_auth_defaults_to_disabled(self) -> None:
+        settings = Settings()
+        self.assertEqual(get_server_view_auth_credentials(settings), ("xhs", ""))
+        self.assertFalse(is_server_view_auth_enabled(settings))
+
+    def test_server_view_auth_header_validation(self) -> None:
+        settings = Settings(server_view_username="viewer", server_view_password="secret-1")
+        token = "Basic " + base64.b64encode(b"viewer:secret-1").decode("ascii")
+        self.assertTrue(validate_server_view_auth_header(token, settings))
+        self.assertFalse(validate_server_view_auth_header("Basic bad-token", settings))
+        wrong = "Basic " + base64.b64encode(b"viewer:nope").decode("ascii")
+        self.assertFalse(validate_server_view_auth_header(wrong, settings))
+
+    def test_server_view_auth_exempt_paths(self) -> None:
+        self.assertTrue(is_server_view_auth_exempt_path("/api/health"))
+        self.assertTrue(is_server_view_auth_exempt_path("/api/server-cache-upload"))
+        self.assertFalse(is_server_view_auth_exempt_path("/"))
+        self.assertFalse(is_server_view_auth_exempt_path("/api/dashboard"))
+
     def test_filter_dashboard_payload_by_monitored_entries_removes_stale_accounts(self) -> None:
         payload = {
             "updated_at": "2026-03-31T18:45:29+08:00",

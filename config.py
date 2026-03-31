@@ -121,6 +121,8 @@ class Settings:
     project_cache_dir: str = "/Users/cc/Downloads/飞书缓存"
     server_cache_upload_token: str = ""
     server_cache_push_url: str = DEFAULT_SERVER_CACHE_PUSH_URL
+    server_view_username: str = "xhs"
+    server_view_password: str = ""
 
     def validate_for_sync(self) -> None:
         missing = []
@@ -236,6 +238,8 @@ def load_settings(env_file: Optional[str] = None) -> Settings:
         project_cache_dir=_resolve_path(_env("PROJECT_CACHE_DIR", env_values) or "/Users/cc/Downloads/飞书缓存", base_dir),
         server_cache_upload_token=_env("SERVER_CACHE_UPLOAD_TOKEN", env_values),
         server_cache_push_url=normalize_server_cache_push_url(_env("SERVER_CACHE_PUSH_URL", env_values)),
+        server_view_username=_env("SERVER_VIEW_USERNAME", env_values) or "xhs",
+        server_view_password=_env("SERVER_VIEW_PASSWORD", env_values),
     )
     return settings
 
