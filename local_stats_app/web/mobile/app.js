@@ -67,16 +67,19 @@ function renderHeadline(payload, detail) {
   document.getElementById("headlineServerTime").textContent = formatTimeLabel(payload.server_received_at || payload.updated_at || payload.generated_at || "");
 }
 
-function renderList(rootId, countId, rows, metricLabel) {
+function renderList(rootId, countId, rows, metricLabel, options = {}) {
   const root = document.getElementById(rootId);
   const count = document.getElementById(countId);
   const data = (rows || []).slice(0, 20);
+  const displayRows = options.reindexRank
+    ? data.map((item, index) => ({ ...item, rank: index + 1 }))
+    : data;
   count.textContent = String(data.length);
   if (!data.length) {
     root.innerHTML = '<div class="empty-state">当前没有可显示的数据</div>';
     return;
   }
-  root.innerHTML = data.map((item) => {
+  root.innerHTML = displayRows.map((item) => {
     const href = item.note_url || item.profile_url || "#";
     const safeHref = href === "#" ? "#" : href;
     return `
@@ -179,9 +182,9 @@ function renderAccountDetails(payload, detail) {
   document.getElementById("accountDetailSummary").textContent = activeAccount
     ? `${selectedHistoryDate || payload.latest_date || ""} · ${label}`
     : "选择一个账号，查看账号内榜单";
-  renderList("accountLikesList", "accountLikesCount", filterRowsByAccount(detail.likes || [], selectedAccountId), "点赞");
-  renderList("accountCommentsList", "accountCommentsCount", filterRowsByAccount(detail.comments || [], selectedAccountId), "评论");
-  renderList("accountGrowthList", "accountGrowthCount", filterRowsByAccount(detail.growth || [], selectedAccountId), "增长");
+  renderList("accountLikesList", "accountLikesCount", filterRowsByAccount(detail.likes || [], selectedAccountId), "点赞", { reindexRank: true });
+  renderList("accountCommentsList", "accountCommentsCount", filterRowsByAccount(detail.comments || [], selectedAccountId), "评论", { reindexRank: true });
+  renderList("accountGrowthList", "accountGrowthCount", filterRowsByAccount(detail.growth || [], selectedAccountId), "增长", { reindexRank: true });
 }
 
 async function exportLongImage() {
