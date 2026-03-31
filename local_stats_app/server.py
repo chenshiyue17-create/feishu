@@ -1409,6 +1409,17 @@ def build_mobile_rankings_payload(
                 for date_text, item in raw_project_history.items()
                 if isinstance(item, dict)
             }
+    latest_date = str(dashboard_payload.get("latest_date") or "").strip()
+    if latest_date and latest_date not in project_history_rankings:
+        project_history_rankings[latest_date] = {
+            "date": latest_date,
+            "snapshot_time": str(dashboard_payload.get("updated_at") or dashboard_payload.get("generated_at") or "").strip(),
+            "snapshot_slug": "latest-cache",
+            "account_count": len(project_account_ids),
+            "likes": filter_rows("单条点赞排行"),
+            "comments": filter_rows("单条评论排行"),
+            "growth": filter_rows("单条第二天增长排行"),
+        }
 
     return {
         "ok": True,
@@ -1418,7 +1429,7 @@ def build_mobile_rankings_payload(
         "updated_at": str(dashboard_payload.get("updated_at") or dashboard_payload.get("generated_at") or "").strip(),
         "generated_at": str(dashboard_payload.get("generated_at") or "").strip(),
         "server_received_at": str(dashboard_payload.get("server_received_at") or "").strip(),
-        "latest_date": str(dashboard_payload.get("latest_date") or "").strip(),
+        "latest_date": latest_date,
         "account_count": len(project_account_ids),
         "rankings": {
             "likes": filter_rows("单条点赞排行"),

@@ -343,6 +343,40 @@ class LocalStatsAppTest(unittest.TestCase):
         self.assertIn("2026-03-30", payload["history_rankings"])
         self.assertEqual(payload["history_rankings"]["2026-03-30"]["likes"][0]["metric"], 30)
 
+    def test_build_mobile_rankings_payload_falls_back_to_latest_rankings_when_history_missing(self) -> None:
+        payload = build_mobile_rankings_payload(
+            dashboard_payload={
+                "latest_date": "2026-03-31",
+                "updated_at": "2026-03-31T05:06:50+08:00",
+                "rankings": {
+                    "单条点赞排行": [{"rank": 1, "account_id": "u1", "title": "作品A", "metric": 158}],
+                    "单条评论排行": [{"rank": 1, "account_id": "u1", "title": "作品A", "metric": 88}],
+                    "单条第二天增长排行": [{"rank": 1, "account_id": "u1", "title": "账号A", "metric": 22}],
+                },
+                "account_series": {
+                    "u1": [
+                        {"date": "2026-03-31", "fans": 10, "interaction": 20, "likes": 3, "comments": 1, "works": 5},
+                    ],
+                },
+                "history_rankings": {
+                    "默认项目": {
+                        "2026-03-30": {
+                            "date": "2026-03-30",
+                            "snapshot_time": "2026-03-30 18:01:18",
+                            "account_count": 1,
+                            "likes": [{"rank": 1, "account_id": "u1", "title": "旧作品", "metric": 30}],
+                            "comments": [],
+                            "growth": [],
+                        }
+                    }
+                },
+            },
+            monitored_entries=[{"account_id": "u1", "project": "默认项目"}],
+            project="默认项目",
+        )
+        self.assertIn("2026-03-31", payload["history_rankings"])
+        self.assertEqual(payload["history_rankings"]["2026-03-31"]["likes"][0]["metric"], 158)
+
     def test_build_mobile_rankings_payload_falls_back_to_first_project(self) -> None:
         payload = build_mobile_rankings_payload(
             dashboard_payload={"rankings": {}, "account_series": {}},
