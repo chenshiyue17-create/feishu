@@ -1826,6 +1826,7 @@ function renderLoginState(loginState) {
     `上次自检 ${checkedAt}`,
   ].filter(Boolean);
   const hintLines = (loginState?.hints || []).slice(0, 2);
+  const proxyPool = state.monitoring?.sync_status?.proxy_pool_status || {};
   root.innerHTML = `
     <div class="login-state-top">
       <span class="login-state-badge is-${status}">${getLoginStateText(status)}</span>
@@ -1836,66 +1837,37 @@ function renderLoginState(loginState) {
       ${chips.map((text) => `<span class="login-state-chip">${text}</span>`).join("")}
     </div>
     ${hintLines.length ? `<div class="login-state-hints">${hintLines.map((text) => `<span>${text}</span>`).join("")}</div>` : ""}
+    ${buildProxyPoolInline(proxyPool)}
+  `;
+}
+
+function buildProxyPoolInline(proxyPool) {
+  if (!proxyPool) return "";
+  const chips = [
+    proxyPool?.enabled ? `IP池 ${formatNumber(proxyPool.total || 0)}` : "本机网络",
+    proxyPool?.current_ip ? `IP ${proxyPool.current_ip}` : "",
+    proxyPool?.current_ip_checked_at ? `检测 ${formatDateTime(proxyPool.current_ip_checked_at)}` : "",
+    proxyPool?.ready_count ? `可用 ${formatNumber(proxyPool.ready_count || 0)}` : "",
+    proxyPool?.cooling_count ? `冷却 ${formatNumber(proxyPool.cooling_count || 0)}` : "",
+  ].filter(Boolean);
+  const summary = proxyPool?.enabled
+    ? proxyPool.last_error || "最近没有代理错误"
+    : proxyPool?.current_ip_error
+      ? `IP 检测失败：${proxyPool.current_ip_error}`
+      : "当前未启用 IP 池，采集将直接使用本机网络。";
+  return `
+    <div class="login-state-inline-status">
+      <div class="login-state-inline-title">IP 池状态</div>
+      <div class="login-state-inline-copy">${summary}</div>
+      ${chips.length ? `<div class="login-state-chip-row">${chips.map((text) => `<span class="login-state-chip">${text}</span>`).join("")}</div>` : ""}
+    </div>
   `;
 }
 
 function renderProxyPool(proxyPool) {
   const root = document.getElementById("proxyPoolCard");
   if (!root) return;
-  if (!proxyPool?.enabled) {
-    const chips = [
-      proxyPool?.current_ip ? `当前 IP ${proxyPool.current_ip}` : "",
-      proxyPool?.current_ip_checked_at ? `检测 ${formatDateTime(proxyPool.current_ip_checked_at)}` : "",
-    ].filter(Boolean);
-    root.innerHTML = `
-      <div class="proxy-pool-top">
-        <div class="proxy-pool-title">IP 池状态</div>
-        <div class="proxy-pool-subtitle">${proxyPool?.current_ip_error ? `IP 检测失败：${proxyPool.current_ip_error}` : "当前未启用 IP 池，采集请求将直接使用本机网络。"}</div>
-      </div>
-      ${chips.length ? `<div class="proxy-pool-chip-row">${chips.map((text) => `<span class="proxy-pool-chip">${text}</span>`).join("")}</div>` : ""}
-      <div class="proxy-pool-empty">当前未启用 IP 池，采集请求将直接使用本机网络。</div>
-    `;
-    return;
-  }
-  const chips = [
-    `总数 ${formatNumber(proxyPool.total || 0)}`,
-    `可用 ${formatNumber(proxyPool.ready_count || 0)}`,
-    `冷却 ${formatNumber(proxyPool.cooling_count || 0)}`,
-    proxyPool.last_selected_proxy ? `最近使用 ${truncateMiddle(proxyPool.last_selected_proxy, 36)}` : "",
-    proxyPool.updated_at ? `更新时间 ${formatDateTime(proxyPool.updated_at)}` : "",
-  ].filter(Boolean);
-  const items = (proxyPool.entries || []).slice(0, 6);
-  root.innerHTML = `
-    <div class="proxy-pool-top">
-      <div class="proxy-pool-title">IP 池状态</div>
-      <div class="proxy-pool-subtitle">${proxyPool.last_error ? proxyPool.last_error : "最近没有代理错误"}</div>
-    </div>
-    <div class="proxy-pool-chip-row">
-      ${chips.map((text) => `<span class="proxy-pool-chip">${text}</span>`).join("")}
-    </div>
-    ${
-      items.length
-        ? `<div class="proxy-pool-list">
-            ${items
-              .map(
-                (item) => `
-                  <div class="proxy-pool-item">
-                    <div class="proxy-pool-item-main">
-                      <span class="proxy-pool-state is-${item.state}">${item.state === "ready" ? "可用" : `冷却 ${formatDurationShort(item.cooldown_seconds_remaining || 0)}`}</span>
-                      <span class="proxy-pool-url">${truncateMiddle(item.proxy_url, 48)}</span>
-                    </div>
-                    <div class="proxy-pool-item-meta">
-                      <span>成功 ${item.last_success_at ? formatDateTime(item.last_success_at) : "暂无"}</span>
-                      <span>失败 ${formatNumber(item.failure_count || 0)}</span>
-                    </div>
-                  </div>
-                `,
-              )
-              .join("")}
-          </div>`
-        : `<div class="proxy-pool-empty">代理池已启用，但当前还没有采集行为。</div>`
-    }
-  `;
+  root.innerHTML = "";
 }
 
 function renderProjectCards(projects, syncStatus) {
