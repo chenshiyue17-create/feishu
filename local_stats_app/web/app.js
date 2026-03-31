@@ -13,6 +13,7 @@ const state = {
   monitorProjectFilter: "all",
   monitorViewMode: "cards",
   collapseStableProjects: true,
+  monitorPanelExpanded: false,
   monitorPage: 1,
   monitorPageSize: 30,
   pollTimer: null,
@@ -1535,6 +1536,8 @@ function renderMonitoring() {
   const profileLookupError = monitoring.profile_lookup_error || "";
   const loginState = monitoring.login_state || {};
   const proxyPool = monitoring.proxy_pool || {};
+  const panelNode = document.querySelector(".monitor-panel");
+  const toggleButton = document.getElementById("monitorPanelToggle");
   const countNode = document.getElementById("monitorCount");
   const badgeNode = document.getElementById("syncBadge");
   const statusNode = document.getElementById("syncStatusText");
@@ -1545,6 +1548,13 @@ function renderMonitoring() {
   const prevPageButton = document.getElementById("monitorPrevPage");
   const nextPageButton = document.getElementById("monitorNextPage");
   const projects = monitoring.projects || [];
+
+  if (panelNode) {
+    panelNode.classList.toggle("is-collapsed", !state.monitorPanelExpanded);
+  }
+  if (toggleButton) {
+    toggleButton.textContent = state.monitorPanelExpanded ? "收起管理" : "展开管理";
+  }
 
   countNode.textContent = `${formatNumber(monitoring.active_count || 0)} 监测中 / ${formatNumber(monitoring.total || 0)} 总数`;
   badgeNode.textContent = syncStatus.state === "running" ? "同步中" : syncStatus.state === "success" ? "已同步" : syncStatus.state === "error" ? "失败" : "待命";
@@ -2711,6 +2721,10 @@ document.getElementById("checkLoginStateButton").addEventListener("click", () =>
   checkLoginState().catch((error) => {
     document.getElementById("addResult").textContent = error.message;
   });
+});
+document.getElementById("monitorPanelToggle").addEventListener("click", () => {
+  state.monitorPanelExpanded = !state.monitorPanelExpanded;
+  renderMonitoring();
 });
 document.getElementById("calendarPrevMonth").addEventListener("click", () => {
   const projectName = getSelectedProjectName();

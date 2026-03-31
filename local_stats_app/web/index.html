@@ -80,6 +80,7 @@
           <div class="monitor-status">
             <span id="monitorCount" class="monitor-count">0</span>
             <span id="syncBadge" class="sync-badge">待命</span>
+            <button id="monitorPanelToggle" class="monitor-inline-button" type="button">展开管理</button>
           </div>
         </div>
         <div class="monitor-layout">
@@ -95,7 +96,7 @@
             </div>
             <p id="syncCooldownText" class="subtle"></p>
           </div>
-          <div class="monitor-form-shell">
+          <div id="monitorManageForm" class="monitor-form-shell">
             <label class="form-label" for="accountInput">粘贴小红书主页链接，支持一行一个或整段文本自动提取</label>
             <label class="monitor-project-shell" for="projectInput">
               <span class="form-label">归属项目</span>
@@ -108,6 +109,7 @@
             </div>
           </div>
         </div>
+        <div id="monitorManageDetail">
         <div class="monitor-toolbar">
           <div class="monitor-toolbar-left">
             <label class="monitor-page-size-shell" for="monitorProjectFilter">
@@ -153,6 +155,7 @@
             <button id="monitorPrevPage" class="monitor-inline-button" type="button">上一页</button>
             <button id="monitorNextPage" class="monitor-inline-button" type="button">下一页</button>
           </div>
+        </div>
         </div>
       </section>
 

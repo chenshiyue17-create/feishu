@@ -579,6 +579,15 @@ body {
   margin-bottom: 24px;
 }
 
+.monitor-panel.is-collapsed .monitor-layout {
+  grid-template-columns: 1fr;
+}
+
+.monitor-panel.is-collapsed #monitorManageForm,
+.monitor-panel.is-collapsed #monitorManageDetail {
+  display: none;
+}
+
 .monitor-layout {
   display: grid;
   grid-template-columns: 0.9fr 1.1fr;
@@ -597,6 +606,10 @@ body {
 .monitor-count {
   font-size: 18px;
   font-weight: 800;
+}
+
+#monitorPanelToggle {
+  margin-left: auto;
 }
 
 .sync-badge {
