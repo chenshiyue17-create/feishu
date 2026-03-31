@@ -315,6 +315,34 @@ class LocalStatsAppTest(unittest.TestCase):
         self.assertEqual(payload["rankings"]["likes"][0]["account_id"], "572eb4666a6a6940862da761")
         self.assertEqual(len(payload["calendar"]), 1)
 
+    def test_build_mobile_rankings_payload_includes_history_rankings(self) -> None:
+        payload = build_mobile_rankings_payload(
+            dashboard_payload={
+                "rankings": {},
+                "account_series": {
+                    "u1": [
+                        {"date": "2026-03-30", "fans": 10, "interaction": 20, "likes": 3, "comments": 1, "works": 5},
+                    ],
+                },
+                "history_rankings": {
+                    "默认项目": {
+                        "2026-03-30": {
+                            "date": "2026-03-30",
+                            "snapshot_time": "2026-03-30 18:01:18",
+                            "account_count": 1,
+                            "likes": [{"rank": 1, "account_id": "u1", "title": "作品A", "metric": 30}],
+                            "comments": [{"rank": 1, "account_id": "u1", "title": "作品A", "metric": 8}],
+                            "growth": [{"rank": 1, "account_id": "u1", "title": "账号A", "metric": 12}],
+                        }
+                    }
+                },
+            },
+            monitored_entries=[{"account_id": "u1", "project": "默认项目"}],
+            project="默认项目",
+        )
+        self.assertIn("2026-03-30", payload["history_rankings"])
+        self.assertEqual(payload["history_rankings"]["2026-03-30"]["likes"][0]["metric"], 30)
+
     def test_build_mobile_rankings_payload_falls_back_to_first_project(self) -> None:
         payload = build_mobile_rankings_payload(
             dashboard_payload={"rankings": {}, "account_series": {}},

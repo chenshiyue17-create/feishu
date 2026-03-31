@@ -56,6 +56,37 @@
         </button>
         <div id="calendarList" class="calendar-list is-collapsed"></div>
       </section>
+
+      <section class="ranking-section">
+        <div class="section-header">
+          <h2 id="historyDetailTitle">当天排行榜</h2>
+          <span id="historyDetailDate" class="count-badge">-</span>
+        </div>
+        <div id="historyDetailSummary" class="status-card history-summary">点历史日历中的某一天，查看当天榜单</div>
+        <div class="history-detail-grid">
+          <div class="history-detail-block">
+            <div class="section-header compact">
+              <h3>当天点赞榜</h3>
+              <span id="historyLikesCount" class="count-badge">0</span>
+            </div>
+            <div id="historyLikesList" class="ranking-list"></div>
+          </div>
+          <div class="history-detail-block">
+            <div class="section-header compact">
+              <h3>当天评论榜</h3>
+              <span id="historyCommentsCount" class="count-badge">0</span>
+            </div>
+            <div id="historyCommentsList" class="ranking-list"></div>
+          </div>
+          <div class="history-detail-block">
+            <div class="section-header compact">
+              <h3>当天互动增长榜</h3>
+              <span id="historyGrowthCount" class="count-badge">0</span>
+            </div>
+            <div id="historyGrowthList" class="ranking-list"></div>
+          </div>
+        </div>
+      </section>
     </main>
 
     <script src="./app.js"></script>

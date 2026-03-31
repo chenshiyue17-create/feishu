@@ -2,6 +2,7 @@ const params = new URLSearchParams(window.location.search);
 const apiBase = (params.get("api_base") || "").replace(/\/$/, "");
 let selectedProject = (params.get("project") || "默认项目").trim();
 let calendarExpanded = false;
+let selectedHistoryDate = "";
 
 function buildDashboardUrl() {
   return `${apiBase}/api/mobile-rankings?project=${encodeURIComponent(selectedProject)}`;
@@ -80,8 +81,11 @@ function renderCalendar(rows) {
     root.innerHTML = '<div class="empty-state">当前没有历史留底</div>';
     return;
   }
+  if (!selectedHistoryDate || !data.some((item) => item.date === selectedHistoryDate)) {
+    selectedHistoryDate = data[0].date || "";
+  }
   root.innerHTML = data.map((item) => `
-    <div class="calendar-card">
+    <button class="calendar-card ${item.date === selectedHistoryDate ? "is-active" : ""}" type="button" data-history-date="${item.date || ""}">
       <p class="calendar-date">${item.date || "未知日期"}</p>
       <div class="calendar-meta">
         <span class="calendar-chip">账号 ${formatNumber(item.accounts)}</span>
@@ -89,8 +93,27 @@ function renderCalendar(rows) {
         <span class="calendar-chip">评论 ${formatNumber(item.comments)}</span>
         <span class="calendar-chip">作品 ${formatNumber(item.works)}</span>
       </div>
-    </div>
+    </button>
   `).join("");
+  root.querySelectorAll("[data-history-date]").forEach((button) => {
+    button.addEventListener("click", () => {
+      selectedHistoryDate = String(button.getAttribute("data-history-date") || "").trim();
+      renderCalendar(rows);
+      renderHistoryDetails(window.__mobilePayload || {});
+    });
+  });
+}
+
+function renderHistoryDetails(payload) {
+  const detail = (payload.history_rankings || {})[selectedHistoryDate] || {};
+  document.getElementById("historyDetailDate").textContent = selectedHistoryDate || "-";
+  document.getElementById("historyDetailTitle").textContent = selectedHistoryDate ? `${selectedHistoryDate} 排行榜` : "当天排行榜";
+  document.getElementById("historyDetailSummary").textContent = selectedHistoryDate
+    ? `${detail.snapshot_time || selectedHistoryDate} · ${formatNumber(detail.account_count || 0)} 个账号`
+    : "点历史日历中的某一天，查看当天榜单";
+  renderList("historyLikesList", "historyLikesCount", detail.likes || [], "点赞");
+  renderList("historyCommentsList", "historyCommentsCount", detail.comments || [], "评论");
+  renderList("historyGrowthList", "historyGrowthCount", detail.growth || [], "增长");
 }
 
 function bindCalendarToggle() {
@@ -125,6 +148,7 @@ async function loadDashboard() {
     const response = await fetch(buildDashboardUrl(), { credentials: "omit" });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const payload = await response.json();
+    window.__mobilePayload = payload;
     renderProjectOptions(payload.projects || []);
     selectedProject = payload.project || selectedProject;
     updateUrlProject(selectedProject);
@@ -135,12 +159,13 @@ async function loadDashboard() {
       `当前项目：${selectedProject}。手机端只读取服务器缓存，不采集、不上传。点击榜单卡片会直接跳转到小红书作品或账号主页。`;
     const rankings = payload.rankings || {};
     renderCalendar(payload.calendar || []);
+    renderHistoryDetails(payload);
     renderList("likesList", "likesCount", rankings.likes || [], "点赞");
     renderList("commentsList", "commentsCount", rankings.comments || [], "评论");
     renderList("growthList", "growthCount", rankings.growth || [], "增长");
   } catch (error) {
     statusCard.textContent = `加载失败：${error.message}`;
-    ["calendarList", "likesList", "commentsList", "growthList"].forEach((id) => {
+    ["calendarList", "likesList", "commentsList", "growthList", "historyLikesList", "historyCommentsList", "historyGrowthList"].forEach((id) => {
       document.getElementById(id).innerHTML = '<div class="empty-state">加载失败</div>';
     });
   }

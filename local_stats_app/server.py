@@ -1352,6 +1352,7 @@ def build_mobile_rankings_payload(
     if normalized_projects and normalized_project not in normalized_projects:
         normalized_project = normalized_projects[0]
     rankings = dashboard_payload.get("rankings") or {}
+    all_history_rankings = dashboard_payload.get("history_rankings") or {}
     if normalized_project:
         project_account_ids = {
             str(item.get("account_id") or extract_profile_user_id(str(item.get("url") or "")) or "").strip()
@@ -1399,6 +1400,15 @@ def build_mobile_rankings_payload(
             bucket["works"] += int(point.get("works") or 0)
             bucket["accounts"] += 1
     daily_history = sorted(per_date.values(), key=lambda item: str(item.get("date") or ""))
+    project_history_rankings: Dict[str, Dict[str, Any]] = {}
+    if normalized_project:
+        raw_project_history = all_history_rankings.get(normalized_project) or {}
+        if isinstance(raw_project_history, dict):
+            project_history_rankings = {
+                str(date_text): dict(item)
+                for date_text, item in raw_project_history.items()
+                if isinstance(item, dict)
+            }
 
     return {
         "ok": True,
@@ -1416,6 +1426,7 @@ def build_mobile_rankings_payload(
             "growth": filter_rows("单条第二天增长排行"),
         },
         "calendar": daily_history,
+        "history_rankings": project_history_rankings,
     }
 
 
