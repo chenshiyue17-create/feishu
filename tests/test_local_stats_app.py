@@ -938,6 +938,62 @@ class LocalStatsAppTest(unittest.TestCase):
         self.assertEqual(payload["sync_status"]["upload_status"]["state"], "disabled")
         self.assertFalse(payload["sync_status"]["upload_status"]["has_retry_payload"])
 
+    def test_status_snapshot_exposes_server_cache_push_status(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = write_monitored_entries(
+                f"{temp_dir}/urls.txt",
+                [{"url": "https://www.xiaohongshu.com/user/profile/u1", "active": True, "project": "项目A"}],
+            )
+            store = MonitoringSyncStore(
+                env_file=f"{temp_dir}/.env",
+                urls_file=str(path),
+                dashboard_store=DashboardStore(env_file=f"{temp_dir}/.env"),
+            )
+            payload = store.get_payload()
+        push_status = payload["sync_status"]["server_cache_push_status"]
+        self.assertEqual(push_status["daily_at"], "14:00")
+        self.assertTrue(push_status["next_auto_run_at"])
+
+    def test_push_server_cache_updates_manual_status(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = write_monitored_entries(
+                f"{temp_dir}/urls.txt",
+                [{"url": "https://www.xiaohongshu.com/user/profile/u1", "active": True, "project": "项目A"}],
+            )
+            store = MonitoringSyncStore(
+                env_file=f"{temp_dir}/.env",
+                urls_file=str(path),
+                dashboard_store=DashboardStore(env_file=f"{temp_dir}/.env"),
+            )
+            with patch(
+                "xhs_feishu_monitor.local_stats_app.server.push_current_cache_to_server",
+                return_value={"ok": True, "account_count": 1, "updated_at": "2026-03-31T14:00:05+08:00"},
+            ) as push_mock:
+                result = store.push_server_cache(auto=False)
+        self.assertTrue(result["ok"])
+        push_mock.assert_called_once()
+        payload = store.get_payload()
+        push_status = payload["sync_status"]["server_cache_push_status"]
+        self.assertEqual(push_status["state"], "success")
+        self.assertEqual(push_status["mode"], "manual")
+        self.assertTrue(push_status["last_success_at"])
+
+    def test_compute_next_auto_server_push_retries_after_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = write_monitored_entries(
+                f"{temp_dir}/urls.txt",
+                [{"url": "https://www.xiaohongshu.com/user/profile/u1", "active": True, "project": "项目A"}],
+            )
+            store = MonitoringSyncStore(
+                env_file=f"{temp_dir}/.env",
+                urls_file=str(path),
+                dashboard_store=DashboardStore(env_file=f"{temp_dir}/.env"),
+            )
+            now = datetime.fromisoformat("2026-03-31T14:05:00+08:00")
+            store._last_auto_server_push_attempt_at = datetime.fromisoformat("2026-03-31T14:02:00+08:00").timestamp()
+            next_run = store._compute_next_auto_server_push_locked(now)
+        self.assertEqual(next_run.isoformat(timespec="seconds"), "2026-03-31T14:17:00+08:00")
+
     def test_status_snapshot_exposes_schedule_plan(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             path = write_monitored_entries(

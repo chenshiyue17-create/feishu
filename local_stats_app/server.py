@@ -112,6 +112,10 @@ DASHBOARD_SERIES_META = {
     "note": "趋势图按天留底，每个账号每天保留 1 个点。",
 }
 
+AUTO_SERVER_CACHE_PUSH_DAILY_AT = "14:00"
+AUTO_SERVER_CACHE_PUSH_RETRY_SECONDS = 15 * 60
+AUTO_SERVER_CACHE_PUSH_POLL_SECONDS = 20
+
 
 def iso_now() -> str:
     return datetime.now().astimezone().isoformat(timespec="seconds")
@@ -1834,6 +1838,23 @@ class MonitoringSyncStore:
             "progress": {},
             "summary": {},
         }
+        self._server_push_running = False
+        self._last_auto_server_push_success_date = ""
+        self._last_auto_server_push_attempt_at = 0.0
+        self._server_push_status: Dict[str, Any] = {
+            "state": "idle",
+            "message": "每天 14:00 自动上传服务器缓存",
+            "started_at": "",
+            "finished_at": "",
+            "last_success_at": "",
+            "last_error": "",
+            "mode": "",
+            "daily_at": AUTO_SERVER_CACHE_PUSH_DAILY_AT,
+            "next_auto_run_at": "",
+        }
+        with self._lock:
+            self._update_server_push_schedule_locked()
+        threading.Thread(target=self._auto_server_cache_push_loop, daemon=True).start()
 
     def get_payload(self) -> Dict[str, Any]:
         with self._lock:
@@ -1929,6 +1950,7 @@ class MonitoringSyncStore:
     def _status_snapshot_locked(self) -> Dict[str, Any]:
         snapshot = dict(self._status)
         snapshot.update(self._build_manual_cooldown_locked())
+        snapshot["server_cache_push_status"] = dict(self._server_push_status)
         snapshot["upload_status"] = {
             "state": "disabled",
             "message": "服务器当前仅保留本地缓存，不再上传飞书。",
@@ -1944,6 +1966,112 @@ class MonitoringSyncStore:
             "has_cached_payload": False,
         }
         return snapshot
+
+    @staticmethod
+    def _daily_clock_datetime(now: datetime, daily_at: str) -> datetime:
+        hour_text, minute_text = str(daily_at or AUTO_SERVER_CACHE_PUSH_DAILY_AT).split(":", 1)
+        hour = max(0, min(23, int(hour_text)))
+        minute = max(0, min(59, int(minute_text)))
+        return now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+
+    def _compute_next_auto_server_push_locked(self, now: Optional[datetime] = None) -> datetime:
+        current = now or datetime.now().astimezone()
+        scheduled_today = self._daily_clock_datetime(current, AUTO_SERVER_CACHE_PUSH_DAILY_AT)
+        today_text = current.date().isoformat()
+        if current < scheduled_today:
+            return scheduled_today
+        if self._last_auto_server_push_success_date == today_text:
+            return scheduled_today + timedelta(days=1)
+        if self._last_auto_server_push_attempt_at > 0:
+            retry_at = datetime.fromtimestamp(self._last_auto_server_push_attempt_at, tz=current.tzinfo) + timedelta(seconds=AUTO_SERVER_CACHE_PUSH_RETRY_SECONDS)
+            if retry_at > current:
+                return retry_at
+        return current
+
+    def _update_server_push_schedule_locked(self, now: Optional[datetime] = None) -> None:
+        next_run = self._compute_next_auto_server_push_locked(now)
+        self._server_push_status["daily_at"] = AUTO_SERVER_CACHE_PUSH_DAILY_AT
+        self._server_push_status["next_auto_run_at"] = next_run.isoformat(timespec="seconds")
+
+    def push_server_cache(self, *, auto: bool = False) -> Dict[str, Any]:
+        started_at = iso_now()
+        with self._lock:
+            if self._server_push_running:
+                if auto:
+                    return {"ok": False, "message": "已有服务器缓存上传任务正在执行"}
+                raise ValueError("当前已有服务器缓存上传任务在执行，请稍后再试")
+            self._server_push_running = True
+            self._server_push_status.update(
+                {
+                    "state": "running",
+                    "message": "自动上传到服务器中" if auto else "手动上传到服务器中",
+                    "started_at": started_at,
+                    "finished_at": "",
+                    "last_error": "",
+                    "last_success_at": str(self._server_push_status.get("last_success_at") or ""),
+                    "mode": "auto" if auto else "manual",
+                }
+            )
+            if auto:
+                self._last_auto_server_push_attempt_at = time.time()
+            self._update_server_push_schedule_locked()
+        try:
+            result = push_current_cache_to_server(env_file=self.env_file, urls_file=self.urls_file)
+            finished_at = iso_now()
+            with self._lock:
+                self._server_push_status.update(
+                    {
+                        "state": "success",
+                        "message": "服务器缓存自动上传完成" if auto else "服务器缓存手动上传完成",
+                        "started_at": started_at,
+                        "finished_at": finished_at,
+                        "last_success_at": finished_at,
+                        "last_error": "",
+                        "mode": "auto" if auto else "manual",
+                    }
+                )
+                if auto:
+                    self._last_auto_server_push_success_date = datetime.now().astimezone().date().isoformat()
+                self._update_server_push_schedule_locked()
+            return result
+        except Exception as exc:
+            finished_at = iso_now()
+            with self._lock:
+                self._server_push_status.update(
+                    {
+                        "state": "error",
+                        "message": f"服务器缓存上传失败：{exc}",
+                        "started_at": started_at,
+                        "finished_at": finished_at,
+                        "last_success_at": str(self._server_push_status.get("last_success_at") or ""),
+                        "last_error": str(exc),
+                        "mode": "auto" if auto else "manual",
+                    }
+                )
+                self._update_server_push_schedule_locked()
+            raise
+        finally:
+            with self._lock:
+                self._server_push_running = False
+
+    def _auto_server_cache_push_loop(self) -> None:
+        while True:
+            time.sleep(AUTO_SERVER_CACHE_PUSH_POLL_SECONDS)
+            try:
+                settings = load_settings(self.env_file)
+                server_url = str(getattr(settings, "server_cache_push_url", "") or "").strip()
+                now = datetime.now().astimezone()
+                with self._lock:
+                    self._update_server_push_schedule_locked(now)
+                    next_run_text = str(self._server_push_status.get("next_auto_run_at") or "").strip()
+                    should_run = bool(server_url) and not self._server_push_running and next_run_text and next_run_text <= now.isoformat(timespec="seconds")
+                if should_run:
+                    try:
+                        self.push_server_cache(auto=True)
+                    except Exception:
+                        continue
+            except Exception:
+                continue
 
     def _has_cached_upload_payload_locked(self) -> bool:
         return False
@@ -3173,10 +3301,7 @@ def build_handler(
                     self.send_json_response(HTTPStatus.OK, result)
                     return
                 if path == "/api/server-cache-push":
-                    result = push_current_cache_to_server(
-                        env_file=monitoring_store.env_file,
-                        urls_file=monitoring_store.urls_file,
-                    )
+                    result = monitoring_store.push_server_cache(auto=False)
                     self.send_json_response(HTTPStatus.OK, result)
                     return
                 if path == "/api/server-cache-upload":

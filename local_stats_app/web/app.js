@@ -94,6 +94,7 @@ function renderSystemConfig() {
   const payload = state.systemConfig || {};
   const config = payload.config || {};
   const cacheSummary = getLocalCacheSummary();
+  const autoPushStatus = state.monitoring?.sync_status?.server_cache_push_status || {};
   const cacheStateNode = document.getElementById("systemConfigCacheStatus");
   document.getElementById("configXhsCookie").value = config.XHS_COOKIE || "";
   document.getElementById("configProjectCacheDir").value = config.PROJECT_CACHE_DIR || "";
@@ -113,6 +114,16 @@ function renderSystemConfig() {
       : lastPush?.pushed_at
         ? `本机发起 ${formatDateTime(lastPush.pushed_at)}`
         : "还没有成功推送记录";
+    const autoPushText = autoPushStatus?.last_success_at
+      ? `上次自动上传 ${formatDateTime(autoPushStatus.last_success_at)}`
+      : autoPushStatus?.next_auto_run_at
+        ? `下次自动上传 ${formatDateTime(autoPushStatus.next_auto_run_at)}`
+        : "每天 14:00 自动上传到服务器";
+    const autoPushCopy = autoPushStatus?.state === "error"
+      ? `自动上传失败：${autoPushStatus.last_error || autoPushStatus.message || "未知错误"}`
+      : autoPushStatus?.state === "running"
+        ? autoPushStatus.message || "自动上传进行中"
+        : `${formatPushTarget(config.SERVER_CACHE_PUSH_URL || "")} · 每天 ${autoPushStatus.daily_at || "14:00"} 自动上传`;
     cacheStateNode.innerHTML = `
       <article class="system-config-status-card">
         <div class="system-config-status-label">本地缓存状态</div>
@@ -139,6 +150,11 @@ function renderSystemConfig() {
         <div class="system-config-status-value">${lastPushText}</div>
         <div class="system-config-status-copy">${lastPush ? `${formatPushTarget(lastPushTarget)} · ${formatNumber(lastPush.account_count || 0)} 个账号` : "推送成功后，这里会显示服务器确认时间和目标地址。"}
         </div>
+      </article>
+      <article class="system-config-status-card">
+        <div class="system-config-status-label">自动上传计划</div>
+        <div class="system-config-status-value">${autoPushText}</div>
+        <div class="system-config-status-copy">${autoPushCopy}</div>
       </article>
     `;
   }
@@ -193,6 +209,7 @@ async function pushServerCache() {
     account_count: payload.account_count || cacheSummary.accountCount || 0,
     server_url: String(config.SERVER_CACHE_PUSH_URL || "").trim(),
   });
+  await loadMonitoring();
   renderSystemConfig();
   document.getElementById("systemConfigResult").textContent = `已推送到服务器 · ${payload.account_count || cacheSummary.accountCount} 个账号 · 点赞榜 ${formatNumber(cacheSummary.likeCount)} 条 · 评论榜 ${formatNumber(cacheSummary.commentCount)} 条`;
 }
