@@ -340,30 +340,30 @@ def wait_for_xiaohongshu_login(
     payload = run_self_check_fn(env_file=env_file, sample_url=sample_url)
     if not login_state_requires_interactive_login(payload):
         return payload
-    if not str(getattr(settings, "xhs_chrome_cookie_profile", "") or "").strip():
-        return payload
-
-    window_opened = open_login_window_fn(settings=settings, target_url=sample_url or "https://www.xiaohongshu.com/")
+    can_open_window = bool(str(getattr(settings, "xhs_chrome_cookie_profile", "") or "").strip())
+    window_opened = False
+    if can_open_window:
+        window_opened = open_login_window_fn(settings=settings, target_url=sample_url or "https://www.xiaohongshu.com/")
     waiting_payload = dict(payload)
     waiting_payload["login_window_opened"] = window_opened
     waiting_payload["message"] = (
         "检测到小红书未登录，已弹出网页登录窗口，完成登录后会自动继续采集。"
         if window_opened
-        else "检测到小红书未登录，但未能自动打开网页登录，请先手动登录后重试。"
+        else "检测到小红书未登录，请先完成登录；自动任务会在登录恢复后继续。"
     )
     if on_wait is not None:
         on_wait(waiting_payload)
-    if not window_opened:
+    if timeout_seconds > 0 and not window_opened:
         return waiting_payload
 
-    deadline = time.time() + max(1, int(timeout_seconds or 1))
-    while time.time() < deadline:
+    deadline = None if int(timeout_seconds or 0) <= 0 else time.time() + max(1, int(timeout_seconds or 1))
+    while deadline is None or time.time() < deadline:
         time.sleep(max(1, int(poll_seconds or 1)))
         payload = run_self_check_fn(env_file=env_file, sample_url=sample_url)
-        payload["login_window_opened"] = True
+        payload["login_window_opened"] = window_opened
         if not login_state_requires_interactive_login(payload):
             return payload
         if on_wait is not None:
             on_wait(payload)
-    payload["login_window_opened"] = True
+    payload["login_window_opened"] = window_opened
     return payload

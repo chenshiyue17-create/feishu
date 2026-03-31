@@ -1588,6 +1588,32 @@ class LocalStatsAppTest(unittest.TestCase):
         self.assertIn("网页登录窗口", wait_events[0]["message"])
         self.assertTrue(wait_events[0]["login_window_opened"])
 
+    def test_wait_for_xiaohongshu_login_waits_without_timeout_for_auto_mode(self) -> None:
+        settings = Settings(xhs_fetch_mode="requests", xhs_chrome_cookie_profile="/tmp/profile")
+        check_results = [
+            build_login_state_payload(state="error", message="样本账号返回了空结果，登录态可能已过期"),
+            build_login_state_payload(state="error", message="样本账号返回了空结果，登录态可能已过期"),
+            build_login_state_payload(state="ok", message="登录态正常，样本账号已拿到作品明细能力。"),
+        ]
+        with patch(
+            "xhs_feishu_monitor.local_stats_app.server.run_login_state_self_check",
+            side_effect=check_results,
+        ):
+            with patch(
+                "xhs_feishu_monitor.local_stats_app.server.open_xiaohongshu_login_window",
+                return_value=True,
+            ):
+                with patch("xhs_feishu_monitor.local_stats_app.server.time.sleep", return_value=None):
+                    payload = wait_for_xiaohongshu_login(
+                        env_file="/tmp/test.env",
+                        settings=settings,
+                        sample_url="https://www.xiaohongshu.com/user/profile/u1",
+                        timeout_seconds=0,
+                        poll_seconds=1,
+                    )
+        self.assertEqual(payload["state"], "ok")
+        self.assertTrue(payload["login_window_opened"])
+
     def test_open_xiaohongshu_login_window_uses_default_chrome(self) -> None:
         settings = Settings(
             xhs_fetch_mode="requests",
@@ -1661,6 +1687,27 @@ class LocalStatsAppTest(unittest.TestCase):
             payload = login_state_store.get_payload()
             self.assertEqual(payload["state"], "ok")
             self.assertTrue(payload["login_window_opened"])
+
+    def test_auto_sync_waits_for_login_without_timeout(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = write_monitored_entries(
+                f"{temp_dir}/urls.txt",
+                [{"url": "https://www.xiaohongshu.com/user/profile/u1", "active": True, "project": "项目A"}],
+            )
+            store = MonitoringSyncStore(
+                env_file=f"{temp_dir}/.env",
+                urls_file=str(path),
+                dashboard_store=DashboardStore(env_file=f"{temp_dir}/.env"),
+            )
+            settings = Settings(xhs_fetch_mode="requests", xhs_chrome_cookie_profile="/tmp/profile")
+            with patch("xhs_feishu_monitor.local_stats_app.server.wait_for_xiaohongshu_login") as wait_mock:
+                wait_mock.return_value = build_login_state_payload(state="ok", message="登录态正常")
+                store._ensure_login_ready_for_sync(
+                    settings=settings,
+                    sample_url="https://www.xiaohongshu.com/user/profile/u1",
+                    mode="auto",
+                )
+        self.assertEqual(wait_mock.call_args.kwargs["timeout_seconds"], 0)
 
     def test_export_single_account_rankings_writes_like_and_comment_files(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

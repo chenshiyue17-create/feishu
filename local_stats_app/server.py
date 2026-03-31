@@ -2796,7 +2796,7 @@ class MonitoringSyncStore:
             return
         self.login_state_store.set_payload(payload, running=running, sample_url=sample_url)
 
-    def _ensure_login_ready_for_sync(self, *, settings, sample_url: str) -> None:
+    def _ensure_login_ready_for_sync(self, *, settings, sample_url: str, mode: str = "manual") -> None:
         normalized_sample_url = normalize_profile_url(sample_url)
         if not normalized_sample_url:
             return
@@ -2810,6 +2810,16 @@ class MonitoringSyncStore:
             waiting_payload = dict(payload)
             waiting_payload["message"] = waiting_message
             self._publish_login_state(waiting_payload, running=True, sample_url=normalized_sample_url)
+            if str(mode or "").strip() == "auto":
+                with self._lock:
+                    self._server_push_status.update(
+                        {
+                            "state": "waiting_login",
+                            "message": waiting_message,
+                            "mode": "auto",
+                            "last_error": "",
+                        }
+                    )
             progress = build_sync_progress(
                 phase="login",
                 current=0,
@@ -2826,6 +2836,7 @@ class MonitoringSyncStore:
             settings=settings,
             sample_url=normalized_sample_url,
             on_wait=on_wait,
+            timeout_seconds=0 if str(mode or "").strip() == "auto" else LOGIN_WAIT_TIMEOUT_SECONDS,
         )
         self._publish_login_state(payload, running=False, sample_url=normalized_sample_url)
         if login_state_requires_interactive_login(payload):
@@ -2844,9 +2855,10 @@ class MonitoringSyncStore:
                 settings.validate_for_sync()
                 current_urls = list(self._current_sync_urls)
                 self._ensure_login_ready_for_sync(
-                    settings=settings,
-                    sample_url=current_urls[0] if current_urls else "",
-                )
+                settings=settings,
+                sample_url=current_urls[0] if current_urls else "",
+                mode=self._current_sync_mode,
+            )
                 collect_progress = build_sync_progress(
                     phase="collect",
                     current=0,
