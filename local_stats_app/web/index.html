@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>XHS Local Stats App</title>
-    <link rel="stylesheet" href="/styles.css?v=20260331-local-1" />
+    <link rel="stylesheet" href="/styles.css?v=20260331-local-3" />
   </head>
   <body>
     <div class="backdrop"></div>
@@ -36,33 +36,38 @@
           </div>
           <p id="systemConfigSummary" class="summary-text"></p>
         </div>
-        <div class="system-config-grid">
-          <label class="system-config-field">
-            <span class="form-label">XHS_COOKIE</span>
-            <textarea id="configXhsCookie" class="monitor-input system-config-textarea" placeholder="直接粘贴当前可用 Cookie"></textarea>
-          </label>
-          <label class="system-config-field">
-            <span class="form-label">PROJECT_CACHE_DIR</span>
-            <input id="configProjectCacheDir" class="monitor-search-input" type="text" />
-          </label>
-          <label class="system-config-field">
-            <span class="form-label">STATE_FILE</span>
-            <input id="configStateFile" class="monitor-search-input" type="text" />
-          </label>
-          <label class="system-config-field">
-            <span class="form-label">SERVER_CACHE_PUSH_URL</span>
-            <input id="configServerCachePushUrl" class="monitor-search-input" type="text" placeholder="http://47.87.68.74" />
-          </label>
-          <label class="system-config-field">
-            <span class="form-label">SERVER_CACHE_UPLOAD_TOKEN</span>
-            <input id="configServerCacheUploadToken" class="monitor-search-input" type="text" placeholder="可选上传令牌" />
-          </label>
-        </div>
         <div id="systemConfigCacheStatus" class="system-config-status-grid"></div>
-        <label class="system-config-field">
-          <span class="form-label">账号清单</span>
-          <textarea id="configUrlsText" class="monitor-input system-config-textarea" placeholder="一行一个主页链接，或保留项目格式"></textarea>
-        </label>
+        <details class="system-config-collapse">
+          <summary class="system-config-collapse-toggle">展开本地配置</summary>
+          <div class="system-config-collapse-body">
+            <div class="system-config-grid">
+              <label class="system-config-field">
+                <span class="form-label">XHS_COOKIE</span>
+                <textarea id="configXhsCookie" class="monitor-input system-config-textarea" placeholder="直接粘贴当前可用 Cookie"></textarea>
+              </label>
+              <label class="system-config-field">
+                <span class="form-label">PROJECT_CACHE_DIR</span>
+                <input id="configProjectCacheDir" class="monitor-search-input" type="text" />
+              </label>
+              <label class="system-config-field">
+                <span class="form-label">STATE_FILE</span>
+                <input id="configStateFile" class="monitor-search-input" type="text" />
+              </label>
+              <label class="system-config-field">
+                <span class="form-label">SERVER_CACHE_PUSH_URL</span>
+                <input id="configServerCachePushUrl" class="monitor-search-input" type="text" placeholder="http://47.87.68.74" />
+              </label>
+              <label class="system-config-field">
+                <span class="form-label">SERVER_CACHE_UPLOAD_TOKEN</span>
+                <input id="configServerCacheUploadToken" class="monitor-search-input" type="text" placeholder="可选上传令牌" />
+              </label>
+            </div>
+            <label class="system-config-field">
+              <span class="form-label">账号清单</span>
+              <textarea id="configUrlsText" class="monitor-input system-config-textarea" placeholder="一行一个主页链接，或保留项目格式"></textarea>
+            </label>
+          </div>
+        </details>
         <div class="form-actions">
           <button id="reloadSystemConfigButton" class="primary-button secondary-button">导入配置</button>
           <button id="saveSystemConfigButton" class="primary-button">保存配置</button>
@@ -251,6 +256,6 @@
         <div id="alertsList" class="alerts-list"></div>
       </section>
     </main>
-    <script src="/app.js?v=20260331-local-2"></script>
+    <script src="/app.js?v=20260331-local-3"></script>
   </body>
 </html>

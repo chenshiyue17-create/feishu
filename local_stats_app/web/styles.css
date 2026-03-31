@@ -150,6 +150,50 @@ body {
   margin: 14px 0 10px;
 }
 
+.system-config-collapse {
+  margin: 8px 0 14px;
+  border: 1px solid rgba(255,255,255,0.07);
+  border-radius: 18px;
+  background: rgba(255,255,255,0.025);
+  overflow: hidden;
+}
+
+.system-config-collapse[open] {
+  background: rgba(255,255,255,0.03);
+}
+
+.system-config-collapse-toggle {
+  list-style: none;
+  cursor: pointer;
+  padding: 14px 18px;
+  color: #fff5ef;
+  font-size: 15px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.system-config-collapse-toggle::-webkit-details-marker {
+  display: none;
+}
+
+.system-config-collapse-toggle::after {
+  content: "展开";
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.system-config-collapse[open] .system-config-collapse-toggle::after {
+  content: "收起";
+}
+
+.system-config-collapse-body {
+  padding: 0 18px 18px;
+  border-top: 1px solid rgba(255,255,255,0.06);
+}
+
 .system-config-status-card {
   padding: 14px 16px;
   border-radius: 18px;
@@ -181,7 +225,7 @@ body {
 }
 
 .system-config-textarea {
-  min-height: 120px;
+  min-height: 88px;
 }
 
 .primary-button {
