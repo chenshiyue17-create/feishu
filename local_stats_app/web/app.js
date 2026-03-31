@@ -392,6 +392,11 @@ function buildActionLink(url, label) {
   return `<a class="action-link" href="${url}" target="_blank" rel="noreferrer">${label}</a>`;
 }
 
+function getPreferredItemUrl(item) {
+  if (!item) return "";
+  return item.note_url || item.profile_url || "";
+}
+
 function buildCoverSrc(url) {
   if (!url) return "";
   return `/api/image?url=${encodeURIComponent(url)}`;
@@ -515,10 +520,11 @@ function buildProjectComparableGrowth(projectName = getSelectedProjectName(), re
 function buildCoverMarkup(item, { size = "hero", rank = 1 } = {}) {
   const wrapperClass = size === "hero" ? "ranking-hero-cover" : "ranking-mini-cover";
   const imageClass = size === "hero" ? "ranking-hero-cover-image" : "ranking-mini-cover-image";
-  const openTag = item.note_url
-    ? `<a class="${wrapperClass}" href="${item.note_url}" target="_blank" rel="noreferrer">`
+  const targetUrl = getPreferredItemUrl(item);
+  const openTag = targetUrl
+    ? `<a class="${wrapperClass}" href="${targetUrl}" target="_blank" rel="noreferrer">`
     : `<div class="${wrapperClass}">`;
-  const closeTag = item.note_url ? "</a>" : "</div>";
+  const closeTag = targetUrl ? "</a>" : "</div>";
   const imageMarkup = item.cover_url
     ? `<img class="${imageClass}" src="${buildCoverSrc(item.cover_url)}" alt="作品封面" loading="lazy" referrerpolicy="no-referrer" onerror="this.hidden=true;this.nextElementSibling.hidden=false;" />`
     : "";
@@ -2415,13 +2421,15 @@ function renderRankingColumn(config, allRows, active) {
 }
 
 function renderRankingHero(config, item) {
+  const primaryUrl = getPreferredItemUrl(item);
+  const primaryLabel = item.note_url ? "作品详情" : "账号主页";
   return `
     <article class="ranking-hero">
       ${buildCoverMarkup(item, { size: "hero", rank: 1 })}
       <div class="ranking-hero-body">
         <div class="ranking-hero-meta">
           <div class="ranking-hero-text">
-            <p class="ranking-hero-title">${item.note_url ? `<a class="note-link" href="${item.note_url}" target="_blank" rel="noreferrer">${item.title}</a>` : item.title}</p>
+            <p class="ranking-hero-title">${primaryUrl ? `<a class="note-link" href="${primaryUrl}" target="_blank" rel="noreferrer">${item.title}</a>` : item.title}</p>
             <div class="subtle">${item.profile_url ? `<a class="note-link subtle-link" href="${item.profile_url}" target="_blank" rel="noreferrer">${item.account}</a>` : item.account}</div>
           </div>
           <div class="ranking-hero-metric">
@@ -2433,7 +2441,7 @@ function renderRankingHero(config, item) {
         ${item.comment_is_lower_bound ? `<div class="ranking-basis-row">${renderCommentBasisChip(item)}<span class="subtle">该评论数来自评论预览下限，不是精确总数</span></div>` : ""}
         <div class="action-row">
           ${buildActionLink(item.profile_url, "账号主页")}
-          ${buildActionLink(item.note_url, "作品详情")}
+          ${buildActionLink(primaryUrl, primaryLabel)}
         </div>
       </div>
     </article>
@@ -2441,11 +2449,12 @@ function renderRankingHero(config, item) {
 }
 
 function renderRankingMiniItem(config, item, rank) {
+  const primaryUrl = getPreferredItemUrl(item);
   return `
     <article class="ranking-mini-item">
       ${buildCoverMarkup(item, { size: "mini", rank })}
       <div class="ranking-mini-body">
-        <p class="title">${item.note_url ? `<a class="note-link" href="${item.note_url}" target="_blank" rel="noreferrer">${item.title}</a>` : item.title}</p>
+        <p class="title">${primaryUrl ? `<a class="note-link" href="${primaryUrl}" target="_blank" rel="noreferrer">${item.title}</a>` : item.title}</p>
         <div class="subtle">${item.profile_url ? `<a class="note-link subtle-link" href="${item.profile_url}" target="_blank" rel="noreferrer">${item.account}</a>` : item.account}</div>
         <div class="ranking-mini-summary">${item.summary || ""}</div>
         ${renderCommentBasisChip(item)}
