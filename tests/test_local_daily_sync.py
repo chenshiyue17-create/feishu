@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 from xhs_feishu_monitor.local_daily_sync import (
     build_local_daily_sync_program_arguments,
+    cleanup_legacy_feishu_launchd_jobs,
     install_local_daily_sync_launchd,
     run_local_daily_sync,
     uninstall_local_daily_sync_launchd,
@@ -49,6 +50,9 @@ class LocalDailySyncTest(unittest.TestCase):
                 "xhs_feishu_monitor.local_daily_sync.load_settings",
                 return_value=SimpleNamespace(xhs_batch_window_start="14:00"),
             ), patch(
+                "xhs_feishu_monitor.local_daily_sync.cleanup_legacy_feishu_launchd_jobs",
+                return_value={"plists": [], "logs": []},
+            ) as cleanup_mock, patch(
                 "xhs_feishu_monitor.local_daily_sync.install_launch_agent",
                 side_effect=_capture_install,
             ):
@@ -59,6 +63,7 @@ class LocalDailySyncTest(unittest.TestCase):
                     load_after_install=False,
                 )
 
+            cleanup_mock.assert_called_once()
             plist_payload = plistlib.loads(captured["plist_bytes"])
             self.assertEqual(plist_payload["Label"], "com.cc.test-local-daily-sync")
             self.assertEqual(plist_payload["StartCalendarInterval"]["Hour"], 14)
@@ -73,15 +78,41 @@ class LocalDailySyncTest(unittest.TestCase):
             env_path = Path(temp_dir) / ".env"
             env_path.write_text("XHS_SCHEDULE_DRIVER=launchd\n", encoding="utf-8")
 
-            with patch("xhs_feishu_monitor.local_daily_sync.unload_launch_agent") as unload_mock:
+            with patch(
+                "xhs_feishu_monitor.local_daily_sync.cleanup_legacy_feishu_launchd_jobs",
+                return_value={"plists": [], "logs": []},
+            ) as cleanup_mock, patch("xhs_feishu_monitor.local_daily_sync.unload_launch_agent") as unload_mock:
                 plist_path = uninstall_local_daily_sync_launchd(
                     env_file=str(env_path),
                     label="com.cc.test-local-daily-sync",
                     plist_path=str(Path(temp_dir) / "test.plist"),
                 )
 
+            cleanup_mock.assert_called_once()
             unload_mock.assert_called_once_with(plist_path=plist_path)
             self.assertIn("XHS_SCHEDULE_DRIVER=app", env_path.read_text(encoding="utf-8"))
+
+    def test_cleanup_legacy_feishu_launchd_jobs_removes_legacy_plists_and_logs(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            home_dir = Path(temp_dir)
+            launch_agents_dir = home_dir / "Library" / "LaunchAgents"
+            logs_dir = home_dir / "Library" / "Logs"
+            launch_agents_dir.mkdir(parents=True)
+            logs_dir.mkdir(parents=True)
+            plist_path = launch_agents_dir / "com.cc.xhs-profile-batch-report.默认项目.plist"
+            log_path = logs_dir / "com.cc.xhs-profile-batch-report.默认项目.err.log"
+            plist_path.write_text("plist", encoding="utf-8")
+            log_path.write_text("log", encoding="utf-8")
+
+            with patch("xhs_feishu_monitor.local_daily_sync.Path.home", return_value=home_dir):
+                with patch("xhs_feishu_monitor.local_daily_sync.unload_launch_agent") as unload_mock:
+                    result = cleanup_legacy_feishu_launchd_jobs()
+
+            unload_mock.assert_called_once_with(plist_path=str(plist_path))
+            self.assertEqual(result["plists"], [str(plist_path)])
+            self.assertEqual(result["logs"], [str(log_path)])
+            self.assertFalse(plist_path.exists())
+            self.assertFalse(log_path.exists())
 
     def test_run_local_daily_sync_collects_all_projects_then_pushes(self) -> None:
         now = datetime(2026, 3, 31, 14, 0, tzinfo=SHANGHAI_TZ)

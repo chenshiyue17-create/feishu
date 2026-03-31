@@ -25,6 +25,10 @@ mkdir -p "${OUTPUT_DIR}"
 mkdir -p "${LAUNCH_AGENTS_DIR}"
 mkdir -p "${LOGS_DIR}"
 
+"${PYTHON_BIN}" -m xhs_feishu_monitor.local_daily_sync \
+  --env-file "${ENV_FILE}" \
+  --cleanup-legacy-launchd >/dev/null 2>&1 || true
+
 healthcheck() {
   curl -fsS "${HEALTH_URL}" >/dev/null 2>&1
 }
@@ -51,41 +55,26 @@ if lsof -nP -iTCP:"${PORT}" -sTCP:LISTEN >/dev/null 2>&1; then
   exit 1
 fi
 
-cat > "${PLIST_PATH}" <<PLIST
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key>
-  <string>${LAUNCHD_LABEL}</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>${SHELL_BIN}</string>
-    <string>-lc</string>
-    <string>${START_CMD}</string>
-  </array>
-  <key>WorkingDirectory</key>
-  <string>${PROJECT_ROOT}</string>
-  <key>RunAtLoad</key>
-  <true/>
-  <key>KeepAlive</key>
-  <true/>
-  <key>StandardOutPath</key>
-  <string>${OUT_LOG}</string>
-  <key>StandardErrorPath</key>
-  <string>${ERR_LOG}</string>
-  <key>EnvironmentVariables</key>
-  <dict>
-    <key>PYTHONUNBUFFERED</key>
-    <string>1</string>
-    <key>PATH</key>
-    <string>${PATH}</string>
-    <key>HOME</key>
-    <string>${HOME}</string>
-  </dict>
-</dict>
-</plist>
-PLIST
+"${PYTHON_BIN}" - <<PY
+import plistlib
+from pathlib import Path
+
+payload = {
+    "Label": "${LAUNCHD_LABEL}",
+    "ProgramArguments": ["${SHELL_BIN}", "-lc", "${START_CMD}"],
+    "WorkingDirectory": "${PROJECT_ROOT}",
+    "RunAtLoad": True,
+    "KeepAlive": True,
+    "StandardOutPath": "${OUT_LOG}",
+    "StandardErrorPath": "${ERR_LOG}",
+    "EnvironmentVariables": {
+        "PYTHONUNBUFFERED": "1",
+        "PATH": "${PATH}",
+        "HOME": "${HOME}",
+    },
+}
+Path("${PLIST_PATH}").write_bytes(plistlib.dumps(payload, sort_keys=True))
+PY
 
 launchctl bootout "gui/$(id -u)" "${PLIST_PATH}" >/dev/null 2>&1 || true
 launchctl bootstrap "gui/$(id -u)" "${PLIST_PATH}"

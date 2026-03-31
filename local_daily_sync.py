@@ -32,6 +32,7 @@ from .local_daily_sync_status import (
 
 
 DEFAULT_LOCAL_DAILY_SYNC_LABEL = "com.cc.xhs-local-daily-sync"
+LEGACY_FEISHU_LABEL_PREFIX = "com.cc.xhs-profile-batch-report"
 
 
 def _parse_daily_time(value: str) -> Dict[str, int]:
@@ -82,6 +83,35 @@ def _upsert_env_value(*, env_file: str, key: str, value: str) -> None:
     path.write_text("\n".join(new_lines).rstrip() + "\n", encoding="utf-8")
 
 
+def cleanup_legacy_feishu_launchd_jobs(*, remove_logs: bool = True) -> Dict[str, List[str]]:
+    home_dir = Path.home()
+    launch_agents_dir = home_dir / "Library" / "LaunchAgents"
+    logs_dir = home_dir / "Library" / "Logs"
+    removed_plists: List[str] = []
+    removed_logs: List[str] = []
+
+    for plist_path in sorted(launch_agents_dir.glob(f"{LEGACY_FEISHU_LABEL_PREFIX}*.plist")):
+        unload_launch_agent(plist_path=str(plist_path))
+        try:
+            plist_path.unlink()
+        except FileNotFoundError:
+            pass
+        removed_plists.append(str(plist_path))
+
+    if remove_logs:
+        for log_path in sorted(logs_dir.glob(f"{LEGACY_FEISHU_LABEL_PREFIX}*.log")):
+            try:
+                log_path.unlink()
+            except FileNotFoundError:
+                pass
+            removed_logs.append(str(log_path))
+
+    return {
+        "plists": removed_plists,
+        "logs": removed_logs,
+    }
+
+
 def install_local_daily_sync_launchd(
     *,
     env_file: str,
@@ -93,6 +123,7 @@ def install_local_daily_sync_launchd(
     load_after_install: bool = True,
     set_schedule_driver: bool = True,
 ) -> Dict[str, str]:
+    cleanup_legacy_feishu_launchd_jobs()
     settings = load_settings(env_file)
     defaults = default_paths(label)
     resolved_paths = {
@@ -134,6 +165,7 @@ def uninstall_local_daily_sync_launchd(
     plist_path: Optional[str] = None,
     set_schedule_driver: bool = True,
 ) -> str:
+    cleanup_legacy_feishu_launchd_jobs()
     defaults = default_paths(label)
     resolved_plist_path = str(Path(plist_path or defaults["plist_path"]).expanduser().resolve())
     unload_launch_agent(plist_path=resolved_plist_path)
@@ -484,6 +516,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--install-launchd", action="store_true", help="安装本地 launchd 定时任务")
     parser.add_argument("--unload-launchd", action="store_true", help="卸载本地 launchd 定时任务")
     parser.add_argument("--load-launchd", action="store_true", help="安装后立即加载 launchd 任务")
+    parser.add_argument("--cleanup-legacy-launchd", action="store_true", help="清理旧的飞书 launchd 任务与日志")
     parser.add_argument("--launchd-label", default=DEFAULT_LOCAL_DAILY_SYNC_LABEL, help="launchd 任务标签")
     parser.add_argument("--launchd-plist", help="自定义 launchd plist 路径")
     parser.add_argument("--stdout-log", help="launchd stdout 日志路径")
@@ -499,6 +532,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(f"[OK] 已卸载 launchd 任务: {args.launchd_label}")
         print(f"[OK] plist 路径: {plist_path}")
         print("[OK] 已把 XHS_SCHEDULE_DRIVER 切回 app")
+        return 0
+
+    if args.cleanup_legacy_launchd:
+        result = cleanup_legacy_feishu_launchd_jobs()
+        print(json.dumps({"ok": True, **result}, ensure_ascii=False, indent=2))
         return 0
 
     if args.install_launchd:
