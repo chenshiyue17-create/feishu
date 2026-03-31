@@ -526,7 +526,7 @@ function buildCoverMarkup(item, { size = "hero", rank = 1 } = {}) {
     : `<div class="${wrapperClass}">`;
   const closeTag = targetUrl ? "</a>" : "</div>";
   const imageMarkup = item.cover_url
-    ? `<img class="${imageClass}" src="${buildCoverSrc(item.cover_url)}" alt="作品封面" loading="lazy" referrerpolicy="no-referrer" onerror="this.hidden=true;this.nextElementSibling.hidden=false;" />`
+    ? `<img class="${imageClass}" src="${buildCoverSrc(item.cover_url)}" alt="作品封面" loading="lazy" referrerpolicy="no-referrer" data-origin-src="${item.cover_url}" onerror="if(this.dataset.retryDirect!=='1' && this.dataset.originSrc){this.dataset.retryDirect='1';this.src=this.dataset.originSrc;return;} this.hidden=true;this.nextElementSibling.hidden=false;" />`
     : "";
   const placeholderMarkup = `<div class="ranking-cover-placeholder"${item.cover_url ? " hidden" : ""}>暂无封面</div>`;
   const rankMarkup = rank === "" || rank === null || rank === undefined ? "" : `<div class="rank-badge">${rank}</div>`;
