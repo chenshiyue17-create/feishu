@@ -892,9 +892,9 @@ def resolve_batch_concurrency(settings) -> int:
     if fetch_mode in {"playwright", "local_browser"}:
         return 1
     proxy_pool = list(getattr(settings, "xhs_proxy_pool", []) or [])
-    if len(proxy_pool) <= 1:
-        return min(configured, 1)
-    return min(configured, min(4, len(proxy_pool)))
+    if proxy_pool:
+        return max(1, min(configured, len(proxy_pool)))
+    return max(1, min(configured, 8))
 
 
 def build_batch_throttle(settings) -> BatchThrottle:

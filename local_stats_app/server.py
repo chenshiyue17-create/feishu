@@ -299,6 +299,7 @@ def build_collection_schedule_plan(*, settings, entries: List[Dict[str, Any]], n
     start_minutes = _parse_clock_minutes(window_start, "14:00")
     end_minutes = _parse_clock_minutes(window_end, "16:00")
     slot_offset_seconds = max(0, int(getattr(settings, "xhs_batch_slot_offset_seconds", 300) or 0))
+    effective_slot_offset_seconds = slot_offset_seconds if enabled else 0
     min_accounts = max(1, int(getattr(settings, "xhs_batch_min_accounts_per_run", 1) or 1))
     max_accounts = max(min_accounts, int(getattr(settings, "xhs_batch_max_accounts_per_run", min_accounts) or min_accounts))
     per_run = min_accounts if min_accounts == max_accounts else max_accounts
@@ -324,21 +325,25 @@ def build_collection_schedule_plan(*, settings, entries: List[Dict[str, Any]], n
     projects = []
     for index, project_name in enumerate(order):
         active_count = grouped.get(project_name, 0)
-        project_per_run = min(
-            active_count,
-            max(
-                min_accounts,
-                min(max_accounts, (active_count + slots_per_day - 1) // slots_per_day),
-            ),
+        project_per_run = (
+            active_count
+            if not enabled
+            else min(
+                active_count,
+                max(
+                    min_accounts,
+                    min(max_accounts, (active_count + slots_per_day - 1) // slots_per_day),
+                ),
+            )
         ) if active_count else 0
-        project_run_at = next_run_at + timedelta(seconds=index * slot_offset_seconds)
+        project_run_at = next_run_at + timedelta(seconds=index * effective_slot_offset_seconds)
         projects.append(
             {
                 "name": project_name,
                 "active_count": active_count,
                 "per_run": project_per_run,
                 "next_run_at": project_run_at.isoformat(timespec="seconds"),
-                "slot_offset_seconds": index * slot_offset_seconds,
+                "slot_offset_seconds": index * effective_slot_offset_seconds,
             }
         )
     return {
@@ -356,8 +361,7 @@ def build_collection_schedule_plan(*, settings, entries: List[Dict[str, Any]], n
 
 def build_auto_project_schedule(*, settings, entries: List[Dict[str, Any]], now: Optional[datetime] = None) -> Dict[str, Dict[str, Any]]:
     current = now or datetime.now().astimezone()
-    if not bool(getattr(settings, "xhs_spread_schedule_enabled", True)):
-        return {}
+    enabled = bool(getattr(settings, "xhs_spread_schedule_enabled", True))
     project_url_map: Dict[str, List[str]] = {}
     for entry in entries:
         if not entry.get("active"):
@@ -376,14 +380,15 @@ def build_auto_project_schedule(*, settings, entries: List[Dict[str, Any]], now:
         end_at = (start_at + timedelta(days=1)).replace(hour=end_minutes // 60, minute=end_minutes % 60, second=0, microsecond=0)
     else:
         end_at = current.replace(hour=end_minutes // 60, minute=end_minutes % 60, second=0, microsecond=0)
+    base_at = max(current, start_at)
     duration_seconds = max(60, int((end_at - start_at).total_seconds()))
     project_names = sorted(project_url_map)
-    slot_gap_seconds = max(5, duration_seconds // max(1, len(project_names)))
+    slot_gap_seconds = 0 if not enabled else max(5, duration_seconds // max(1, len(project_names)))
     schedule: Dict[str, Dict[str, Any]] = {}
     for index, project_name in enumerate(project_names):
         schedule[project_name] = {
             "urls": list(project_url_map.get(project_name) or []),
-            "scheduled_at": start_at + timedelta(seconds=index * slot_gap_seconds),
+            "scheduled_at": base_at + timedelta(seconds=index * slot_gap_seconds),
             "slot_gap_seconds": slot_gap_seconds,
             "project_index": index,
         }

@@ -129,7 +129,10 @@ class ProfileBatchReportTest(unittest.TestCase):
     def test_resolve_batch_concurrency_disables_parallel_for_browser_modes(self) -> None:
         self.assertEqual(resolve_batch_concurrency(SimpleNamespace(xhs_fetch_mode="local_browser", xhs_batch_concurrency=6)), 1)
         self.assertEqual(resolve_batch_concurrency(SimpleNamespace(xhs_fetch_mode="playwright", xhs_batch_concurrency=6)), 1)
-        self.assertEqual(resolve_batch_concurrency(SimpleNamespace(xhs_fetch_mode="requests", xhs_batch_concurrency=6)), 1)
+        self.assertEqual(resolve_batch_concurrency(SimpleNamespace(xhs_fetch_mode="requests", xhs_batch_concurrency=6)), 6)
+
+    def test_resolve_batch_concurrency_caps_plain_requests_parallelism(self) -> None:
+        self.assertEqual(resolve_batch_concurrency(SimpleNamespace(xhs_fetch_mode="requests", xhs_batch_concurrency=12)), 8)
 
     def test_resolve_batch_concurrency_expands_with_proxy_pool(self) -> None:
         settings = SimpleNamespace(
@@ -265,7 +268,7 @@ class ProfileBatchReportTest(unittest.TestCase):
                 settings=settings,
                 progress_callback=progress_events.append,
             )
-        self.assertEqual([event["current"] for event in progress_events], [1, 2])
+        self.assertEqual([event["current"] for event in progress_events], [1, 1, 2, 2])
         self.assertTrue(all(event["phase"] == "collect" for event in progress_events))
         self.assertEqual(progress_events[-1]["success_count"], 2)
         self.assertEqual(progress_events[-1]["failed_count"], 0)

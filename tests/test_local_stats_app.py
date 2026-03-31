@@ -25,6 +25,7 @@ from xhs_feishu_monitor.local_stats_app.server import (
     DashboardStore,
     LoginStateStore,
     MonitoringSyncStore,
+    build_auto_project_schedule,
     build_empty_dashboard_payload,
     build_mobile_rankings_payload,
     _load_dashboard_payload_local_only,
@@ -62,6 +63,27 @@ from xhs_feishu_monitor.project_sync_status import update_project_sync_status
 
 
 class LocalStatsAppTest(unittest.TestCase):
+    def test_build_auto_project_schedule_runs_all_projects_immediately_when_spread_disabled(self) -> None:
+        now = datetime.fromisoformat("2026-03-31T14:12:00+08:00")
+        settings = Settings(
+            xhs_spread_schedule_enabled=False,
+            xhs_batch_window_start="14:00",
+            xhs_batch_window_end="15:00",
+        )
+        schedule = build_auto_project_schedule(
+            settings=settings,
+            entries=[
+                {"project": "默认项目", "url": "https://www.xiaohongshu.com/user/profile/u1", "active": True},
+                {"project": "东莞", "url": "https://www.xiaohongshu.com/user/profile/u2", "active": True},
+            ],
+            now=now,
+        )
+        self.assertEqual(set(schedule.keys()), {"默认项目", "东莞"})
+        self.assertEqual(schedule["默认项目"]["scheduled_at"], now)
+        self.assertEqual(schedule["东莞"]["scheduled_at"], now)
+        self.assertEqual(schedule["默认项目"]["slot_gap_seconds"], 0)
+        self.assertEqual(schedule["东莞"]["slot_gap_seconds"], 0)
+
     def test_load_and_save_system_config(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             env_path = Path(temp_dir) / ".env"
