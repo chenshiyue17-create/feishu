@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -86,6 +87,59 @@ class ProfileBatchToFeishuTest(unittest.TestCase):
                     project="项目A",
                     report_json=None,
                 )
+
+    def test_load_reports_for_sync_resumes_from_checkpoint(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings = SimpleNamespace(project_cache_dir=temp_dir)
+            date_text = datetime.now().astimezone().date().isoformat()
+            resume_path = Path(temp_dir) / ".collection_resume" / "项目a-manual-reports.json"
+            resume_path.parent.mkdir(parents=True, exist_ok=True)
+            resume_path.write_text(
+                json.dumps(
+                    {
+                        "date": date_text,
+                        "project": "项目A",
+                        "scheduled": False,
+                        "reports": [
+                            {
+                                "source_url": "https://www.xiaohongshu.com/user/profile/u1",
+                                "project": "项目A",
+                                "profile": {"profile_user_id": "u1"},
+                                "works": [],
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            with patch(
+                "xhs_feishu_monitor.profile_batch_to_feishu.collect_profile_reports_with_progress",
+                return_value=[
+                    {
+                        "status": "success",
+                        "requested_url": "https://www.xiaohongshu.com/user/profile/u2",
+                        "profile": {"profile_user_id": "u2"},
+                        "works": [],
+                    }
+                ],
+            ) as collect_mock:
+                reports = load_reports_for_sync(
+                    settings=settings,
+                    explicit_urls=[
+                        "https://www.xiaohongshu.com/user/profile/u1",
+                        "https://www.xiaohongshu.com/user/profile/u2",
+                    ],
+                    raw_text="",
+                    urls_file=None,
+                    project="项目A",
+                    report_json=None,
+                )
+
+        self.assertEqual(len(reports), 2)
+        self.assertEqual({report["profile"]["profile_user_id"] for report in reports}, {"u1", "u2"})
+        self.assertEqual(collect_mock.call_args.kwargs["urls"], ["https://www.xiaohongshu.com/user/profile/u2"])
 
     def test_ensure_project_dashboard_views_creates_views_for_each_project(self) -> None:
         client = _FakeRankingClient(

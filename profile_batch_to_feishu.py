@@ -410,13 +410,85 @@ def load_reports_for_sync(
     urls = [item["url"] for item in url_entries]
     if not urls:
         raise ValueError("没有找到可用的小红书账号主页链接")
-    items = collect_profile_reports_with_progress(
-        urls=urls,
-        url_entries=url_entries,
+    date_text = datetime.now().astimezone().date().isoformat()
+    resume_path = _resolve_batch_resume_path(
         settings=settings,
-        progress_callback=progress_callback,
+        project=project,
+        urls_file=urls_file,
+        scheduled=scheduled,
     )
+    resumed_reports = _load_batch_resume_reports(
+        path=resume_path,
+        date_text=date_text,
+        project=project,
+        scheduled=scheduled,
+        active_urls=urls,
+    )
+    resumed_url_keys = {_batch_resume_key(report) for report in resumed_reports if _batch_resume_key(report)}
+    pending_entries = [item for item in url_entries if item["url"] not in resumed_url_keys]
+
+    merged_resumed_reports = list(resumed_reports)
+
+    def _persist_resume_progress(payload: Dict[str, Any]) -> None:
+        nonlocal merged_resumed_reports
+        if progress_callback is not None:
+            progress_callback(payload)
+        if str(payload.get("phase") or "").strip() != "collect":
+            return
+        if str(payload.get("status") or "").strip() != "success":
+            return
+        raw_item = payload.get("raw_item")
+        if not isinstance(raw_item, dict):
+            return
+        report = normalize_batch_item_to_report(
+            raw_item,
+            project=project_by_url.get(
+                normalize_profile_url(
+                    str(
+                        raw_item.get("requested_url")
+                        or raw_item.get("final_url")
+                        or (raw_item.get("profile") or {}).get("profile_url")
+                        or ""
+                    )
+                ),
+                "",
+            ),
+        )
+        next_reports = _merge_batch_resume_reports(merged_resumed_reports + [report])
+        if len(next_reports) == len(merged_resumed_reports):
+            return
+        merged_resumed_reports = next_reports
+        _write_batch_resume_reports(
+            path=resume_path,
+            date_text=date_text,
+            project=project,
+            scheduled=scheduled,
+            reports=merged_resumed_reports,
+        )
+
+    items = []
+    if pending_entries:
+        items = collect_profile_reports_with_progress(
+            urls=[item["url"] for item in pending_entries],
+            url_entries=pending_entries,
+            settings=settings,
+            progress_callback=_persist_resume_progress,
+        )
+    elif progress_callback is not None:
+        progress_callback(
+            {
+                "phase": "collect",
+                "current": len(merged_resumed_reports),
+                "total": len(url_entries),
+                "status": "success",
+                "account": "",
+                "works": 0,
+                "success_count": len(merged_resumed_reports),
+                "failed_count": 0,
+            }
+        )
     reports: List[Dict[str, Any]] = []
+    reports.extend(merged_resumed_reports)
     for item in items:
         if item.get("status") != "success":
             continue
@@ -437,11 +509,98 @@ def load_reports_for_sync(
         if not _report_matches_requested_profile(report):
             continue
         reports.append(report)
+    reports = _merge_batch_resume_reports(reports)
+    if reports:
+        _write_batch_resume_reports(
+            path=resume_path,
+            date_text=date_text,
+            project=project,
+            scheduled=scheduled,
+            reports=reports,
+        )
     if not reports and scheduled:
         return []
     if not reports:
         raise ValueError("批量抓取没有成功结果，无法同步到飞书")
     return reports
+
+
+def _resolve_batch_resume_path(*, settings, project: str, urls_file: Optional[str], scheduled: bool) -> Path:
+    scope_name = str(project or "").strip()
+    if not scope_name and urls_file:
+        scope_name = Path(urls_file).expanduser().resolve().stem
+    slug = slugify_project_name(scope_name or "adhoc")
+    mode = "scheduled" if scheduled else "manual"
+    return resolve_project_cache_dir(settings) / ".collection_resume" / f"{slug}-{mode}-reports.json"
+
+
+def _batch_resume_key(report: Dict[str, Any]) -> str:
+    profile = report.get("profile") or {}
+    return (
+        normalize_profile_url(str(report.get("source_url") or profile.get("profile_url") or ""))
+        or str(profile.get("profile_user_id") or "").strip()
+    )
+
+
+def _merge_batch_resume_reports(reports: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    merged: Dict[str, Dict[str, Any]] = {}
+    ordered_keys: List[str] = []
+    for report in reports:
+        key = _batch_resume_key(report)
+        if not key:
+            continue
+        if key not in merged:
+            ordered_keys.append(key)
+        merged[key] = dict(report)
+    return [merged[key] for key in ordered_keys]
+
+
+def _load_batch_resume_reports(
+    *,
+    path: Path,
+    date_text: str,
+    project: str,
+    scheduled: bool,
+    active_urls: List[str],
+) -> List[Dict[str, Any]]:
+    if not path.exists():
+        return []
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    if not isinstance(payload, dict):
+        return []
+    if str(payload.get("date") or "") != date_text:
+        return []
+    if bool(payload.get("scheduled")) != bool(scheduled):
+        return []
+    if str(payload.get("project") or "").strip() != str(project or "").strip():
+        return []
+    active_url_set = {normalize_profile_url(url) for url in active_urls if normalize_profile_url(url)}
+    reports = _merge_batch_resume_reports(list(payload.get("reports") or []))
+    if not active_url_set:
+        return reports
+    return [report for report in reports if _batch_resume_key(report) in active_url_set]
+
+
+def _write_batch_resume_reports(
+    *,
+    path: Path,
+    date_text: str,
+    project: str,
+    scheduled: bool,
+    reports: List[Dict[str, Any]],
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "date": date_text,
+        "project": str(project or "").strip(),
+        "scheduled": bool(scheduled),
+        "reports": _merge_batch_resume_reports(reports),
+        "updated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+    }
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def _extract_profile_user_id_from_url(url: str) -> str:

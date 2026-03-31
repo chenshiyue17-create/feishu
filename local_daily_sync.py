@@ -305,6 +305,10 @@ def run_local_daily_sync(*, env_file: str, urls_file: str) -> Dict[str, Any]:
                 project=project_name,
                 scheduled=False,
             )
+            if str(summary.get("status") or "").strip() == "partial":
+                raise RuntimeError(
+                    f"项目「{project_name}」仍有 {int(summary.get('pending_accounts') or 0)} 个账号未完成，已保留断点等待继续"
+                )
             project_results.append(
                 {
                     "project": project_name,

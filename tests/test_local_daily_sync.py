@@ -272,6 +272,49 @@ class LocalDailySyncTest(unittest.TestCase):
         self.assertTrue(persisted["next_run_at"])
         self.assertTrue(any(item.get("phase") == "waiting_login" for item in written_payloads))
 
+    def test_run_local_daily_sync_skips_upload_when_collection_only_partially_resumed(self) -> None:
+        now = datetime(2026, 3, 31, 14, 0, tzinfo=SHANGHAI_TZ)
+        plan = {
+            "默认项目": {
+                "urls": ["https://www.xiaohongshu.com/user/profile/u1"],
+                "scheduled_at": now,
+            },
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            env_path = Path(temp_dir) / ".env"
+            state_path = Path(temp_dir) / ".state.json"
+            env_path.write_text(f"STATE_FILE={state_path}\n", encoding="utf-8")
+
+            with patch(
+                "xhs_feishu_monitor.local_daily_sync.load_settings",
+                return_value=SimpleNamespace(state_file=str(state_path)),
+            ), patch(
+                "xhs_feishu_monitor.local_daily_sync.parse_monitored_entries",
+                return_value=[{"project": "默认项目", "url": "u1", "active": True}],
+            ), patch(
+                "xhs_feishu_monitor.local_daily_sync.build_auto_project_schedule",
+                return_value=plan,
+            ), patch(
+                "xhs_feishu_monitor.local_daily_sync._sleep_until"
+            ), patch(
+                "xhs_feishu_monitor.local_daily_sync.wait_for_xiaohongshu_login",
+                return_value={"state": "ok", "message": "ok"},
+            ), patch(
+                "xhs_feishu_monitor.local_daily_sync.login_state_requires_interactive_login",
+                return_value=False,
+            ), patch(
+                "xhs_feishu_monitor.local_daily_sync.collect_profiles_to_local_cache",
+                return_value={"status": "partial", "pending_accounts": 2, "successful_accounts": 3},
+            ), patch(
+                "xhs_feishu_monitor.local_daily_sync.push_current_cache_to_server"
+            ) as push_mock:
+                result = run_local_daily_sync(env_file=str(env_path), urls_file="/tmp/urls.txt")
+
+        self.assertEqual(result["status"], "partial")
+        self.assertEqual(result["failed_projects"], 1)
+        push_mock.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

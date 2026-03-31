@@ -814,6 +814,7 @@ def _emit_collect_progress(
             "error": str(item.get("error") or ""),
             "success_count": max(0, int(success_count or 0)),
             "failed_count": max(0, int(failed_count or 0)),
+            "raw_item": item,
         }
     )
 
