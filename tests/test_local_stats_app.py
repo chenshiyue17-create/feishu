@@ -1061,6 +1061,34 @@ class LocalStatsAppTest(unittest.TestCase):
         self.assertEqual(payload["sync_status"]["upload_status"]["state"], "disabled")
         self.assertFalse(payload["sync_status"]["upload_status"]["has_retry_payload"])
 
+    def test_status_snapshot_sanitizes_legacy_feishu_runtime_error(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = write_monitored_entries(
+                f"{temp_dir}/urls.txt",
+                [{"url": "https://www.xiaohongshu.com/user/profile/u1", "active": True, "project": "项目A"}],
+            )
+            store = MonitoringSyncStore(
+                env_file=f"{temp_dir}/.env",
+                urls_file=str(path),
+                dashboard_store=DashboardStore(env_file=f"{temp_dir}/.env"),
+            )
+            store._status.update(
+                {
+                    "state": "error",
+                    "message": "缺少飞书配置: FEISHU_APP_ID, FEISHU_APP_SECRET",
+                    "last_error": "缺少飞书配置: FEISHU_APP_ID, FEISHU_APP_SECRET",
+                    "progress": {"phase": "collect"},
+                    "summary": {"total_accounts": 1},
+                }
+            )
+
+            payload = store.get_payload()
+
+        self.assertEqual(payload["sync_status"]["state"], "idle")
+        self.assertEqual(payload["sync_status"]["message"], "待命")
+        self.assertEqual(payload["sync_status"]["last_error"], "")
+        self.assertEqual(payload["sync_status"]["progress"], {})
+
     def test_status_snapshot_exposes_server_cache_push_status(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             path = write_monitored_entries(

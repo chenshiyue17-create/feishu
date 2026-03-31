@@ -5,6 +5,18 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict
 
+LEGACY_FEISHU_ERROR_MARKERS = (
+    "缺少飞书配置",
+    "飞书上传失败",
+    "tenant_access_token",
+    "fieldnamenotfound",
+    "rolepermnotallow",
+    "feishu_app_id",
+    "feishu_app_secret",
+    "feishu_bitable_app_token",
+    "feishu_table_id",
+)
+
 
 def resolve_local_daily_sync_status_path(*, env_file: str, state_file_path: str = "") -> Path:
     env_dir = Path(env_file).expanduser().resolve().parent
@@ -41,6 +53,11 @@ def build_default_local_daily_sync_status() -> Dict[str, Any]:
     }
 
 
+def _contains_legacy_feishu_error(*, message: str = "", error: str = "") -> bool:
+    combined_text = f"{message} {error}".lower()
+    return any(marker in combined_text for marker in LEGACY_FEISHU_ERROR_MARKERS)
+
+
 def load_local_daily_sync_status(*, env_file: str, state_file_path: str = "") -> Dict[str, Any]:
     path = resolve_local_daily_sync_status_path(env_file=env_file, state_file_path=state_file_path)
     if not path.exists():
@@ -49,10 +66,28 @@ def load_local_daily_sync_status(*, env_file: str, state_file_path: str = "") ->
         payload = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return build_default_local_daily_sync_status()
-    return {
+    normalized = {
         **build_default_local_daily_sync_status(),
         **(payload if isinstance(payload, dict) else {}),
     }
+    if _contains_legacy_feishu_error(
+        message=str(normalized.get("message") or ""),
+        error=str(normalized.get("last_error") or ""),
+    ):
+        normalized["last_error"] = ""
+        if str(normalized.get("state") or "") == "error":
+            normalized["state"] = "idle"
+            normalized["phase"] = "idle"
+            normalized["message"] = ""
+    if _contains_legacy_feishu_error(
+        message=str(normalized.get("upload_message") or ""),
+        error=str(normalized.get("last_upload_error") or ""),
+    ):
+        normalized["last_upload_error"] = ""
+        if str(normalized.get("upload_state") or "") == "error":
+            normalized["upload_state"] = ""
+            normalized["upload_message"] = ""
+    return normalized
 
 
 def write_local_daily_sync_status(

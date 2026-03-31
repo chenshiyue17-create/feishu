@@ -117,10 +117,26 @@ AUTO_SERVER_CACHE_PUSH_DAILY_AT = "14:00"
 AUTO_SERVER_CACHE_PUSH_RETRY_SECONDS = 15 * 60
 AUTO_SERVER_CACHE_PUSH_POLL_SECONDS = 20
 AUTO_PROJECT_SYNC_RETRY_SECONDS = 10 * 60
+LEGACY_FEISHU_ERROR_MARKERS = (
+    "缺少飞书配置",
+    "飞书上传失败",
+    "tenant_access_token",
+    "fieldnamenotfound",
+    "rolepermnotallow",
+    "feishu_app_id",
+    "feishu_app_secret",
+    "feishu_bitable_app_token",
+    "feishu_table_id",
+)
 
 
 def iso_now() -> str:
     return datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def contains_legacy_feishu_error(*, message: str = "", error: str = "") -> bool:
+    combined_text = f"{message} {error}".lower()
+    return any(marker in combined_text for marker in LEGACY_FEISHU_ERROR_MARKERS)
 
 
 def build_empty_dashboard_payload(*, load_error: str = "") -> Dict[str, Any]:
@@ -2015,6 +2031,16 @@ class MonitoringSyncStore:
 
     def _status_snapshot_locked(self) -> Dict[str, Any]:
         snapshot = dict(self._status)
+        if contains_legacy_feishu_error(
+            message=str(snapshot.get("message") or ""),
+            error=str(snapshot.get("last_error") or ""),
+        ):
+            snapshot["last_error"] = ""
+            if str(snapshot.get("state") or "") == "error":
+                snapshot["state"] = "idle"
+                snapshot["message"] = "待命"
+                snapshot["progress"] = {}
+                snapshot["summary"] = {}
         snapshot.update(self._build_manual_cooldown_locked())
         snapshot["server_cache_push_status"] = dict(self._server_push_status)
         snapshot["upload_status"] = {
