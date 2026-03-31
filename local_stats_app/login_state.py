@@ -70,17 +70,6 @@ def build_login_state_payload(**overrides: Any) -> Dict[str, Any]:
 def login_state_requires_interactive_login(payload: Dict[str, Any]) -> bool:
     state = str(payload.get("state") or "").strip()
     message = str(payload.get("message") or "").strip().lower()
-    if state == "warning" and str(payload.get("cookie_source") or "").strip() == "chrome_profile":
-        if not bool(payload.get("detail_ready")) and any(
-            keyword in message
-            for keyword in (
-                "公开页摘要",
-                "note_id",
-                "详细数据",
-                "退化",
-            )
-        ):
-            return True
     if state != "error":
         return False
     return any(
@@ -252,11 +241,11 @@ def run_login_state_self_check(*, env_file: str, sample_url: str = "") -> Dict[s
         )
     elif not detail_ready:
         state = "warning"
-        message = "样本账号只拿到公开页摘要，未拿到 note_id，作品详情与评论数据已退化。"
+        message = "样本账号只拿到公开页摘要，作品详情与评论抓取能力暂时受限。"
         hints.extend(
             [
-                "当前还能看账号摘要，但详细作品数据能力不足。",
-                "重新登录本机 Chrome 后再点“立即自检”，通常能恢复 note_id 抓取。",
+                "当前账号摘要仍可用，只是详情和评论抓取能力暂时不足。",
+                "可先继续采集；若后续多次都拿不到 note_id，再重新登录后复检。",
             ]
         )
     elif cookie_source == "none":

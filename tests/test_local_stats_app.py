@@ -736,13 +736,13 @@ class LocalStatsAppTest(unittest.TestCase):
                 {"state": "error", "message": "样本账号返回了空结果，登录态可能已过期"}
             )
         )
-        self.assertTrue(
+        self.assertFalse(
             login_state_requires_interactive_login(
                 {
                     "state": "warning",
                     "cookie_source": "chrome_profile",
                     "detail_ready": False,
-                    "message": "样本账号只拿到公开页摘要，未拿到 note_id，作品详情与评论数据已退化。",
+                    "message": "样本账号只拿到公开页摘要，作品详情与评论抓取能力暂时受限。",
                 }
             )
         )
@@ -1624,6 +1624,8 @@ class LocalStatsAppTest(unittest.TestCase):
         self.assertEqual(payload["work_count"], 2)
         self.assertEqual(payload["note_id_count"], 0)
         self.assertEqual(payload["sample_account"], "账号A")
+        self.assertIn("暂时受限", payload["message"])
+        self.assertFalse(login_state_requires_interactive_login(payload))
 
     def test_run_login_state_self_check_warns_when_sample_fetch_is_transient_failure(self) -> None:
         settings = Settings(xhs_fetch_mode="requests", xhs_chrome_cookie_profile="/tmp/profile")

@@ -628,7 +628,7 @@ function renderOperationsHub() {
     loginState.state === "ok"
       ? "登录态正常"
       : loginState.state === "warning"
-        ? "抓取异常，建议复核"
+        ? "详情能力受限"
         : loginState.state === "checking"
           ? "正在自检"
           : loginState.state === "error"
