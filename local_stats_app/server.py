@@ -1461,6 +1461,7 @@ def build_mobile_rankings_payload(
         "project": normalized_project or "all",
         "projects": normalized_projects,
         "view_mode": "server_cache_only",
+        "server_time": iso_now(),
         "updated_at": str(dashboard_payload.get("updated_at") or dashboard_payload.get("generated_at") or "").strip(),
         "generated_at": str(dashboard_payload.get("generated_at") or "").strip(),
         "server_received_at": str(dashboard_payload.get("server_received_at") or "").strip(),

@@ -3,6 +3,7 @@ const apiBase = (params.get("api_base") || "").replace(/\/$/, "");
 let selectedProject = (params.get("project") || "默认项目").trim();
 let selectedAccountId = (params.get("account_id") || "all").trim() || "all";
 let selectedHistoryDate = "";
+let serverClockTimer = null;
 
 function buildDashboardUrl() {
   return `${apiBase}/api/mobile-rankings?project=${encodeURIComponent(selectedProject)}`;
@@ -55,6 +56,51 @@ function formatTimeLabel(value) {
   return text;
 }
 
+function padNumber(value) {
+  return String(value).padStart(2, "0");
+}
+
+function formatDateObject(value) {
+  return [
+    value.getFullYear(),
+    padNumber(value.getMonth() + 1),
+    padNumber(value.getDate()),
+  ].join("-") + " " + [
+    padNumber(value.getHours()),
+    padNumber(value.getMinutes()),
+    padNumber(value.getSeconds()),
+  ].join(":");
+}
+
+function parseServerDate(value) {
+  const text = String(value || "").trim();
+  if (!text) return null;
+  const parsed = new Date(text);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed;
+}
+
+function startServerClock(value) {
+  const node = document.getElementById("headlineServerTime");
+  if (serverClockTimer) {
+    window.clearInterval(serverClockTimer);
+    serverClockTimer = null;
+  }
+  const baseDate = parseServerDate(value);
+  if (!baseDate) {
+    node.textContent = formatTimeLabel(value);
+    return;
+  }
+  const startedAt = Date.now();
+  const render = () => {
+    const elapsed = Date.now() - startedAt;
+    const current = new Date(baseDate.getTime() + elapsed);
+    node.textContent = formatDateObject(current);
+  };
+  render();
+  serverClockTimer = window.setInterval(render, 1000);
+}
+
 function applyVersion(payload) {
   const version = String(payload?.version || "").trim();
   if (version) {
@@ -64,7 +110,7 @@ function applyVersion(payload) {
 }
 
 function renderHeadline(payload, detail) {
-  document.getElementById("headlineServerTime").textContent = formatTimeLabel(payload.server_received_at || payload.updated_at || payload.generated_at || "");
+  startServerClock(payload.server_time || payload.server_received_at || payload.updated_at || payload.generated_at || "");
 }
 
 function renderList(rootId, countId, rows, metricLabel, options = {}) {
