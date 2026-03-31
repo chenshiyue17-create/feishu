@@ -103,9 +103,7 @@ function filterRowsByAccount(rows, accountId) {
 
 function renderCalendar(rows) {
   const select = document.getElementById("calendarDateSelect");
-  const count = document.getElementById("calendarCount");
   const data = (rows || []).slice().reverse();
-  count.textContent = String(data.length);
   if (!data.length) {
     select.innerHTML = '<option value="">当前没有历史留底</option>';
     select.disabled = true;
@@ -124,8 +122,15 @@ function renderCalendar(rows) {
 
 function renderHistoryDetails(payload) {
   const detail = (payload.history_rankings || {})[selectedHistoryDate] || {};
+  const accounts = payload.accounts || [];
+  const activeAccount = accounts.find((item) => String(item.account_id || "") === selectedAccountId);
+  const scopeLabel = activeAccount
+    ? (activeAccount.account || activeAccount.account_id || "账号")
+    : (selectedProject || payload.project || "项目");
   renderHeadline(payload, detail);
-  document.getElementById("historyDetailTitle").textContent = selectedHistoryDate ? `${selectedHistoryDate} 排行榜` : "当天排行榜";
+  document.getElementById("historyDetailTitle").textContent = selectedHistoryDate
+    ? `${selectedHistoryDate} ${scopeLabel} 排行榜`
+    : `${scopeLabel} 排行榜`;
   document.getElementById("historyDetailSummary").textContent = selectedHistoryDate
     ? `${detail.snapshot_time || selectedHistoryDate} · ${formatNumber(detail.account_count || 0)} 个账号`
     : "点历史日历中的某一天，查看当天榜单";

@@ -174,17 +174,11 @@ h1 {
   display: flex;
   align-items: center;
   gap: 8px;
+  flex: 0 0 auto;
 }
 .history-date-picker {
-  display: grid;
-  gap: 4px;
-  color: var(--muted);
-  font-size: 12px;
-  min-width: 136px;
-}
-.history-date-label {
-  color: var(--muted);
-  font-size: 11px;
+  display: block;
+  min-width: 164px;
 }
 .calendar-date-select {
   width: 100%;
@@ -218,6 +212,11 @@ h1 {
 }
 .rank-body {
   min-width: 0;
+}
+@media (max-width: 480px) {
+  .history-date-picker {
+    min-width: 128px;
+  }
 }
 .rank-title {
   margin: 0 0 6px;
