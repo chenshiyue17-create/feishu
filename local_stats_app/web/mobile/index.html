@@ -12,7 +12,7 @@
         <div class="hero-main">
           <p class="eyebrow">手机版榜单</p>
           <h1 id="pageTitle">项目排行榜</h1>
-          <p id="versionChip" class="version-chip">XHS-26.3.31-V2</p>
+          <p id="versionChip" class="version-chip">XHS-26.3.31-V3</p>
           <p id="pageSummary" class="summary">加载中</p>
         </div>
         <div class="hero-actions">
@@ -42,25 +42,16 @@
 
       <section class="ranking-section">
         <div class="section-header">
-          <h2>日期选择</h2>
-          <span id="calendarCount" class="count-badge">0</span>
-        </div>
-        <details class="calendar-picker-shell">
-          <summary class="calendar-picker-summary">
-            <span>选择日期</span>
-            <span id="calendarSelectedDate" class="calendar-selected-date">-</span>
-          </summary>
-          <div class="calendar-picker-body">
-            <label class="calendar-picker-label" for="calendarDateSelect">历史日期</label>
-            <select id="calendarDateSelect" class="calendar-date-select"></select>
+          <div class="section-heading-stack">
+            <h2 id="historyDetailTitle">当天排行榜</h2>
           </div>
-        </details>
-      </section>
-
-      <section class="ranking-section">
-        <div class="section-header">
-          <h2 id="historyDetailTitle">当天排行榜</h2>
-          <span id="historyDetailDate" class="count-badge">-</span>
+          <div class="history-toolbar">
+            <label class="history-date-picker" for="calendarDateSelect">
+              <span class="history-date-label">日期</span>
+              <select id="calendarDateSelect" class="calendar-date-select"></select>
+            </label>
+            <span id="calendarCount" class="count-badge">0</span>
+          </div>
         </div>
         <div id="historyDetailSummary" class="status-card history-summary">点历史日历中的某一天，查看当天榜单</div>
         <div class="history-detail-grid">

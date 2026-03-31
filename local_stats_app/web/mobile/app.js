@@ -104,13 +104,11 @@ function filterRowsByAccount(rows, accountId) {
 function renderCalendar(rows) {
   const select = document.getElementById("calendarDateSelect");
   const count = document.getElementById("calendarCount");
-  const selectedLabel = document.getElementById("calendarSelectedDate");
   const data = (rows || []).slice().reverse();
   count.textContent = String(data.length);
   if (!data.length) {
     select.innerHTML = '<option value="">当前没有历史留底</option>';
     select.disabled = true;
-    selectedLabel.textContent = "暂无日期";
     return;
   }
   select.disabled = false;
@@ -122,13 +120,11 @@ function renderCalendar(rows) {
     .map((item) => `<option value="${item.date || ""}">${item.date || "未知日期"}</option>`)
     .join("");
   select.value = selectedHistoryDate;
-  selectedLabel.textContent = selectedHistoryDate || "未选择日期";
 }
 
 function renderHistoryDetails(payload) {
   const detail = (payload.history_rankings || {})[selectedHistoryDate] || {};
   renderHeadline(payload, detail);
-  document.getElementById("historyDetailDate").textContent = selectedHistoryDate || "-";
   document.getElementById("historyDetailTitle").textContent = selectedHistoryDate ? `${selectedHistoryDate} 排行榜` : "当天排行榜";
   document.getElementById("historyDetailSummary").textContent = selectedHistoryDate
     ? `${detail.snapshot_time || selectedHistoryDate} · ${formatNumber(detail.account_count || 0)} 个账号`
@@ -241,7 +237,7 @@ async function loadDashboard() {
     renderList("growthList", "growthCount", rankings.growth || [], "增长");
   } catch (error) {
     statusCard.textContent = `加载失败：${error.message}`;
-    ["calendarList", "likesList", "commentsList", "growthList", "historyLikesList", "historyCommentsList", "historyGrowthList"].forEach((id) => {
+    ["likesList", "commentsList", "growthList", "historyLikesList", "historyCommentsList", "historyGrowthList"].forEach((id) => {
       document.getElementById(id).innerHTML = '<div class="empty-state">加载失败</div>';
     });
   }
@@ -251,7 +247,6 @@ document.getElementById("refreshButton").addEventListener("click", loadDashboard
 document.getElementById("exportLongImageButton").addEventListener("click", exportLongImage);
 document.getElementById("calendarDateSelect").addEventListener("change", (event) => {
   selectedHistoryDate = String(event.target.value || "").trim();
-  document.getElementById("calendarSelectedDate").textContent = selectedHistoryDate || "未选择日期";
   renderHistoryDetails(window.__mobilePayload || {});
 });
 document.getElementById("projectSelect").addEventListener("change", (event) => {
