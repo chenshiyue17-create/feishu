@@ -1025,22 +1025,109 @@ function renderProjectCalendar() {
     return;
   }
 
+  const active = getActiveAccount();
+  const snapshot = getCalendarRankingSnapshot(projectName, selected.date);
+  const fallbackToCurrent = !snapshot && selected.date === String(state.payload?.latest_date || "").trim();
+  const detailSource = snapshot || {
+    snapshot_time: String(state.payload?.updated_at || state.payload?.generated_at || "").trim(),
+    likes: state.payload?.rankings?.["单条点赞排行"] || [],
+    comments: state.payload?.rankings?.["单条评论排行"] || [],
+    growth: state.payload?.rankings?.["单条第二天增长排行"] || [],
+  };
+  const likesRows = getScopedRankingRows(detailSource.likes || [], active, active ? "account" : "all", projectName).slice(0, 5);
+  const commentsRows = getScopedRankingRows(detailSource.comments || [], active, active ? "account" : "all", projectName).slice(0, 5);
+  const growthRows = getScopedRankingRows(detailSource.growth || [], active, active ? "account" : "all", projectName).slice(0, 5);
+  const hasAnyRankingRows = likesRows.length || commentsRows.length || growthRows.length;
+  const scopeLabel = active ? active.account : projectName;
+  const summaryBits = [`${selected.date} · ${scopeLabel}`];
+  if (detailSource.snapshot_time) {
+    summaryBits.push(detailSource.snapshot_time);
+  }
+  if (fallbackToCurrent) {
+    summaryBits.push("当前榜单回退");
+  }
+
+  if (!hasAnyRankingRows) {
+    detailNode.innerHTML = `
+      <div class="project-calendar-detail-head">
+        <div>
+          <div class="project-calendar-detail-title">${selected.date} 排行榜</div>
+          <div class="project-calendar-detail-meta">${summaryBits.join(" · ")}</div>
+        </div>
+      </div>
+      <div class="project-calendar-account-list">
+        ${selected.accounts
+          .slice(0, 8)
+          .map(
+            (item) => `
+              <article class="project-calendar-account-item">
+                <div class="project-calendar-account-title">
+                  ${item.profile_url ? `<a class="note-link" href="${item.profile_url}" target="_blank" rel="noreferrer">${item.account}</a>` : item.account}
+                </div>
+                <div class="project-calendar-account-meta">粉丝 ${formatNumber(item.fans)} · 获赞 ${formatNumber(item.interaction)} · 点赞 ${formatNumber(item.likes)} · 评论 ${formatNumber(item.comments)} · 作品 ${formatNumber(item.works)}</div>
+              </article>
+            `,
+          )
+          .join("")}
+      </div>
+    `;
+    return;
+  }
+
   detailNode.innerHTML = `
-    <div class="project-calendar-account-list">
-      ${selected.accounts
-        .slice(0, 8)
-        .map(
-          (item) => `
-            <article class="project-calendar-account-item">
-              <div class="project-calendar-account-title">
-                ${item.profile_url ? `<a class="note-link" href="${item.profile_url}" target="_blank" rel="noreferrer">${item.account}</a>` : item.account}
-              </div>
-              <div class="project-calendar-account-meta">粉丝 ${formatNumber(item.fans)} · 获赞 ${formatNumber(item.interaction)} · 点赞 ${formatNumber(item.likes)} · 评论 ${formatNumber(item.comments)} · 作品 ${formatNumber(item.works)}</div>
-            </article>
-          `,
-        )
-        .join("")}
+    <div class="project-calendar-detail-head">
+      <div>
+        <div class="project-calendar-detail-title">${selected.date} 排行榜</div>
+        <div class="project-calendar-detail-meta">${summaryBits.join(" · ")}</div>
+      </div>
     </div>
+    <div class="project-calendar-detail-rankings">
+      ${buildCalendarRankingColumn("当天点赞榜", likesRows, "点赞")}
+      ${buildCalendarRankingColumn("当天评论榜", commentsRows, "评论")}
+      ${buildCalendarRankingColumn("当天增长榜", growthRows, "增长")}
+    </div>
+  `;
+}
+
+function getCalendarRankingSnapshot(projectName, dateText) {
+  const history = state.payload?.history_rankings || {};
+  if (!dateText) return null;
+  const projectHistory = history?.[projectName];
+  if (projectHistory && typeof projectHistory === "object" && !Array.isArray(projectHistory)) {
+    const snapshot = projectHistory[dateText];
+    if (snapshot && typeof snapshot === "object") {
+      return snapshot;
+    }
+  }
+  const directSnapshot = history?.[dateText];
+  if (directSnapshot && typeof directSnapshot === "object") {
+    return directSnapshot;
+  }
+  return null;
+}
+
+function buildCalendarRankingColumn(title, rows, metricLabel) {
+  if (!rows.length) {
+    return `
+      <section class="ranking-column">
+        <div class="ranking-column-header">
+          <h3>${title}</h3>
+          <span class="ranking-column-meta">暂无</span>
+        </div>
+        <div class="empty-state">当前没有可显示的数据</div>
+      </section>
+    `;
+  }
+  return `
+    <section class="ranking-column">
+      <div class="ranking-column-header">
+        <h3>${title}</h3>
+        <span class="ranking-column-meta">Top ${formatNumber(rows.length)}</span>
+      </div>
+      <div class="ranking-mini-list">
+        ${rows.map((item, index) => renderRankingMiniItem({ metricLabel }, item, index + 1)).join("")}
+      </div>
+    </section>
   `;
 }
 
