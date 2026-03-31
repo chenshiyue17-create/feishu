@@ -181,6 +181,26 @@
           <div id="projectCalendar" class="project-calendar-grid"></div>
           <div id="projectCalendarDetail" class="project-calendar-detail"></div>
         </div>
+        <div class="panel project-home-trend-panel">
+          <div class="panel-header">
+            <div>
+              <p class="panel-label">项目趋势</p>
+              <h3 id="projectHomeTrendTitle">项目近 7 天成长</h3>
+            </div>
+            <p id="projectHomeTrendSummary" class="summary-text"></p>
+          </div>
+          <div id="projectHomeTrendChart" class="chart-shell"></div>
+        </div>
+        <div class="project-home-layout">
+          <div class="project-home-column">
+            <div class="project-home-subtitle">项目内 Top 账号</div>
+            <div id="projectTopAccounts" class="project-home-list"></div>
+          </div>
+          <div class="project-home-column">
+            <div class="project-home-subtitle">项目内 Top 内容</div>
+            <div id="projectTopContents" class="project-home-list"></div>
+          </div>
+        </div>
       </section>
 
       <section class="panel account-focus-panel">
@@ -210,6 +230,18 @@
         </div>
         <div id="rankingSummaryBar" class="ranking-summary-bar"></div>
         <div id="rankingList" class="ranking-board"></div>
+      </section>
+
+      <section class="panel alerts-panel">
+        <div class="panel-header">
+          <div>
+            <p class="panel-label">评论预警</p>
+            <h2>最近提醒</h2>
+            <p id="alertsSummaryText" class="summary-text"></p>
+          </div>
+        </div>
+        <div id="alertsSummaryBar" class="ranking-summary-bar"></div>
+        <div id="alertsList" class="alerts-list"></div>
       </section>
     </main>
     <script src="/app.js"></script>

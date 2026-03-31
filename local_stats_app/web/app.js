@@ -593,6 +593,7 @@ function renderApp() {
   renderAccountFocus();
   renderRankingScopeTabs();
   renderRankingList();
+  renderAlerts();
 }
 
 function renderOperationsHub() {
@@ -1312,11 +1313,31 @@ function renderProjectHome() {
   const entries = getProjectEntries(projectName);
   const accounts = getVisibleAccounts();
   const projectStatus = getProjectStatus(projectName);
+  const topAccounts = [...accounts]
+    .sort((a, b) => (b.fans - a.fans) || (b.interaction - a.interaction) || (b.likes - a.likes))
+    .slice(0, 5);
+  const topContents = getProjectTopContentRows(5);
+  const projectSeries = getProjectSeries(projectName);
+  const projectGrowth = buildProjectComparableGrowth(projectName, 7);
 
   const titleNode = document.getElementById("projectHomeTitle");
   const summaryNode = document.getElementById("projectHomeSummary");
   const statsNode = document.getElementById("projectHomeStats");
-  if (!titleNode || !summaryNode || !statsNode) {
+  const topAccountsNode = document.getElementById("projectTopAccounts");
+  const topContentsNode = document.getElementById("projectTopContents");
+  const trendTitleNode = document.getElementById("projectHomeTrendTitle");
+  const trendSummaryNode = document.getElementById("projectHomeTrendSummary");
+  const trendChartNode = document.getElementById("projectHomeTrendChart");
+  if (
+    !titleNode ||
+    !summaryNode ||
+    !statsNode ||
+    !topAccountsNode ||
+    !topContentsNode ||
+    !trendTitleNode ||
+    !trendSummaryNode ||
+    !trendChartNode
+  ) {
     return;
   }
 
@@ -1324,6 +1345,11 @@ function renderProjectHome() {
     titleNode.textContent = "请选择单个项目";
     summaryNode.textContent = "先从上方进入单个项目。";
     statsNode.innerHTML = `<div class="empty-state">请选择单个项目后查看该项目的总览指标。</div>`;
+    topAccountsNode.innerHTML = `<div class="empty-state">请选择单个项目后查看项目内 Top 账号。</div>`;
+    topContentsNode.innerHTML = `<div class="empty-state">请选择单个项目后查看项目内 Top 内容。</div>`;
+    trendTitleNode.textContent = "项目近 7 天成长";
+    trendSummaryNode.textContent = "请选择单个项目后查看项目趋势。";
+    trendChartNode.innerHTML = `<div class="empty-state">当前不再显示全部项目的混合趋势。</div>`;
     return;
   }
   titleNode.textContent = `项目：${projectName}`;
@@ -1338,6 +1364,15 @@ function renderProjectHome() {
     summaryParts.push(`最近成功 ${formatDateTime(projectStatus.last_success_at || projectStatus.finished_at)}`);
   } else if (projectStatus.updated_at) {
     summaryParts.push(`最近状态 ${formatDateTime(projectStatus.updated_at)}`);
+  }
+  if (projectGrowth) {
+    if (projectGrowth.comparable_ready) {
+      summaryParts.push(
+        `${projectGrowth.label} 可比账号 ${formatNumber(projectGrowth.comparable_account_count)} 个 · 粉丝 ${formatSignedNumber(projectGrowth.fans)} / 点赞 ${formatSignedNumber(projectGrowth.likes)} / 评论 ${formatSignedNumber(projectGrowth.comments)}`,
+      );
+    } else {
+      summaryParts.push(`${projectGrowth.label} 暂无可比账号`);
+    }
   }
   summaryParts.push("本地主视图与手机版对齐");
   summaryNode.textContent = summaryParts.join(" · ");
@@ -1358,6 +1393,53 @@ function renderProjectHome() {
       `,
     )
     .join("");
+
+  if (!topAccounts.length) {
+    topAccountsNode.innerHTML = `<div class="empty-state">当前项目下暂无已同步账号。</div>`;
+  } else {
+    topAccountsNode.innerHTML = topAccounts
+      .map(
+        (item, index) => `
+          <article class="project-home-item">
+            <div class="project-home-rank">${index + 1}</div>
+            <div class="project-home-item-body">
+              <div class="project-home-item-title">${item.profile_url ? `<a class="note-link" href="${item.profile_url}" target="_blank" rel="noreferrer">${item.account}</a>` : item.account}</div>
+              <div class="project-home-item-meta">粉丝 ${formatNumber(item.fans)} · 获赞 ${formatNumber(item.interaction)} · 作品 ${item.works_display || formatNumber(item.works)}</div>
+            </div>
+          </article>
+        `,
+      )
+      .join("");
+  }
+
+  if (!topContents.length) {
+    topContentsNode.innerHTML = `<div class="empty-state">当前项目下暂无内容排行。</div>`;
+  } else {
+    topContentsNode.innerHTML = topContents
+      .map(
+        (item, index) => `
+          <article class="project-home-item is-content">
+            <div class="project-home-rank">${index + 1}</div>
+            <div class="project-home-cover-shell">
+              ${buildCoverMarkup(item, { size: "mini", rank: "" })}
+            </div>
+            <div class="project-home-item-body">
+              <div class="project-home-item-title">${item.note_url ? `<a class="note-link" href="${item.note_url}" target="_blank" rel="noreferrer">${item.title}</a>` : item.title}</div>
+              <div class="project-home-item-meta">${item.account} · 点赞 ${formatNumber(item.metric)}</div>
+            </div>
+          </article>
+        `,
+      )
+      .join("");
+  }
+
+  trendTitleNode.textContent = `${projectName} · 近 7 天成长`;
+  trendSummaryNode.textContent = projectGrowth
+    ? projectGrowth.comparable_ready
+      ? `${projectGrowth.start_date} → ${projectGrowth.end_date} · 可比账号 ${formatNumber(projectGrowth.comparable_account_count)} 个 · 粉丝 ${formatSignedNumber(projectGrowth.fans)} / 点赞 ${formatSignedNumber(projectGrowth.likes)} / 评论 ${formatSignedNumber(projectGrowth.comments)}${projectGrowth.new_account_count ? ` · 新增账号 ${formatNumber(projectGrowth.new_account_count)} 个` : ""}`
+      : `${projectGrowth.start_date} → ${projectGrowth.end_date} · 暂无可比账号${projectGrowth.new_account_count ? ` · 新增账号 ${formatNumber(projectGrowth.new_account_count)} 个` : ""}`
+    : "历史不足，暂不显示项目级周对比";
+  trendChartNode.innerHTML = buildProjectTrendMarkup(projectSeries, projectGrowth, projectName);
 }
 
 function buildProjectTrendMarkup(series, delta, projectName) {
