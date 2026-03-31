@@ -806,9 +806,9 @@ body {
 
 .login-state-card {
   display: grid;
-  gap: 10px;
+  gap: 8px;
   margin: 14px 0 6px;
-  padding: 14px 16px;
+  padding: 12px 14px;
   border-radius: 20px;
   background: rgba(255,255,255,0.04);
   border: 1px solid rgba(255,255,255,0.07);
@@ -827,9 +827,9 @@ body {
 .login-state-chip {
   display: inline-flex;
   align-items: center;
-  padding: 7px 12px;
+  padding: 6px 10px;
   border-radius: 999px;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 700;
 }
 
@@ -863,27 +863,27 @@ body {
 
 .login-state-message {
   color: #fff2eb;
-  line-height: 1.6;
-  font-size: 14px;
+  line-height: 1.45;
+  font-size: 13px;
 }
 
 .login-state-inline-status {
   display: grid;
-  gap: 8px;
-  padding-top: 8px;
+  gap: 6px;
+  padding-top: 6px;
   border-top: 1px solid rgba(255,255,255,0.06);
 }
 
 .login-state-inline-title {
   color: #fff2eb;
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 700;
 }
 
 .login-state-inline-copy {
   color: var(--muted);
-  font-size: 12px;
-  line-height: 1.6;
+  font-size: 11px;
+  line-height: 1.45;
 }
 
 .proxy-pool-card {

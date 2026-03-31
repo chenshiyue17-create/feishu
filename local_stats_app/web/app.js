@@ -1827,22 +1827,21 @@ function renderLoginState(loginState) {
   const chips = [
     loginState?.cookie_source_label || "未配置登录态",
     loginState?.fetch_mode ? `模式 ${loginState.fetch_mode}` : "",
-    loginState?.sample_url ? `样本 ${sampleLabel}` : "待选样本账号",
+    loginState?.sample_url ? `样本 ${sampleLabel}` : "",
     detailText,
-    `上次自检 ${checkedAt}`,
   ].filter(Boolean);
-  const hintLines = (loginState?.hints || []).slice(0, 2);
+  const hintText = String((loginState?.hints || [])[0] || "").trim();
   const proxyPool = state.monitoring?.sync_status?.proxy_pool_status || {};
   root.innerHTML = `
     <div class="login-state-top">
       <span class="login-state-badge is-${status}">${getLoginStateText(status)}</span>
-      ${loginState?.checking ? '<span class="login-state-meta">正在后台自检...</span>' : ""}
+      <span class="login-state-meta">${loginState?.checking ? "正在后台自检..." : `上次自检 ${checkedAt}`}</span>
     </div>
     <div class="login-state-message">${loginState?.message || "等待自动自检"}</div>
     <div class="login-state-chip-row">
       ${chips.map((text) => `<span class="login-state-chip">${text}</span>`).join("")}
     </div>
-    ${hintLines.length ? `<div class="login-state-hints">${hintLines.map((text) => `<span>${text}</span>`).join("")}</div>` : ""}
+    ${hintText ? `<div class="login-state-hints"><span>${hintText}</span></div>` : ""}
     ${buildProxyPoolInline(proxyPool)}
   `;
 }
@@ -1852,7 +1851,6 @@ function buildProxyPoolInline(proxyPool) {
   const chips = [
     proxyPool?.enabled ? `IP池 ${formatNumber(proxyPool.total || 0)}` : "本机网络",
     proxyPool?.current_ip ? `IP ${proxyPool.current_ip}` : "",
-    proxyPool?.current_ip_checked_at ? `检测 ${formatDateTime(proxyPool.current_ip_checked_at)}` : "",
     proxyPool?.ready_count ? `可用 ${formatNumber(proxyPool.ready_count || 0)}` : "",
     proxyPool?.cooling_count ? `冷却 ${formatNumber(proxyPool.cooling_count || 0)}` : "",
   ].filter(Boolean);
