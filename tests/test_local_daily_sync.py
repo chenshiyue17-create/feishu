@@ -14,7 +14,10 @@ from xhs_feishu_monitor.local_daily_sync import (
     run_local_daily_sync,
     uninstall_local_daily_sync_launchd,
 )
-from xhs_feishu_monitor.local_daily_sync_status import load_local_daily_sync_status
+from xhs_feishu_monitor.local_daily_sync_status import (
+    load_local_daily_sync_status,
+    write_local_daily_sync_status,
+)
 
 
 SHANGHAI_TZ = timezone(timedelta(hours=8))
@@ -140,7 +143,9 @@ class LocalDailySyncTest(unittest.TestCase):
         self.assertEqual(collect_mock.call_count, 2)
         push_mock.assert_called_once_with(env_file=str(env_path), urls_file="/tmp/urls.txt")
         self.assertEqual(persisted["state"], "success")
+        self.assertEqual(persisted["phase"], "finished")
         self.assertTrue(persisted["last_success_at"])
+        self.assertTrue(persisted["next_run_at"])
         self.assertEqual(persisted["upload_state"], "success")
 
     def test_run_local_daily_sync_skips_upload_when_any_project_fails(self) -> None:
@@ -199,7 +204,73 @@ class LocalDailySyncTest(unittest.TestCase):
         self.assertIn("东莞采集失败", result["failures"][0]["error"])
         push_mock.assert_not_called()
         self.assertEqual(persisted["state"], "partial")
+        self.assertEqual(persisted["phase"], "finished")
         self.assertEqual(persisted["upload_state"], "skipped")
+
+    def test_run_local_daily_sync_persists_waiting_login_stage(self) -> None:
+        now = datetime(2026, 3, 31, 14, 0, tzinfo=SHANGHAI_TZ)
+        plan = {
+            "默认项目": {
+                "urls": ["https://www.xiaohongshu.com/user/profile/u1"],
+                "scheduled_at": now,
+            },
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            env_path = Path(temp_dir) / ".env"
+            state_path = Path(temp_dir) / ".state.json"
+            env_path.write_text(f"STATE_FILE={state_path}\n", encoding="utf-8")
+            written_payloads: list[dict[str, object]] = []
+
+            def _wait_for_login(**kwargs):
+                kwargs["on_wait"]({"message": "等待你重新登录小红书"})
+                return {"state": "ok", "message": "已恢复"}
+
+            def _capture_status(**kwargs):
+                written_payloads.append(dict(kwargs.get("payload") or {}))
+                return original_write_status(**kwargs)
+
+            original_write_status = write_local_daily_sync_status
+
+            with patch(
+                "xhs_feishu_monitor.local_daily_sync.load_settings",
+                return_value=SimpleNamespace(state_file=str(state_path), xhs_batch_window_start="14:00"),
+            ), patch(
+                "xhs_feishu_monitor.local_daily_sync.parse_monitored_entries",
+                return_value=[{"project": "默认项目", "url": "u1", "active": True}],
+            ), patch(
+                "xhs_feishu_monitor.local_daily_sync.build_auto_project_schedule",
+                return_value=plan,
+            ), patch(
+                "xhs_feishu_monitor.local_daily_sync._sleep_until"
+            ), patch(
+                "xhs_feishu_monitor.local_daily_sync.wait_for_xiaohongshu_login",
+                side_effect=_wait_for_login,
+            ), patch(
+                "xhs_feishu_monitor.local_daily_sync.login_state_requires_interactive_login",
+                return_value=False,
+            ), patch(
+                "xhs_feishu_monitor.local_daily_sync.collect_profiles_to_local_cache",
+                return_value={"status": "success", "successful_accounts": 1},
+            ), patch(
+                "xhs_feishu_monitor.local_daily_sync.push_current_cache_to_server",
+                return_value={"ok": True, "account_count": 1},
+            ), patch(
+                "xhs_feishu_monitor.local_daily_sync.write_local_daily_sync_status",
+                side_effect=_capture_status,
+            ):
+                run_local_daily_sync(env_file=str(env_path), urls_file="/tmp/urls.txt")
+
+            persisted = load_local_daily_sync_status(
+                env_file=str(env_path),
+                state_file_path=str(state_path),
+            )
+
+        self.assertEqual(persisted["state"], "success")
+        self.assertEqual(persisted["current_project"], "")
+        self.assertEqual(persisted["waiting_for_login"], False)
+        self.assertTrue(persisted["next_run_at"])
+        self.assertTrue(any(item.get("phase") == "waiting_login" for item in written_payloads))
 
 
 if __name__ == "__main__":

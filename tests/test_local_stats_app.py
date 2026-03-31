@@ -1058,8 +1058,14 @@ class LocalStatsAppTest(unittest.TestCase):
                 env_file=str(env_path),
                 state_file_path=str(state_path),
                 payload={
-                    "state": "success",
-                    "message": "自动采集完成",
+                    "state": "running",
+                    "phase": "collecting",
+                    "message": "项目「项目A」正在采集",
+                    "current_project": "项目A",
+                    "current_project_index": 1,
+                    "current_project_total": 2,
+                    "current_project_scheduled_at": "2026-03-31T14:20:00+08:00",
+                    "next_run_at": "2026-04-01T14:00:00+08:00",
                     "last_success_at": "2026-03-31T14:33:00+08:00",
                     "last_upload_success_at": "2026-03-31T14:35:00+08:00",
                 },
@@ -1072,7 +1078,11 @@ class LocalStatsAppTest(unittest.TestCase):
             payload = store.get_payload()
 
         self.assertEqual(payload["sync_status"]["schedule_driver"], "launchd")
-        self.assertEqual(payload["sync_status"]["launchd_status"]["state"], "success")
+        self.assertEqual(payload["sync_status"]["launchd_status"]["state"], "running")
+        self.assertEqual(payload["sync_status"]["launchd_status"]["phase"], "collecting")
+        self.assertEqual(payload["sync_status"]["launchd_status"]["current_project"], "项目A")
+        self.assertEqual(payload["sync_status"]["launchd_status"]["current_project_index"], 1)
+        self.assertEqual(payload["sync_status"]["launchd_status"]["next_run_at"], "2026-04-01T14:00:00+08:00")
         self.assertEqual(payload["sync_status"]["launchd_status"]["last_upload_success_at"], "2026-03-31T14:35:00+08:00")
 
     def test_push_server_cache_updates_manual_status(self) -> None:

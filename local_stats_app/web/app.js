@@ -58,6 +58,73 @@ function formatPushTarget(url) {
   }
 }
 
+function formatClockTime(value) {
+  const text = formatDateTime(value);
+  return text === "未更新" ? "" : text.slice(11, 16);
+}
+
+function formatLaunchdPhaseLabel(status = {}) {
+  const phase = String(status.phase || "").trim();
+  const state = String(status.state || "").trim();
+  if (phase === "waiting_login" || status.waiting_for_login) return "等待登录";
+  if (phase === "waiting_window") return "等待时间窗口";
+  if (phase === "collecting") return "采集中";
+  if (phase === "uploading") return "上传中";
+  if (phase === "preparing") return "准备中";
+  if (phase === "finished" && state === "success") return "今日已完成";
+  if (phase === "finished" && state === "partial") return "部分完成";
+  if (state === "success") return "今日已完成";
+  if (state === "partial") return "部分完成";
+  if (state === "skipped") return "已跳过";
+  return "待命";
+}
+
+function buildLaunchdProgressValue(status = {}) {
+  const phaseLabel = formatLaunchdPhaseLabel(status);
+  const currentProject = String(status.current_project || "").trim();
+  const currentIndex = Number(status.current_project_index || 0);
+  const currentTotal = Number(status.current_project_total || status.project_count || 0);
+  const progressText = currentIndex > 0 && currentTotal > 0 ? `${currentIndex}/${currentTotal}` : "";
+  const pieces = [phaseLabel];
+  if (currentProject) pieces.push(currentProject);
+  if (progressText) pieces.push(progressText);
+  return pieces.join(" · ");
+}
+
+function buildLaunchdProgressCopy(status = {}, plan = {}) {
+  const pieces = [];
+  if (status.message) pieces.push(status.message);
+  if (status.current_project_scheduled_at) {
+    pieces.push(`当前项目计划 ${formatDateTime(status.current_project_scheduled_at)}`);
+  }
+  if (status.next_run_at) {
+    pieces.push(`下一轮 ${formatDateTime(status.next_run_at)}`);
+  } else if (plan.next_run_at) {
+    pieces.push(`下一轮 ${formatDateTime(plan.next_run_at)}`);
+  }
+  if (status.last_upload_success_at) {
+    pieces.push(`上次自动上传 ${formatDateTime(status.last_upload_success_at)}`);
+  } else if (status.last_success_at) {
+    pieces.push(`上次自动采集 ${formatDateTime(status.last_success_at)}`);
+  }
+  return pieces.filter(Boolean).join(" · ");
+}
+
+function buildLaunchdPlanPreview(plan = {}) {
+  const items = Array.isArray(plan.projects) ? plan.projects : [];
+  if (!items.length) return "当前没有待排程的项目";
+  const preview = items.slice(0, 4).map((item) => {
+    const clock = formatClockTime(item.next_run_at);
+    const name = String(item.name || "未命名项目").trim();
+    const activeCount = Number(item.active_count || 0);
+    return `${clock || "--:--"} ${name}${activeCount ? `(${formatNumber(activeCount)})` : ""}`;
+  });
+  if (items.length > 4) {
+    preview.push(`还有 ${formatNumber(items.length - 4)} 个项目`);
+  }
+  return preview.join(" · ");
+}
+
 function loadLastServerPush() {
   try {
     const raw = window.localStorage.getItem("xhs_last_server_push");
@@ -96,6 +163,7 @@ function renderSystemConfig() {
   const cacheSummary = getLocalCacheSummary();
   const autoPushStatus = state.monitoring?.sync_status?.server_cache_push_status || {};
   const launchdStatus = state.monitoring?.sync_status?.launchd_status || {};
+  const schedulePlan = state.monitoring?.sync_status?.schedule_plan || {};
   const scheduleDriver = String(state.monitoring?.sync_status?.schedule_driver || "app").trim().toLowerCase() || "app";
   const cacheStateNode = document.getElementById("systemConfigCacheStatus");
   document.getElementById("configXhsCookie").value = config.XHS_COOKIE || "";
@@ -117,27 +185,25 @@ function renderSystemConfig() {
         ? `本机发起 ${formatDateTime(lastPush.pushed_at)}`
         : "还没有成功推送记录";
     const autoPushText = scheduleDriver === "launchd"
-      ? (launchdStatus?.last_success_at
-          ? `上次自动采集 ${formatDateTime(launchdStatus.last_success_at)}`
-          : autoPushStatus?.next_auto_run_at
-            ? `下次自动采集 ${formatDateTime(autoPushStatus.next_auto_run_at)}`
-            : "等待 launchd 定时执行")
+      ? buildLaunchdProgressValue(launchdStatus)
       : autoPushStatus?.last_success_at
         ? `上次自动上传 ${formatDateTime(autoPushStatus.last_success_at)}`
         : autoPushStatus?.next_auto_run_at
           ? `下次自动上传 ${formatDateTime(autoPushStatus.next_auto_run_at)}`
           : "每天 14:00 自动上传到服务器";
     const autoPushCopy = scheduleDriver === "launchd"
-      ? launchdStatus?.state === "running"
-        ? launchdStatus.message || "launchd 自动采集中"
-        : launchdStatus?.state === "partial"
-          ? `自动任务未完成：${launchdStatus.last_error || launchdStatus.upload_message || launchdStatus.message || "请查看日志"}`
-          : `${formatPushTarget(config.SERVER_CACHE_PUSH_URL || "")} · ${launchdStatus?.last_upload_success_at ? `上次自动上传 ${formatDateTime(launchdStatus.last_upload_success_at)}` : `每天 ${autoPushStatus.daily_at || "14:00"} 自动采集成功后上传`}`
+      ? buildLaunchdProgressCopy(launchdStatus, schedulePlan) || "launchd 会在 14:00-15:00 内错峰采集，成功后再自动上传服务器"
       : autoPushStatus?.state === "error"
         ? `自动上传失败：${autoPushStatus.last_error || autoPushStatus.message || "未知错误"}`
         : autoPushStatus?.state === "running"
           ? autoPushStatus.message || "自动上传进行中"
           : `${formatPushTarget(config.SERVER_CACHE_PUSH_URL || "")} · 每天 ${autoPushStatus.daily_at || "14:00"} 自动上传`;
+    const schedulePlanValue = scheduleDriver === "launchd"
+      ? `${formatScheduleWindow(schedulePlan) || "14:00-15:00"} · ${formatNumber(schedulePlan.project_count || 0)} 个项目`
+      : "";
+    const schedulePlanCopy = scheduleDriver === "launchd"
+      ? buildLaunchdPlanPreview(schedulePlan)
+      : "";
     cacheStateNode.innerHTML = `
       <article class="system-config-status-card">
         <div class="system-config-status-label">本地缓存状态</div>
@@ -170,6 +236,13 @@ function renderSystemConfig() {
         <div class="system-config-status-value">${autoPushText}</div>
         <div class="system-config-status-copy">${autoPushCopy}</div>
       </article>
+      ${scheduleDriver === "launchd" ? `
+      <article class="system-config-status-card">
+        <div class="system-config-status-label">今日自动计划</div>
+        <div class="system-config-status-value">${schedulePlanValue || "等待计划生成"}</div>
+        <div class="system-config-status-copy">${schedulePlanCopy || "launchd 已接管定时任务，稍后会显示项目排程。"}</div>
+      </article>
+      ` : ""}
     `;
   }
 }

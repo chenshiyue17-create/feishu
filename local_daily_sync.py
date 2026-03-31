@@ -4,7 +4,7 @@ import argparse
 import json
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -44,6 +44,14 @@ def _parse_daily_time(value: str) -> Dict[str, int]:
         "Hour": max(0, min(23, int(hour_text))),
         "Minute": max(0, min(59, int(minute_text))),
     }
+
+
+def _compute_next_daily_window_start(*, settings, now: datetime) -> str:
+    clock = _parse_daily_time(str(getattr(settings, "xhs_batch_window_start", "14:00") or "14:00"))
+    target = now.replace(hour=clock["Hour"], minute=clock["Minute"], second=0, microsecond=0)
+    if target <= now:
+        target = target + timedelta(days=1)
+    return target.isoformat(timespec="seconds")
 
 
 def build_local_daily_sync_program_arguments(*, env_file: str, urls_file: str) -> List[str]:
@@ -152,13 +160,19 @@ def run_local_daily_sync(*, env_file: str, urls_file: str) -> Dict[str, Any]:
     runtime_status = {
         **persisted_status,
         "state": "running",
+        "phase": "preparing",
         "message": "等待项目时间窗口并准备自动采集",
         "started_at": started_at,
         "finished_at": "",
+        "next_run_at": _compute_next_daily_window_start(settings=settings, now=datetime.now().astimezone()),
         "project_count": len(plan),
         "successful_projects": 0,
         "failed_projects": 0,
         "current_project": "",
+        "current_project_index": 0,
+        "current_project_total": len(plan),
+        "current_project_scheduled_at": "",
+        "waiting_for_login": False,
         "upload_state": "",
         "upload_message": "",
         "last_error": "",
@@ -177,16 +191,22 @@ def run_local_daily_sync(*, env_file: str, urls_file: str) -> Dict[str, Any]:
             payload={
                 **runtime_status,
                 "state": "skipped",
+                "phase": "idle",
                 "message": result["message"],
                 "finished_at": datetime.now().astimezone().isoformat(timespec="seconds"),
                 "current_project": "",
+                "current_project_index": 0,
+                "current_project_scheduled_at": "",
+                "waiting_for_login": False,
             },
         )
         return result
 
     project_results: List[Dict[str, Any]] = []
     failures: List[Dict[str, Any]] = []
-    for project_name, payload in sorted(plan.items(), key=lambda item: item[1]["scheduled_at"]):
+    ordered_plan = sorted(plan.items(), key=lambda item: item[1]["scheduled_at"])
+    total_projects = len(ordered_plan)
+    for project_position, (project_name, payload) in enumerate(ordered_plan, start=1):
         scheduled_at = payload["scheduled_at"]
         urls = list(payload.get("urls") or [])
         if not urls:
@@ -197,10 +217,15 @@ def run_local_daily_sync(*, env_file: str, urls_file: str) -> Dict[str, Any]:
             payload={
                 **runtime_status,
                 "state": "running",
+                "phase": "waiting_window",
                 "message": f"等待项目「{project_name}」进入采集时间",
                 "current_project": project_name,
+                "current_project_index": project_position,
+                "current_project_total": total_projects,
+                "current_project_scheduled_at": scheduled_at.isoformat(timespec="seconds"),
                 "successful_projects": len(project_results),
                 "failed_projects": len(failures),
+                "waiting_for_login": False,
             },
         )
         _sleep_until(scheduled_at)
@@ -208,6 +233,23 @@ def run_local_daily_sync(*, env_file: str, urls_file: str) -> Dict[str, Any]:
             env_file=env_file,
             settings=settings,
             sample_url=urls[0],
+            on_wait=lambda payload, project_name=project_name, project_position=project_position, scheduled_at=scheduled_at: write_local_daily_sync_status(
+                env_file=env_file,
+                state_file_path=state_file_path,
+                payload={
+                    **runtime_status,
+                    "state": "running",
+                    "phase": "waiting_login",
+                    "message": str(payload.get("message") or "等待小红书登录恢复"),
+                    "current_project": project_name,
+                    "current_project_index": project_position,
+                    "current_project_total": total_projects,
+                    "current_project_scheduled_at": scheduled_at.isoformat(timespec="seconds"),
+                    "successful_projects": len(project_results),
+                    "failed_projects": len(failures),
+                    "waiting_for_login": True,
+                },
+            ),
             timeout_seconds=0,
         )
         if login_state_requires_interactive_login(login_payload):
@@ -223,14 +265,36 @@ def run_local_daily_sync(*, env_file: str, urls_file: str) -> Dict[str, Any]:
                 payload={
                     **runtime_status,
                     "state": "partial",
+                    "phase": "waiting_login",
                     "message": f"项目「{project_name}」登录态未恢复，已跳过本项目",
                     "current_project": project_name,
+                    "current_project_index": project_position,
+                    "current_project_total": total_projects,
+                    "current_project_scheduled_at": scheduled_at.isoformat(timespec="seconds"),
                     "successful_projects": len(project_results),
                     "failed_projects": len(failures),
                     "last_error": login_payload.get("message") or "登录态未恢复",
+                    "waiting_for_login": True,
                 },
             )
             continue
+        write_local_daily_sync_status(
+            env_file=env_file,
+            state_file_path=state_file_path,
+            payload={
+                **runtime_status,
+                "state": "running",
+                "phase": "collecting",
+                "message": f"项目「{project_name}」正在采集",
+                "current_project": project_name,
+                "current_project_index": project_position,
+                "current_project_total": total_projects,
+                "current_project_scheduled_at": scheduled_at.isoformat(timespec="seconds"),
+                "successful_projects": len(project_results),
+                "failed_projects": len(failures),
+                "waiting_for_login": False,
+            },
+        )
         try:
             summary = collect_profiles_to_local_cache(
                 env_file=env_file,
@@ -254,10 +318,15 @@ def run_local_daily_sync(*, env_file: str, urls_file: str) -> Dict[str, Any]:
                 payload={
                     **runtime_status,
                     "state": "running",
+                    "phase": "collecting",
                     "message": f"项目「{project_name}」采集完成",
                     "current_project": project_name,
+                    "current_project_index": project_position,
+                    "current_project_total": total_projects,
+                    "current_project_scheduled_at": scheduled_at.isoformat(timespec="seconds"),
                     "successful_projects": len(project_results),
                     "failed_projects": len(failures),
+                    "waiting_for_login": False,
                 },
             )
         except Exception as exc:
@@ -274,11 +343,16 @@ def run_local_daily_sync(*, env_file: str, urls_file: str) -> Dict[str, Any]:
                 payload={
                     **runtime_status,
                     "state": "partial",
+                    "phase": "collecting",
                     "message": f"项目「{project_name}」采集失败",
                     "current_project": project_name,
+                    "current_project_index": project_position,
+                    "current_project_total": total_projects,
+                    "current_project_scheduled_at": scheduled_at.isoformat(timespec="seconds"),
                     "successful_projects": len(project_results),
                     "failed_projects": len(failures),
                     "last_error": str(exc),
+                    "waiting_for_login": False,
                 },
             )
 
@@ -298,18 +372,41 @@ def run_local_daily_sync(*, env_file: str, urls_file: str) -> Dict[str, Any]:
             payload={
                 **runtime_status,
                 "state": "partial",
+                "phase": "finished",
                 "message": result["message"],
                 "finished_at": datetime.now().astimezone().isoformat(timespec="seconds"),
                 "current_project": "",
+                "current_project_index": 0,
+                "current_project_scheduled_at": "",
                 "successful_projects": len(project_results),
                 "failed_projects": len(failures),
                 "last_error": str((failures[0] or {}).get("error") or ""),
                 "upload_state": "skipped",
                 "upload_message": "本轮存在采集失败，未自动上传服务器",
+                "waiting_for_login": False,
             },
         )
         return result
 
+    write_local_daily_sync_status(
+        env_file=env_file,
+        state_file_path=state_file_path,
+        payload={
+            **runtime_status,
+            "state": "running",
+            "phase": "uploading",
+            "message": "自动采集已完成，正在上传服务器",
+            "current_project": "",
+            "current_project_index": total_projects,
+            "current_project_total": total_projects,
+            "current_project_scheduled_at": "",
+            "successful_projects": len(project_results),
+            "failed_projects": 0,
+            "upload_state": "running",
+            "upload_message": "自动上传服务器进行中",
+            "waiting_for_login": False,
+        },
+    )
     try:
         upload_result = push_current_cache_to_server(env_file=env_file, urls_file=urls_file)
     except Exception as exc:
@@ -326,14 +423,18 @@ def run_local_daily_sync(*, env_file: str, urls_file: str) -> Dict[str, Any]:
             payload={
                 **runtime_status,
                 "state": "partial",
+                "phase": "uploading",
                 "message": result["message"],
                 "finished_at": datetime.now().astimezone().isoformat(timespec="seconds"),
                 "current_project": "",
+                "current_project_index": 0,
+                "current_project_scheduled_at": "",
                 "successful_projects": len(project_results),
                 "failed_projects": 0,
                 "upload_state": "error",
                 "upload_message": "上传服务器失败",
                 "last_upload_error": str(exc),
+                "waiting_for_login": False,
             },
         )
         return result
@@ -352,10 +453,13 @@ def run_local_daily_sync(*, env_file: str, urls_file: str) -> Dict[str, Any]:
         payload={
             **runtime_status,
             "state": "success",
+            "phase": "finished",
             "message": result["message"],
             "finished_at": finished_at,
             "last_success_at": finished_at,
             "current_project": "",
+            "current_project_index": 0,
+            "current_project_scheduled_at": "",
             "successful_projects": len(project_results),
             "failed_projects": 0,
             "upload_state": "success",
@@ -363,6 +467,7 @@ def run_local_daily_sync(*, env_file: str, urls_file: str) -> Dict[str, Any]:
             "last_upload_success_at": str(upload_result.get("updated_at") or finished_at),
             "last_upload_error": "",
             "last_error": "",
+            "waiting_for_login": False,
         },
     )
     return result

@@ -30,16 +30,9 @@ function formatDateTime(value) {
 }
 
 function buildMobileStatusSummary(payload) {
-  const serverReceivedAt = payload.server_received_at || "";
-  const updatedAt = payload.updated_at || payload.generated_at || "";
   const latestDate = payload.latest_date || "";
   const accountCount = Number(payload.account_count || 0);
   const pieces = [];
-  if (serverReceivedAt) {
-    pieces.push(`服务器接收 ${formatDateTime(serverReceivedAt)}`);
-  } else if (updatedAt) {
-    pieces.push(`缓存更新 ${formatDateTime(updatedAt)}`);
-  }
   if (latestDate) {
     pieces.push(`最新留底 ${latestDate}`);
   }
@@ -169,20 +162,6 @@ function renderCalendar(rows) {
   select.value = selectedHistoryDate;
 }
 
-function updateSectionVisibility() {
-  const hasActiveAccount = selectedAccountId && selectedAccountId !== "all";
-  const historySection = document.getElementById("historySection");
-  const accountSection = document.getElementById("accountSection");
-  const projectLikesSection = document.getElementById("projectLikesSection");
-  const projectCommentsSection = document.getElementById("projectCommentsSection");
-  const projectGrowthSection = document.getElementById("projectGrowthSection");
-  historySection.classList.toggle("is-hidden", hasActiveAccount);
-  projectLikesSection.classList.toggle("is-hidden", hasActiveAccount);
-  projectCommentsSection.classList.toggle("is-hidden", hasActiveAccount);
-  projectGrowthSection.classList.toggle("is-hidden", hasActiveAccount);
-  accountSection.classList.toggle("is-hidden", !hasActiveAccount);
-}
-
 function renderHistoryDetails(payload) {
   const detail = (payload.history_rankings || {})[selectedHistoryDate] || {};
   const accounts = payload.accounts || [];
@@ -190,17 +169,20 @@ function renderHistoryDetails(payload) {
   const scopeLabel = activeAccount
     ? (activeAccount.account || activeAccount.account_id || "账号")
     : (selectedProject || payload.project || "项目");
+  const likesRows = filterRowsByAccount(detail.likes || [], selectedAccountId);
+  const commentsRows = filterRowsByAccount(detail.comments || [], selectedAccountId);
+  const growthRows = filterRowsByAccount(detail.growth || [], selectedAccountId);
+  const scopeAccountCount = activeAccount ? (likesRows.length || commentsRows.length || growthRows.length ? 1 : 0) : Number(detail.account_count || 0);
   renderHeadline(payload, detail);
   document.getElementById("historyDetailTitle").textContent = selectedHistoryDate
     ? `${selectedHistoryDate} ${scopeLabel} 排行榜`
     : `${scopeLabel} 排行榜`;
   document.getElementById("historyDetailSummary").textContent = selectedHistoryDate
-    ? `${detail.snapshot_time || selectedHistoryDate} · ${formatNumber(detail.account_count || 0)} 个账号`
+    ? `${detail.snapshot_time || selectedHistoryDate} · ${formatNumber(scopeAccountCount)} 个账号`
     : "点历史日历中的某一天，查看当天榜单";
-  renderList("historyLikesList", "historyLikesCount", detail.likes || [], "点赞");
-  renderList("historyCommentsList", "historyCommentsCount", detail.comments || [], "评论");
-  renderList("historyGrowthList", "historyGrowthCount", detail.growth || [], "增长");
-  renderAccountDetails(payload, detail);
+  renderList("historyLikesList", "historyLikesCount", likesRows, "点赞", { reindexRank: Boolean(activeAccount) });
+  renderList("historyCommentsList", "historyCommentsCount", commentsRows, "评论", { reindexRank: Boolean(activeAccount) });
+  renderList("historyGrowthList", "historyGrowthCount", growthRows, "增长", { reindexRank: Boolean(activeAccount) });
 }
 
 function renderProjectOptions(projects) {
@@ -231,21 +213,6 @@ function renderAccountOptions(accounts) {
     ...items.map((item) => `<option value="${item.account_id}">${item.account || item.account_id}</option>`),
   ].join("");
   select.value = selectedAccountId;
-}
-
-function renderAccountDetails(payload, detail) {
-  const accounts = payload.accounts || [];
-  const activeAccount = accounts.find((item) => String(item.account_id || "") === selectedAccountId);
-  const label = activeAccount ? (activeAccount.account || activeAccount.account_id) : "全部账号";
-  document.getElementById("accountDetailTitle").textContent = activeAccount ? `${label} 榜单` : "账号内榜单";
-  document.getElementById("accountDetailBadge").textContent = activeAccount ? "账号内" : "全部";
-  document.getElementById("accountDetailSummary").textContent = activeAccount
-    ? `${selectedHistoryDate || payload.latest_date || ""}`
-    : "选择一个账号，查看账号内榜单";
-  renderList("accountLikesList", "accountLikesCount", filterRowsByAccount(detail.likes || [], selectedAccountId), "点赞", { reindexRank: true });
-  renderList("accountCommentsList", "accountCommentsCount", filterRowsByAccount(detail.comments || [], selectedAccountId), "评论", { reindexRank: true });
-  renderList("accountGrowthList", "accountGrowthCount", filterRowsByAccount(detail.growth || [], selectedAccountId), "增长", { reindexRank: true });
-  updateSectionVisibility();
 }
 
 async function exportLongImage() {
@@ -313,16 +280,11 @@ async function loadDashboard() {
       `${buildMobileStatusSummary(payload) || `缓存更新 ${formatDateTime(payload.updated_at || payload.generated_at)}`}`;
     statusCard.textContent =
       `仅查看服务器缓存，不采集、不上传。点击榜单卡片可直接跳转到小红书作品或账号主页。`;
-    const rankings = payload.rankings || {};
     renderCalendar(payload.calendar || []);
     renderHistoryDetails(payload);
-    renderList("likesList", "likesCount", rankings.likes || [], "点赞");
-    renderList("commentsList", "commentsCount", rankings.comments || [], "评论");
-    renderList("growthList", "growthCount", rankings.growth || [], "增长");
-    updateSectionVisibility();
   } catch (error) {
     statusCard.textContent = `加载失败：${error.message}`;
-    ["likesList", "commentsList", "growthList", "historyLikesList", "historyCommentsList", "historyGrowthList"].forEach((id) => {
+    ["historyLikesList", "historyCommentsList", "historyGrowthList"].forEach((id) => {
       document.getElementById(id).innerHTML = '<div class="empty-state">加载失败</div>';
     });
   }
@@ -343,6 +305,5 @@ document.getElementById("accountSelect").addEventListener("change", (event) => {
   selectedAccountId = String(event.target.value || "").trim() || "all";
   updateUrlProject(selectedProject);
   renderHistoryDetails(window.__mobilePayload || {});
-  updateSectionVisibility();
 });
 loadDashboard();

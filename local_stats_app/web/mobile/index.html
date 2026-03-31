@@ -12,8 +12,12 @@
         <div class="hero-main">
           <p class="eyebrow">手机版榜单</p>
           <h1 id="pageTitle">项目排行榜</h1>
-          <p id="versionChip" class="version-chip">XHS-26.3.31-V11</p>
+          <p id="versionChip" class="version-chip">XHS-26.3.31-V12</p>
           <p id="pageSummary" class="summary">加载中</p>
+          <div class="hero-live-row">
+            <span class="hero-live-label">服务器时间</span>
+            <span id="headlineServerTime" class="hero-live-value">-</span>
+          </div>
         </div>
         <div class="hero-actions">
           <label class="project-picker">
@@ -27,10 +31,6 @@
             </select>
           </label>
           <button id="refreshButton" class="refresh-button" type="button">刷新</button>
-          <div class="hero-server-time">
-            <span class="hero-server-time-label">服务器时间</span>
-            <span id="headlineServerTime" class="hero-server-time-value">-</span>
-          </div>
           <button id="exportLongImageButton" class="refresh-button export-button" type="button">导出长图</button>
         </div>
       </header>
@@ -50,81 +50,26 @@
         <div class="history-detail-grid">
           <div class="history-detail-block">
             <div class="section-header compact">
-              <h3>当天点赞榜</h3>
+              <h3>点赞榜</h3>
               <span id="historyLikesCount" class="count-badge">0</span>
             </div>
             <div id="historyLikesList" class="ranking-list"></div>
           </div>
           <div class="history-detail-block">
             <div class="section-header compact">
-              <h3>当天评论榜</h3>
+              <h3>评论榜</h3>
               <span id="historyCommentsCount" class="count-badge">0</span>
             </div>
             <div id="historyCommentsList" class="ranking-list"></div>
           </div>
           <div class="history-detail-block">
             <div class="section-header compact">
-              <h3>当天互动增长榜</h3>
+              <h3>互动增长榜</h3>
               <span id="historyGrowthCount" class="count-badge">0</span>
             </div>
             <div id="historyGrowthList" class="ranking-list"></div>
           </div>
         </div>
-      </section>
-
-      <section id="accountSection" class="ranking-section">
-        <div class="section-header">
-          <h2 id="accountDetailTitle">账号内榜单</h2>
-          <span id="accountDetailBadge" class="count-badge">全部</span>
-        </div>
-        <div id="accountDetailSummary" class="status-card history-summary">选择一个账号，查看账号内榜单</div>
-        <div class="history-detail-grid">
-          <div class="history-detail-block">
-            <div class="section-header compact">
-              <h3>账号点赞榜</h3>
-              <span id="accountLikesCount" class="count-badge">0</span>
-            </div>
-            <div id="accountLikesList" class="ranking-list"></div>
-          </div>
-          <div class="history-detail-block">
-            <div class="section-header compact">
-              <h3>账号评论榜</h3>
-              <span id="accountCommentsCount" class="count-badge">0</span>
-            </div>
-            <div id="accountCommentsList" class="ranking-list"></div>
-          </div>
-          <div class="history-detail-block">
-            <div class="section-header compact">
-              <h3>账号互动增长榜</h3>
-              <span id="accountGrowthCount" class="count-badge">0</span>
-            </div>
-            <div id="accountGrowthList" class="ranking-list"></div>
-          </div>
-        </div>
-      </section>
-
-      <section id="projectLikesSection" class="ranking-section">
-        <div class="section-header">
-          <h2>今日点赞榜</h2>
-          <span id="likesCount" class="count-badge">0</span>
-        </div>
-        <div id="likesList" class="ranking-list"></div>
-      </section>
-
-      <section id="projectCommentsSection" class="ranking-section">
-        <div class="section-header">
-          <h2>今日评论榜</h2>
-          <span id="commentsCount" class="count-badge">0</span>
-        </div>
-        <div id="commentsList" class="ranking-list"></div>
-      </section>
-
-      <section id="projectGrowthSection" class="ranking-section">
-        <div class="section-header">
-          <h2>每日互动增长榜</h2>
-          <span id="growthCount" class="count-badge">0</span>
-        </div>
-        <div id="growthList" class="ranking-list"></div>
       </section>
 
       <section id="statusCard" class="status-card footer-note"></section>

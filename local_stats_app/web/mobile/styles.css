@@ -63,6 +63,27 @@ h1 {
   font-size: 12px;
   line-height: 1.4;
 }
+.hero-live-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: rgba(255, 204, 102, 0.08);
+  border: 1px solid rgba(255, 204, 102, 0.12);
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.2;
+}
+.hero-live-label {
+  color: var(--muted);
+}
+.hero-live-value {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 700;
+}
 .refresh-button {
   border: 0;
   border-radius: 14px;
@@ -102,26 +123,6 @@ h1 {
   padding: 14px;
   margin-bottom: 14px;
   box-shadow: 0 12px 30px rgba(0,0,0,0.18);
-}
-.hero-server-time {
-  display: grid;
-  gap: 2px;
-  border-radius: 12px;
-  padding: 10px 12px;
-  background: rgba(255, 204, 102, 0.08);
-  border: 1px solid rgba(255, 204, 102, 0.12);
-}
-.hero-server-time-label {
-  color: var(--muted);
-  font-size: 10px;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-}
-.hero-server-time-value {
-  color: var(--text);
-  font-size: 13px;
-  line-height: 1.25;
-  font-weight: 700;
 }
 .status-card {
   color: var(--muted);
@@ -208,8 +209,19 @@ h1 {
   min-width: 0;
 }
 @media (max-width: 480px) {
+  .hero {
+    gap: 10px;
+  }
+  .hero-actions {
+    min-width: 124px;
+  }
   .history-date-picker {
     min-width: 128px;
+  }
+  .hero-live-row {
+    display: flex;
+    width: fit-content;
+    max-width: 100%;
   }
 }
 .rank-title {
