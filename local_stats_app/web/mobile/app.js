@@ -123,6 +123,20 @@ function renderCalendar(rows) {
   select.value = selectedHistoryDate;
 }
 
+function updateSectionVisibility() {
+  const hasActiveAccount = selectedAccountId && selectedAccountId !== "all";
+  const historySection = document.getElementById("historySection");
+  const accountSection = document.getElementById("accountSection");
+  const projectLikesSection = document.getElementById("projectLikesSection");
+  const projectCommentsSection = document.getElementById("projectCommentsSection");
+  const projectGrowthSection = document.getElementById("projectGrowthSection");
+  historySection.classList.toggle("is-hidden", hasActiveAccount);
+  projectLikesSection.classList.toggle("is-hidden", hasActiveAccount);
+  projectCommentsSection.classList.toggle("is-hidden", hasActiveAccount);
+  projectGrowthSection.classList.toggle("is-hidden", hasActiveAccount);
+  accountSection.classList.toggle("is-hidden", !hasActiveAccount);
+}
+
 function renderHistoryDetails(payload) {
   const detail = (payload.history_rankings || {})[selectedHistoryDate] || {};
   const accounts = payload.accounts || [];
@@ -185,6 +199,7 @@ function renderAccountDetails(payload, detail) {
   renderList("accountLikesList", "accountLikesCount", filterRowsByAccount(detail.likes || [], selectedAccountId), "点赞", { reindexRank: true });
   renderList("accountCommentsList", "accountCommentsCount", filterRowsByAccount(detail.comments || [], selectedAccountId), "评论", { reindexRank: true });
   renderList("accountGrowthList", "accountGrowthCount", filterRowsByAccount(detail.growth || [], selectedAccountId), "增长", { reindexRank: true });
+  updateSectionVisibility();
 }
 
 async function exportLongImage() {
@@ -258,6 +273,7 @@ async function loadDashboard() {
     renderList("likesList", "likesCount", rankings.likes || [], "点赞");
     renderList("commentsList", "commentsCount", rankings.comments || [], "评论");
     renderList("growthList", "growthCount", rankings.growth || [], "增长");
+    updateSectionVisibility();
   } catch (error) {
     statusCard.textContent = `加载失败：${error.message}`;
     ["likesList", "commentsList", "growthList", "historyLikesList", "historyCommentsList", "historyGrowthList"].forEach((id) => {
@@ -281,5 +297,6 @@ document.getElementById("accountSelect").addEventListener("change", (event) => {
   selectedAccountId = String(event.target.value || "").trim() || "all";
   updateUrlProject(selectedProject);
   renderHistoryDetails(window.__mobilePayload || {});
+  updateSectionVisibility();
 });
 loadDashboard();

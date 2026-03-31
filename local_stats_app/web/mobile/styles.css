@@ -253,6 +253,9 @@ h1 {
   display: grid;
   gap: 14px;
 }
+.is-hidden {
+  display: none;
+}
 @media (max-width: 480px) {
   .history-toolbar {
     flex-direction: column;
