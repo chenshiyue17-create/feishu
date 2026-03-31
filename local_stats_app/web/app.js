@@ -118,7 +118,7 @@ function buildLaunchdPlanPreview(plan = {}) {
     const clock = formatClockTime(item.next_run_at);
     const name = String(item.name || "未命名项目").trim();
     const activeCount = Number(item.active_count || 0);
-    return `${clock || "--:--"} ${name}${activeCount ? `(${formatNumber(activeCount)})` : ""}`;
+    return `${clock || "--:--"} ${name}${activeCount ? `(${formatNumber(activeCount)}个账号)` : ""}`;
   });
   if (items.length > 4) {
     preview.push(`还有 ${formatNumber(items.length - 4)} 个项目`);
@@ -193,14 +193,14 @@ function renderSystemConfig() {
           ? `下次自动上传 ${formatDateTime(autoPushStatus.next_auto_run_at)}`
           : "每天 14:00 自动上传到服务器";
     const autoPushCopy = scheduleDriver === "launchd"
-      ? buildLaunchdProgressCopy(launchdStatus, schedulePlan) || "launchd 会在 14:00-15:00 内错峰采集，成功后再自动上传服务器"
+      ? buildLaunchdProgressCopy(launchdStatus, schedulePlan) || "launchd 会在 14:00 后一次采集全部项目，成功后再自动上传服务器"
       : autoPushStatus?.state === "error"
         ? `自动上传失败：${autoPushStatus.last_error || autoPushStatus.message || "未知错误"}`
         : autoPushStatus?.state === "running"
           ? autoPushStatus.message || "自动上传进行中"
           : `${formatPushTarget(config.SERVER_CACHE_PUSH_URL || "")} · 每天 ${autoPushStatus.daily_at || "14:00"} 自动上传`;
     const schedulePlanValue = scheduleDriver === "launchd"
-      ? `${formatScheduleWindow(schedulePlan) || "14:00-15:00"} · ${formatNumber(schedulePlan.project_count || 0)} 个项目`
+      ? buildSchedulePlanSummary(schedulePlan)
       : "";
     const schedulePlanCopy = scheduleDriver === "launchd"
       ? buildLaunchdPlanPreview(schedulePlan)
@@ -230,7 +230,7 @@ function renderSystemConfig() {
       <article class="system-config-status-card">
         <div class="system-config-status-label">今日计划</div>
         <div class="system-config-status-value">${schedulePlanValue || "等待计划生成"}</div>
-        <div class="system-config-status-copy">${schedulePlanCopy || "launchd 已接管定时任务，稍后会显示项目排程。"}</div>
+        <div class="system-config-status-copy">${schedulePlanCopy || "launchd 已接管定时任务，到点后会直接开始整批采集。"}</div>
       </article>
       ` : ""}
     `;
@@ -302,16 +302,14 @@ function formatScheduleWindow(plan = {}) {
 }
 
 function buildSchedulePlanSummary(plan = {}) {
-  if (!plan || !plan.enabled) return "";
+  if (!plan) return "";
   const nextRun = plan.next_run_at ? formatDateTime(plan.next_run_at) : "";
-  const windowText = formatScheduleWindow(plan);
-  const perRun = Number(plan.per_run || 0);
+  const totalAccounts = Number(plan.total_accounts || plan.per_run || 0);
   const projectCount = Number(plan.project_count || 0);
   const pieces = [];
-  if (nextRun) pieces.push(`下一轮 ${nextRun}`);
-  if (windowText) pieces.push(`窗口 ${windowText}`);
-  if (perRun) pieces.push(`单轮 ${formatNumber(perRun)} 账号`);
-  if (projectCount) pieces.push(`${formatNumber(projectCount)} 个项目轮转`);
+  if (nextRun) pieces.push(`下一次 ${nextRun}`);
+  if (totalAccounts) pieces.push(`一次采集 ${formatNumber(totalAccounts)} 个账号`);
+  if (projectCount) pieces.push(`${formatNumber(projectCount)} 个项目`);
   return pieces.join(" · ");
 }
 
@@ -1781,7 +1779,7 @@ function renderSyncProgress(syncStatus) {
     .slice(0, 3)
     .map(
       (item) =>
-        `${item.name} ${formatDateTime(item.next_run_at).slice(11, 16)} · 单轮 ${formatNumber(item.per_run || 0)} 个`
+        `${item.name} ${formatDateTime(item.next_run_at).slice(11, 16)} · ${formatNumber(item.active_count || item.per_run || 0)} 个账号`
     );
 
   if (syncStatus?.state !== "running" && !progress.phase) {

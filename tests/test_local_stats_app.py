@@ -1236,10 +1236,11 @@ class LocalStatsAppTest(unittest.TestCase):
                 )
                 payload = store.get_payload()
         schedule_plan = payload["sync_status"]["schedule_plan"]
-        self.assertTrue(schedule_plan["enabled"])
+        self.assertFalse(schedule_plan["enabled"])
         self.assertEqual(schedule_plan["window_start"], "14:00")
         self.assertEqual(schedule_plan["window_end"], "16:00")
-        self.assertEqual(schedule_plan["per_run"], 1)
+        self.assertEqual(schedule_plan["per_run"], 2)
+        self.assertEqual(schedule_plan["total_accounts"], 2)
         self.assertEqual(len(schedule_plan["projects"]), 2)
 
     def test_sync_loop_updates_dashboard_before_feishu_upload(self) -> None:
