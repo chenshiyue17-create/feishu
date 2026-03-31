@@ -411,7 +411,7 @@ def collect_profile_reports_with_progress(
         failed_count = 0
         current = 0
         url_to_index = {item["url"]: index for index, item in enumerate(normalized_entries)}
-        project_batches = build_project_batches(normalized_entries)
+        project_batches = [normalized_entries] if project_cooldown_seconds <= 0 else build_project_batches(normalized_entries)
         for group_index, group in enumerate(project_batches):
             for entry in group:
                 url = entry["url"]
@@ -506,7 +506,7 @@ def collect_profile_reports_with_progress(
     success_count = 0
     failed_count = 0
     url_to_index = {item["url"]: index for index, item in enumerate(normalized_entries)}
-    project_batches = build_project_batches(normalized_entries)
+    project_batches = [normalized_entries] if project_cooldown_seconds <= 0 else build_project_batches(normalized_entries)
     for group_index, group in enumerate(project_batches):
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_map = {
@@ -866,6 +866,13 @@ def build_batch_runtime_settings(*, settings, total_accounts: int):
     if total_accounts <= 1:
         return settings
     runtime_settings = copy(settings)
+    setattr(runtime_settings, "xhs_retry_attempts", 1)
+    setattr(runtime_settings, "xhs_retry_delay_seconds", 0)
+    setattr(runtime_settings, "xhs_timeout_seconds", min(12, max(5, int(getattr(runtime_settings, "xhs_timeout_seconds", 12) or 12))))
+    setattr(runtime_settings, "xhs_enable_signed_profile_pages", False)
+    setattr(runtime_settings, "xhs_fetch_work_comment_counts", False)
+    setattr(runtime_settings, "xhs_fetch_work_comment_preview", False)
+    setattr(runtime_settings, "xhs_work_comment_preview_limit", 0)
     page_cap = max(0, int(getattr(settings, "xhs_batch_signed_profile_page_cap", 0) or 0))
     current_page_cap = max(1, int(getattr(runtime_settings, "xhs_signed_profile_max_pages", 40) or 40))
     if page_cap > 0:
@@ -894,7 +901,7 @@ def resolve_batch_concurrency(settings) -> int:
     proxy_pool = list(getattr(settings, "xhs_proxy_pool", []) or [])
     if proxy_pool:
         return max(1, min(configured, len(proxy_pool)))
-    return max(1, min(configured, 8))
+    return max(1, min(configured, 10))
 
 
 def build_batch_throttle(settings) -> BatchThrottle:

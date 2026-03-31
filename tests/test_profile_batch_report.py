@@ -132,7 +132,7 @@ class ProfileBatchReportTest(unittest.TestCase):
         self.assertEqual(resolve_batch_concurrency(SimpleNamespace(xhs_fetch_mode="requests", xhs_batch_concurrency=6)), 6)
 
     def test_resolve_batch_concurrency_caps_plain_requests_parallelism(self) -> None:
-        self.assertEqual(resolve_batch_concurrency(SimpleNamespace(xhs_fetch_mode="requests", xhs_batch_concurrency=12)), 8)
+        self.assertEqual(resolve_batch_concurrency(SimpleNamespace(xhs_fetch_mode="requests", xhs_batch_concurrency=12)), 10)
 
     def test_resolve_batch_concurrency_expands_with_proxy_pool(self) -> None:
         settings = SimpleNamespace(
@@ -195,13 +195,24 @@ class ProfileBatchReportTest(unittest.TestCase):
     def test_build_batch_runtime_settings_caps_signed_pages_and_metric_limit(self) -> None:
         settings = SimpleNamespace(
             xhs_signed_profile_max_pages=40,
-            xhs_batch_signed_profile_page_cap=12,
+            xhs_batch_signed_profile_page_cap=1,
             xhs_work_metric_limit=0,
-            xhs_batch_work_metric_limit=8,
+            xhs_batch_work_metric_limit=0,
+            xhs_timeout_seconds=20,
+            xhs_retry_attempts=3,
+            xhs_fetch_work_comment_counts=True,
+            xhs_fetch_work_comment_preview=True,
+            xhs_work_comment_preview_limit=3,
+            xhs_enable_signed_profile_pages=True,
         )
         runtime = build_batch_runtime_settings(settings=settings, total_accounts=10)
-        self.assertEqual(runtime.xhs_signed_profile_max_pages, 12)
-        self.assertEqual(runtime.xhs_work_metric_limit, 8)
+        self.assertEqual(runtime.xhs_signed_profile_max_pages, 1)
+        self.assertEqual(runtime.xhs_work_metric_limit, 0)
+        self.assertEqual(runtime.xhs_timeout_seconds, 12)
+        self.assertEqual(runtime.xhs_retry_attempts, 1)
+        self.assertFalse(runtime.xhs_fetch_work_comment_counts)
+        self.assertFalse(runtime.xhs_fetch_work_comment_preview)
+        self.assertFalse(runtime.xhs_enable_signed_profile_pages)
 
     def test_build_batch_pressure_controller_reads_threshold_and_multiplier(self) -> None:
         controller = build_batch_pressure_controller(
