@@ -1719,19 +1719,25 @@ class LoginStateStore:
             sample_url = self._sample_url
         try:
             settings = load_settings(self.env_file)
-
-            def on_wait(payload: Dict[str, Any]) -> None:
-                with self._lock:
-                    self._payload = copy.deepcopy(payload or {})
-                    self._cached_at = time.time() if self._payload else 0.0
-                    self._running = True
-
-            payload = wait_for_xiaohongshu_login(
-                env_file=self.env_file,
-                settings=settings,
-                sample_url=sample_url,
-                on_wait=on_wait,
-            )
+            payload = run_login_state_self_check(env_file=self.env_file, sample_url=sample_url)
+            if login_state_requires_interactive_login(payload):
+                window_opened = open_xiaohongshu_login_window(
+                    settings=settings,
+                    target_url=sample_url or "https://www.xiaohongshu.com/",
+                )
+                payload = dict(payload)
+                payload["login_window_opened"] = window_opened
+                payload["message"] = (
+                    "检测到小红书未登录，已弹出网页登录窗口，完成登录后再点一次“立即自检”即可。"
+                    if window_opened
+                    else "检测到小红书未登录，请先完成登录后再点一次“立即自检”。"
+                )
+                hints = list(payload.get("hints") or [])
+                if window_opened:
+                    hints.insert(0, "当前已弹出网页登录窗口；登录完成后再自检一次即可刷新状态。")
+                else:
+                    hints.insert(0, "未能自动打开网页登录窗口，请先手动登录。")
+                payload["hints"] = hints[:3]
         except Exception as exc:
             payload = build_login_state_payload(
                 state="error",

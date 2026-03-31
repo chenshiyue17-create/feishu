@@ -1771,31 +1771,30 @@ class LocalStatsAppTest(unittest.TestCase):
             login_state_store._sample_url = "https://www.xiaohongshu.com/user/profile/u1"
             settings = Settings(xhs_fetch_mode="requests", xhs_chrome_cookie_profile=DEFAULT_CHROME_PROFILE_ROOT)
 
-            def fake_wait_for_login(**kwargs):
-                kwargs["on_wait"](
-                    build_login_state_payload(
-                        state="error",
-                        message="检测到小红书未登录，已弹出网页登录窗口，完成登录后会自动继续采集。",
-                        login_window_opened=True,
-                    )
-                )
-                return build_login_state_payload(
-                    state="ok",
-                    message="登录态正常，样本账号已拿到作品明细能力。",
-                    login_window_opened=True,
-                )
-
             with patch("xhs_feishu_monitor.local_stats_app.server.load_settings", return_value=settings):
                 with patch(
-                    "xhs_feishu_monitor.local_stats_app.server.wait_for_xiaohongshu_login",
-                    side_effect=fake_wait_for_login,
-                ) as wait_mock:
-                    login_state_store._run_check()
+                    "xhs_feishu_monitor.local_stats_app.server.run_login_state_self_check",
+                    return_value=build_login_state_payload(
+                        state="error",
+                        message="样本账号返回了空结果，登录态可能已过期",
+                        checked_at="2026-03-31T17:50:00+08:00",
+                    ),
+                ):
+                    with patch(
+                        "xhs_feishu_monitor.local_stats_app.server.open_xiaohongshu_login_window",
+                        return_value=True,
+                    ) as open_mock:
+                        with patch(
+                            "xhs_feishu_monitor.local_stats_app.server.wait_for_xiaohongshu_login",
+                        ) as wait_mock:
+                            login_state_store._run_check()
 
-            self.assertTrue(wait_mock.called)
+            self.assertTrue(open_mock.called)
+            self.assertFalse(wait_mock.called)
             payload = login_state_store.get_payload()
-            self.assertEqual(payload["state"], "ok")
+            self.assertEqual(payload["state"], "error")
             self.assertTrue(payload["login_window_opened"])
+            self.assertIn("弹出网页登录窗口", payload["message"])
 
     def test_auto_sync_waits_for_login_without_timeout(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
