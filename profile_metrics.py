@@ -15,7 +15,9 @@ def enrich_profile_report_with_note_metrics(*, report: Dict[str, Any], settings,
         return report
 
     collector = collector_factory(settings)
-    for work in works:
+    metric_limit = max(0, int(getattr(settings, "xhs_work_metric_limit", 0) or 0))
+    target_works = works[:metric_limit] if metric_limit > 0 else works
+    for work in target_works:
         signed_snapshot = None
         comment_preview: List[Dict[str, Any]] = []
         note_url = str(work.get("note_url") or "").strip()

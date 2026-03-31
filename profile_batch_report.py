@@ -9,6 +9,7 @@ import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from copy import copy
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -58,6 +59,7 @@ class BatchThrottle:
         self._lock = threading.Lock()
         self._next_available_at = 0.0
         self._started_count = 0
+        self._delay_multiplier = 1.0
 
     def wait(self) -> None:
         sleep_seconds = 0.0
@@ -72,15 +74,78 @@ class BatchThrottle:
                 and self._started_count > 1
                 and (self._started_count - 1) % self.chunk_size == 0
             ):
-                release_at += self.chunk_cooldown_seconds
-            per_account_delay = self.request_interval_seconds + self.account_delay_seconds
+                release_at += self.chunk_cooldown_seconds * self._delay_multiplier
+            per_account_delay = (self.request_interval_seconds + self.account_delay_seconds) * self._delay_multiplier
             if self.account_jitter_seconds > 0:
-                per_account_delay += random.uniform(0.0, self.account_jitter_seconds)
+                per_account_delay += random.uniform(0.0, self.account_jitter_seconds) * self._delay_multiplier
             if per_account_delay > 0:
                 release_at += per_account_delay
             self._next_available_at = release_at
         if sleep_seconds > 0:
             time.sleep(sleep_seconds)
+
+    def extend_cooldown(self, seconds: float) -> None:
+        delay_seconds = max(0.0, float(seconds or 0.0))
+        if delay_seconds <= 0:
+            return
+        with self._lock:
+            now = time.time()
+            self._next_available_at = max(now, self._next_available_at) + delay_seconds
+
+    def activate_slow_mode(self, multiplier: float) -> bool:
+        next_multiplier = max(1.0, float(multiplier or 1.0))
+        with self._lock:
+            if next_multiplier <= self._delay_multiplier:
+                return False
+            self._delay_multiplier = next_multiplier
+            return True
+
+    @property
+    def delay_multiplier(self) -> float:
+        with self._lock:
+            return self._delay_multiplier
+
+
+class BatchPressureController:
+    def __init__(
+        self,
+        *,
+        consecutive_threshold: int,
+        cooldown_seconds: float,
+        slowdown_multiplier: float,
+    ) -> None:
+        self.consecutive_threshold = max(1, int(consecutive_threshold or 1))
+        self.cooldown_seconds = max(0.0, float(cooldown_seconds or 0.0))
+        self.slowdown_multiplier = max(1.0, float(slowdown_multiplier or 1.0))
+        self.consecutive_pressure_failures = 0
+        self.total_pressure_failures = 0
+        self.slow_mode_active = False
+
+    def observe(self, *, item: Dict[str, Any], throttle: Optional[BatchThrottle]) -> Optional[Dict[str, Any]]:
+        if item.get("status") == "success":
+            self.consecutive_pressure_failures = 0
+            return None
+        error_text = item.get("error")
+        if not is_batch_pressure_error(error_text):
+            self.consecutive_pressure_failures = 0
+            return None
+        self.total_pressure_failures += 1
+        self.consecutive_pressure_failures += 1
+        if self.slow_mode_active or self.consecutive_pressure_failures < self.consecutive_threshold:
+            return None
+        self.slow_mode_active = True
+        if throttle is not None:
+            if self.cooldown_seconds > 0:
+                throttle.extend_cooldown(self.cooldown_seconds)
+            throttle.activate_slow_mode(self.slowdown_multiplier)
+        return {
+            "phase": "slow_mode",
+            "message": "检测到连续账号页空结果/登录跳转/风控信号，批量采集已自动切换到慢速模式",
+            "consecutive_pressure_failures": self.consecutive_pressure_failures,
+            "total_pressure_failures": self.total_pressure_failures,
+            "cooldown_seconds": self.cooldown_seconds,
+            "delay_multiplier": throttle.delay_multiplier if throttle is not None else self.slowdown_multiplier,
+        }
 
 
 def is_retryable_batch_error(error_text: Any) -> bool:
@@ -124,6 +189,35 @@ def is_slow_tail_retry_error(error_text: Any) -> bool:
             "风控",
             "反爬",
             "空结果",
+        )
+    )
+
+
+def is_batch_pressure_error(error_text: Any) -> bool:
+    text = str(error_text or "").strip().lower()
+    if not text:
+        return False
+    return any(
+        keyword in text
+        for keyword in (
+            "账号页返回空结果或登录跳转",
+            "/login",
+            "login",
+            "captcha",
+            "验证",
+            "安全机制",
+            "cookie",
+            "not logged",
+            "unauthorized",
+            "rate limit",
+            "too many requests",
+            "429",
+            "403",
+            "风控",
+            "反爬",
+            "空结果",
+            "timeout",
+            "timed out",
         )
     )
 
@@ -299,12 +393,14 @@ def collect_profile_reports_with_progress(
 ) -> List[Dict[str, Any]]:
     normalized_entries = _normalize_batch_entries(urls=urls, url_entries=url_entries)
     ordered_urls = [item["url"] for item in normalized_entries]
-    max_workers = resolve_batch_concurrency(settings)
-    throttle = build_batch_throttle(settings)
-    retry_failed_once = bool(getattr(settings, "xhs_batch_retry_failed_once", True))
-    retry_delay_seconds = max(0.0, float(getattr(settings, "xhs_batch_retry_delay_seconds", 20.0) or 0.0))
-    risk_retry_delay_seconds = max(0.0, float(getattr(settings, "xhs_batch_risk_retry_delay_seconds", 45.0) or 0.0))
-    project_cooldown_seconds = max(0.0, float(getattr(settings, "xhs_batch_project_cooldown_seconds", 45.0) or 0.0))
+    runtime_settings = build_batch_runtime_settings(settings=settings, total_accounts=len(ordered_urls))
+    max_workers = resolve_batch_concurrency(runtime_settings)
+    throttle = build_batch_throttle(runtime_settings)
+    pressure_controller = build_batch_pressure_controller(runtime_settings)
+    retry_failed_once = bool(getattr(runtime_settings, "xhs_batch_retry_failed_once", True))
+    retry_delay_seconds = max(0.0, float(getattr(runtime_settings, "xhs_batch_retry_delay_seconds", 35.0) or 0.0))
+    risk_retry_delay_seconds = max(0.0, float(getattr(runtime_settings, "xhs_batch_risk_retry_delay_seconds", 90.0) or 0.0))
+    project_cooldown_seconds = max(0.0, float(getattr(runtime_settings, "xhs_batch_project_cooldown_seconds", 75.0) or 0.0))
     url_to_project = {item["url"]: str(item.get("project") or "").strip() for item in normalized_entries}
     if max_workers == 1 or len(ordered_urls) <= 1:
         indexed_results: Dict[int, Dict[str, Any]] = {}
@@ -320,11 +416,15 @@ def collect_profile_reports_with_progress(
             for entry in group:
                 url = entry["url"]
                 item = _attach_project_to_item(
-                    _collect_single_profile_report_with_throttle(url=url, settings=settings, throttle=throttle),
+                    _collect_single_profile_report_with_throttle(url=url, settings=runtime_settings, throttle=throttle),
                     project=str(entry.get("project") or "").strip(),
                 )
                 index = url_to_index[url]
                 indexed_results[index] = item
+                _emit_batch_pressure_event(
+                    progress_callback=progress_callback,
+                    event=pressure_controller.observe(item=item, throttle=throttle),
+                )
                 if retry_failed_once and item.get("status") != "success" and is_retryable_batch_error(item.get("error")):
                     if is_slow_tail_retry_error(item.get("error")):
                         slow_retry_indexes.append(index)
@@ -352,7 +452,7 @@ def collect_profile_reports_with_progress(
                     _retry_failed_item_if_needed(
                         item=indexed_results[index],
                         url=ordered_urls[index],
-                        settings=settings,
+                        settings=runtime_settings,
                         throttle=throttle,
                         retry_failed_once=retry_failed_once,
                         retry_delay_seconds=retry_delay_seconds,
@@ -361,6 +461,10 @@ def collect_profile_reports_with_progress(
                     project=url_to_project.get(ordered_urls[index], ""),
                 )
                 indexed_results[index] = retried
+                _emit_batch_pressure_event(
+                    progress_callback=progress_callback,
+                    event=pressure_controller.observe(item=retried, throttle=throttle),
+                )
                 current += 1
                 if retried.get("status") == "success":
                     success_count += 1
@@ -391,7 +495,7 @@ def collect_profile_reports_with_progress(
                 executor.submit(
                     _collect_single_profile_report_with_throttle,
                     url=item["url"],
-                    settings=settings,
+                    settings=runtime_settings,
                     throttle=throttle,
                 ): {"url": item["url"], "project": str(item.get("project") or "").strip()}
                 for item in group
@@ -401,6 +505,10 @@ def collect_profile_reports_with_progress(
                 item = _attach_project_to_item(future.result(), project=future_entry["project"])
                 index = url_to_index[future_entry["url"]]
                 indexed_results[index] = item
+                _emit_batch_pressure_event(
+                    progress_callback=progress_callback,
+                    event=pressure_controller.observe(item=item, throttle=throttle),
+                )
                 if retry_failed_once and item.get("status") != "success" and is_retryable_batch_error(item.get("error")):
                     if is_slow_tail_retry_error(item.get("error")):
                         slow_retry_indexes.append(index)
@@ -428,7 +536,7 @@ def collect_profile_reports_with_progress(
                 _retry_failed_item_if_needed(
                     item=indexed_results[index],
                     url=ordered_urls[index],
-                    settings=settings,
+                    settings=runtime_settings,
                     throttle=throttle,
                     retry_failed_once=retry_failed_once,
                     retry_delay_seconds=retry_delay_seconds,
@@ -437,6 +545,10 @@ def collect_profile_reports_with_progress(
                 project=url_to_project.get(ordered_urls[index], ""),
             )
             indexed_results[index] = retried
+            _emit_batch_pressure_event(
+                progress_callback=progress_callback,
+                event=pressure_controller.observe(item=retried, throttle=throttle),
+            )
             completed += 1
             if retried.get("status") == "success":
                 success_count += 1
@@ -688,24 +800,58 @@ def _emit_collect_progress(
     )
 
 
+def _emit_batch_pressure_event(
+    *,
+    progress_callback: Optional[Callable[[Dict[str, Any]], None]],
+    event: Optional[Dict[str, Any]],
+) -> None:
+    if progress_callback is None or event is None:
+        return
+    progress_callback(event)
+
+
+def build_batch_runtime_settings(*, settings, total_accounts: int):
+    if total_accounts <= 1:
+        return settings
+    runtime_settings = copy(settings)
+    page_cap = max(0, int(getattr(settings, "xhs_batch_signed_profile_page_cap", 0) or 0))
+    current_page_cap = max(1, int(getattr(runtime_settings, "xhs_signed_profile_max_pages", 40) or 40))
+    if page_cap > 0:
+        setattr(runtime_settings, "xhs_signed_profile_max_pages", min(current_page_cap, page_cap))
+    work_metric_limit = max(0, int(getattr(settings, "xhs_batch_work_metric_limit", 0) or 0))
+    current_metric_limit = max(0, int(getattr(runtime_settings, "xhs_work_metric_limit", 0) or 0))
+    if work_metric_limit > 0:
+        next_metric_limit = work_metric_limit if current_metric_limit <= 0 else min(current_metric_limit, work_metric_limit)
+        setattr(runtime_settings, "xhs_work_metric_limit", next_metric_limit)
+    return runtime_settings
+
+
+def build_batch_pressure_controller(settings) -> BatchPressureController:
+    return BatchPressureController(
+        consecutive_threshold=max(1, int(getattr(settings, "xhs_batch_pressure_consecutive_threshold", 2) or 1)),
+        cooldown_seconds=max(0.0, float(getattr(settings, "xhs_batch_pressure_cooldown_seconds", 90.0) or 0.0)),
+        slowdown_multiplier=max(1.0, float(getattr(settings, "xhs_batch_slowdown_multiplier", 2.0) or 1.0)),
+    )
+
+
 def resolve_batch_concurrency(settings) -> int:
     fetch_mode = str(getattr(settings, "xhs_fetch_mode", "requests") or "requests").strip().lower()
-    configured = max(1, int(getattr(settings, "xhs_batch_concurrency", 2) or 1))
+    configured = max(1, int(getattr(settings, "xhs_batch_concurrency", 1) or 1))
     if fetch_mode in {"playwright", "local_browser"}:
         return 1
     proxy_pool = list(getattr(settings, "xhs_proxy_pool", []) or [])
     if len(proxy_pool) <= 1:
-        return min(configured, 2)
+        return min(configured, 1)
     return min(configured, min(4, len(proxy_pool)))
 
 
 def build_batch_throttle(settings) -> BatchThrottle:
     return BatchThrottle(
-        request_interval_seconds=float(getattr(settings, "xhs_batch_request_interval_seconds", 2.0) or 0.0),
-        account_delay_seconds=float(getattr(settings, "xhs_batch_account_delay_seconds", 1.0) or 0.0),
-        account_jitter_seconds=float(getattr(settings, "xhs_batch_account_jitter_seconds", 0.8) or 0.0),
-        chunk_size=int(getattr(settings, "xhs_batch_chunk_size", 8) or 0),
-        chunk_cooldown_seconds=float(getattr(settings, "xhs_batch_chunk_cooldown_seconds", 12.0) or 0.0),
+        request_interval_seconds=float(getattr(settings, "xhs_batch_request_interval_seconds", 4.0) or 0.0),
+        account_delay_seconds=float(getattr(settings, "xhs_batch_account_delay_seconds", 2.0) or 0.0),
+        account_jitter_seconds=float(getattr(settings, "xhs_batch_account_jitter_seconds", 1.5) or 0.0),
+        chunk_size=int(getattr(settings, "xhs_batch_chunk_size", 5) or 0),
+        chunk_cooldown_seconds=float(getattr(settings, "xhs_batch_chunk_cooldown_seconds", 25.0) or 0.0),
     )
 
 

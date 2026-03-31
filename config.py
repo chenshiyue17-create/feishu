@@ -56,16 +56,21 @@ class Settings:
     xhs_timeout_seconds: int = 20
     xhs_retry_attempts: int = 3
     xhs_retry_delay_seconds: int = 2
-    xhs_batch_concurrency: int = 2
-    xhs_batch_request_interval_seconds: float = 2.0
-    xhs_batch_account_delay_seconds: float = 1.0
-    xhs_batch_account_jitter_seconds: float = 0.8
-    xhs_batch_chunk_size: int = 8
-    xhs_batch_chunk_cooldown_seconds: float = 12.0
+    xhs_batch_concurrency: int = 1
+    xhs_batch_request_interval_seconds: float = 4.0
+    xhs_batch_account_delay_seconds: float = 2.0
+    xhs_batch_account_jitter_seconds: float = 1.5
+    xhs_batch_chunk_size: int = 5
+    xhs_batch_chunk_cooldown_seconds: float = 25.0
     xhs_batch_retry_failed_once: bool = True
-    xhs_batch_retry_delay_seconds: float = 20.0
-    xhs_batch_risk_retry_delay_seconds: float = 45.0
-    xhs_batch_project_cooldown_seconds: float = 45.0
+    xhs_batch_retry_delay_seconds: float = 35.0
+    xhs_batch_risk_retry_delay_seconds: float = 90.0
+    xhs_batch_project_cooldown_seconds: float = 75.0
+    xhs_batch_pressure_consecutive_threshold: int = 2
+    xhs_batch_pressure_cooldown_seconds: float = 90.0
+    xhs_batch_slowdown_multiplier: float = 2.0
+    xhs_batch_signed_profile_page_cap: int = 12
+    xhs_batch_work_metric_limit: int = 12
     xhs_spread_schedule_enabled: bool = True
     xhs_schedule_driver: str = DEFAULT_SCHEDULE_DRIVER
     xhs_batch_schedule_interval_minutes: int = 60
@@ -81,6 +86,7 @@ class Settings:
     xhs_signed_profile_max_pages: int = 40
     xhs_fetch_work_comment_preview: bool = True
     xhs_work_comment_preview_limit: int = 3
+    xhs_work_metric_limit: int = 0
     xhs_chrome_cookie_profile: str = ""
     xhs_proxy_pool: List[str] = field(default_factory=list)
     xhs_proxy_cooldown_seconds: int = 300
@@ -162,16 +168,21 @@ def load_settings(env_file: Optional[str] = None) -> Settings:
         xhs_timeout_seconds=_env_int("XHS_TIMEOUT_SECONDS", env_values, default=20),
         xhs_retry_attempts=_env_int("XHS_RETRY_ATTEMPTS", env_values, default=3),
         xhs_retry_delay_seconds=_env_int("XHS_RETRY_DELAY_SECONDS", env_values, default=2),
-        xhs_batch_concurrency=_env_int("XHS_BATCH_CONCURRENCY", env_values, default=2),
-        xhs_batch_request_interval_seconds=_env_float("XHS_BATCH_REQUEST_INTERVAL_SECONDS", env_values, default=2.0),
-        xhs_batch_account_delay_seconds=_env_float("XHS_BATCH_ACCOUNT_DELAY_SECONDS", env_values, default=1.0),
-        xhs_batch_account_jitter_seconds=_env_float("XHS_BATCH_ACCOUNT_JITTER_SECONDS", env_values, default=0.8),
-        xhs_batch_chunk_size=_env_int("XHS_BATCH_CHUNK_SIZE", env_values, default=8),
-        xhs_batch_chunk_cooldown_seconds=_env_float("XHS_BATCH_CHUNK_COOLDOWN_SECONDS", env_values, default=12.0),
+        xhs_batch_concurrency=_env_int("XHS_BATCH_CONCURRENCY", env_values, default=1),
+        xhs_batch_request_interval_seconds=_env_float("XHS_BATCH_REQUEST_INTERVAL_SECONDS", env_values, default=4.0),
+        xhs_batch_account_delay_seconds=_env_float("XHS_BATCH_ACCOUNT_DELAY_SECONDS", env_values, default=2.0),
+        xhs_batch_account_jitter_seconds=_env_float("XHS_BATCH_ACCOUNT_JITTER_SECONDS", env_values, default=1.5),
+        xhs_batch_chunk_size=_env_int("XHS_BATCH_CHUNK_SIZE", env_values, default=5),
+        xhs_batch_chunk_cooldown_seconds=_env_float("XHS_BATCH_CHUNK_COOLDOWN_SECONDS", env_values, default=25.0),
         xhs_batch_retry_failed_once=_env_bool("XHS_BATCH_RETRY_FAILED_ONCE", env_values, default=True),
-        xhs_batch_retry_delay_seconds=_env_float("XHS_BATCH_RETRY_DELAY_SECONDS", env_values, default=20.0),
-        xhs_batch_risk_retry_delay_seconds=_env_float("XHS_BATCH_RISK_RETRY_DELAY_SECONDS", env_values, default=45.0),
-        xhs_batch_project_cooldown_seconds=_env_float("XHS_BATCH_PROJECT_COOLDOWN_SECONDS", env_values, default=45.0),
+        xhs_batch_retry_delay_seconds=_env_float("XHS_BATCH_RETRY_DELAY_SECONDS", env_values, default=35.0),
+        xhs_batch_risk_retry_delay_seconds=_env_float("XHS_BATCH_RISK_RETRY_DELAY_SECONDS", env_values, default=90.0),
+        xhs_batch_project_cooldown_seconds=_env_float("XHS_BATCH_PROJECT_COOLDOWN_SECONDS", env_values, default=75.0),
+        xhs_batch_pressure_consecutive_threshold=_env_int("XHS_BATCH_PRESSURE_CONSECUTIVE_THRESHOLD", env_values, default=2),
+        xhs_batch_pressure_cooldown_seconds=_env_float("XHS_BATCH_PRESSURE_COOLDOWN_SECONDS", env_values, default=90.0),
+        xhs_batch_slowdown_multiplier=_env_float("XHS_BATCH_SLOWDOWN_MULTIPLIER", env_values, default=2.0),
+        xhs_batch_signed_profile_page_cap=_env_int("XHS_BATCH_SIGNED_PROFILE_PAGE_CAP", env_values, default=12),
+        xhs_batch_work_metric_limit=_env_int("XHS_BATCH_WORK_METRIC_LIMIT", env_values, default=12),
         xhs_spread_schedule_enabled=_env_bool("XHS_SPREAD_SCHEDULE_ENABLED", env_values, default=True),
         xhs_schedule_driver=(_env("XHS_SCHEDULE_DRIVER", env_values) or DEFAULT_SCHEDULE_DRIVER).strip().lower() or DEFAULT_SCHEDULE_DRIVER,
         xhs_batch_schedule_interval_minutes=_env_int("XHS_BATCH_SCHEDULE_INTERVAL_MINUTES", env_values, default=60),
@@ -190,6 +201,7 @@ def load_settings(env_file: Optional[str] = None) -> Settings:
         xhs_signed_profile_max_pages=_env_int("XHS_SIGNED_PROFILE_MAX_PAGES", env_values, default=40),
         xhs_fetch_work_comment_preview=_env_bool("XHS_FETCH_WORK_COMMENT_PREVIEW", env_values, default=True),
         xhs_work_comment_preview_limit=_env_int("XHS_WORK_COMMENT_PREVIEW_LIMIT", env_values, default=3),
+        xhs_work_metric_limit=_env_int("XHS_WORK_METRIC_LIMIT", env_values, default=0),
         xhs_chrome_cookie_profile=_resolve_optional_path(_env("XHS_CHROME_COOKIE_PROFILE", env_values), base_dir),
         xhs_proxy_pool=_load_proxy_pool(proxy_pool_raw, proxy_pool_file, base_dir),
         xhs_proxy_cooldown_seconds=_env_int("XHS_PROXY_COOLDOWN_SECONDS", env_values, default=300),

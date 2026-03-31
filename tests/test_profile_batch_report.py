@@ -10,12 +10,15 @@ from unittest.mock import patch
 
 from xhs_feishu_monitor.profile_batch_report import (
     build_batch_throttle,
+    build_batch_runtime_settings,
     build_project_batches,
     build_batch_program_arguments,
+    build_batch_pressure_controller,
     collect_profile_reports,
     collect_profile_reports_with_progress,
     compute_slots_per_day,
     extract_profile_urls,
+    is_batch_pressure_error,
     is_retryable_batch_error,
     is_slow_tail_retry_error,
     is_spread_collection_active,
@@ -126,7 +129,7 @@ class ProfileBatchReportTest(unittest.TestCase):
     def test_resolve_batch_concurrency_disables_parallel_for_browser_modes(self) -> None:
         self.assertEqual(resolve_batch_concurrency(SimpleNamespace(xhs_fetch_mode="local_browser", xhs_batch_concurrency=6)), 1)
         self.assertEqual(resolve_batch_concurrency(SimpleNamespace(xhs_fetch_mode="playwright", xhs_batch_concurrency=6)), 1)
-        self.assertEqual(resolve_batch_concurrency(SimpleNamespace(xhs_fetch_mode="requests", xhs_batch_concurrency=6)), 2)
+        self.assertEqual(resolve_batch_concurrency(SimpleNamespace(xhs_fetch_mode="requests", xhs_batch_concurrency=6)), 1)
 
     def test_resolve_batch_concurrency_expands_with_proxy_pool(self) -> None:
         settings = SimpleNamespace(
@@ -181,13 +184,52 @@ class ProfileBatchReportTest(unittest.TestCase):
         self.assertTrue(is_slow_tail_retry_error("风控拦截"))
         self.assertFalse(is_slow_tail_retry_error("请求超时"))
 
+    def test_is_batch_pressure_error_detects_login_redirect_and_captcha(self) -> None:
+        self.assertTrue(is_batch_pressure_error("账号页返回空结果或登录跳转"))
+        self.assertTrue(is_batch_pressure_error("需要 captcha 验证"))
+        self.assertFalse(is_batch_pressure_error("普通字段缺失"))
+
+    def test_build_batch_runtime_settings_caps_signed_pages_and_metric_limit(self) -> None:
+        settings = SimpleNamespace(
+            xhs_signed_profile_max_pages=40,
+            xhs_batch_signed_profile_page_cap=12,
+            xhs_work_metric_limit=0,
+            xhs_batch_work_metric_limit=8,
+        )
+        runtime = build_batch_runtime_settings(settings=settings, total_accounts=10)
+        self.assertEqual(runtime.xhs_signed_profile_max_pages, 12)
+        self.assertEqual(runtime.xhs_work_metric_limit, 8)
+
+    def test_build_batch_pressure_controller_reads_threshold_and_multiplier(self) -> None:
+        controller = build_batch_pressure_controller(
+            SimpleNamespace(
+                xhs_batch_pressure_consecutive_threshold=3,
+                xhs_batch_pressure_cooldown_seconds=120.0,
+                xhs_batch_slowdown_multiplier=2.5,
+            )
+        )
+        self.assertEqual(controller.consecutive_threshold, 3)
+        self.assertEqual(controller.cooldown_seconds, 120.0)
+        self.assertEqual(controller.slowdown_multiplier, 2.5)
+
     def test_collect_profile_reports_keeps_input_order_under_parallel_mode(self) -> None:
         def fake_collect_single_profile_report(*, url, settings):
             if url.endswith("u1"):
                 time.sleep(0.03)
             return {"status": "success", "requested_url": url, "profile": {}, "works": []}
 
-        settings = SimpleNamespace(xhs_fetch_mode="requests", xhs_batch_concurrency=4)
+        settings = SimpleNamespace(
+            xhs_fetch_mode="requests",
+            xhs_batch_concurrency=4,
+            xhs_batch_request_interval_seconds=0.0,
+            xhs_batch_account_delay_seconds=0.0,
+            xhs_batch_account_jitter_seconds=0.0,
+            xhs_batch_chunk_size=0,
+            xhs_batch_chunk_cooldown_seconds=0.0,
+            xhs_batch_retry_failed_once=False,
+            xhs_batch_retry_delay_seconds=0.0,
+            xhs_batch_project_cooldown_seconds=0.0,
+        )
         urls = ["https://www.xiaohongshu.com/user/profile/u1", "https://www.xiaohongshu.com/user/profile/u2"]
         with patch("xhs_feishu_monitor.profile_batch_report._collect_single_profile_report", side_effect=fake_collect_single_profile_report):
             results = collect_profile_reports(urls=urls, settings=settings)
@@ -227,6 +269,87 @@ class ProfileBatchReportTest(unittest.TestCase):
         self.assertTrue(all(event["phase"] == "collect" for event in progress_events))
         self.assertEqual(progress_events[-1]["success_count"], 2)
         self.assertEqual(progress_events[-1]["failed_count"], 0)
+
+    def test_collect_profile_reports_switches_to_slow_mode_after_consecutive_pressure_failures(self) -> None:
+        def fake_collect_single_profile_report(*, url, settings):
+            if url.endswith("u3"):
+                return {"status": "success", "requested_url": url, "profile": {}, "works": []}
+            return {"status": "failed", "requested_url": url, "error": "账号页返回空结果或登录跳转"}
+
+        throttle = unittest.mock.Mock()
+        throttle.wait.return_value = None
+        throttle.activate_slow_mode.return_value = True
+        throttle.delay_multiplier = 2.0
+        settings = SimpleNamespace(
+            xhs_fetch_mode="requests",
+            xhs_batch_concurrency=1,
+            xhs_batch_request_interval_seconds=0.0,
+            xhs_batch_account_delay_seconds=0.0,
+            xhs_batch_account_jitter_seconds=0.0,
+            xhs_batch_chunk_size=0,
+            xhs_batch_chunk_cooldown_seconds=0.0,
+            xhs_batch_retry_failed_once=False,
+            xhs_batch_retry_delay_seconds=0.0,
+            xhs_batch_risk_retry_delay_seconds=0.0,
+            xhs_batch_project_cooldown_seconds=0.0,
+            xhs_batch_pressure_consecutive_threshold=2,
+            xhs_batch_pressure_cooldown_seconds=45.0,
+            xhs_batch_slowdown_multiplier=2.0,
+            xhs_signed_profile_max_pages=40,
+            xhs_batch_signed_profile_page_cap=12,
+            xhs_work_metric_limit=0,
+            xhs_batch_work_metric_limit=8,
+        )
+        urls = [
+            "https://www.xiaohongshu.com/user/profile/u1",
+            "https://www.xiaohongshu.com/user/profile/u2",
+            "https://www.xiaohongshu.com/user/profile/u3",
+        ]
+        with patch("xhs_feishu_monitor.profile_batch_report.build_batch_throttle", return_value=throttle):
+            with patch("xhs_feishu_monitor.profile_batch_report._collect_single_profile_report", side_effect=fake_collect_single_profile_report):
+                collect_profile_reports(urls=urls, settings=settings)
+        throttle.extend_cooldown.assert_called_once_with(45.0)
+        throttle.activate_slow_mode.assert_called_once_with(2.0)
+
+    def test_collect_profile_reports_uses_batch_runtime_settings(self) -> None:
+        seen_settings = []
+
+        def fake_collect_single_profile_report(*, url, settings):
+            seen_settings.append(
+                (
+                    getattr(settings, "xhs_signed_profile_max_pages", None),
+                    getattr(settings, "xhs_work_metric_limit", None),
+                )
+            )
+            return {"status": "success", "requested_url": url, "profile": {}, "works": []}
+
+        settings = SimpleNamespace(
+            xhs_fetch_mode="requests",
+            xhs_batch_concurrency=1,
+            xhs_batch_request_interval_seconds=0.0,
+            xhs_batch_account_delay_seconds=0.0,
+            xhs_batch_account_jitter_seconds=0.0,
+            xhs_batch_chunk_size=0,
+            xhs_batch_chunk_cooldown_seconds=0.0,
+            xhs_batch_retry_failed_once=False,
+            xhs_batch_retry_delay_seconds=0.0,
+            xhs_batch_risk_retry_delay_seconds=0.0,
+            xhs_batch_project_cooldown_seconds=0.0,
+            xhs_batch_pressure_consecutive_threshold=2,
+            xhs_batch_pressure_cooldown_seconds=45.0,
+            xhs_batch_slowdown_multiplier=2.0,
+            xhs_signed_profile_max_pages=40,
+            xhs_batch_signed_profile_page_cap=12,
+            xhs_work_metric_limit=0,
+            xhs_batch_work_metric_limit=8,
+        )
+        urls = [
+            "https://www.xiaohongshu.com/user/profile/u1",
+            "https://www.xiaohongshu.com/user/profile/u2",
+        ]
+        with patch("xhs_feishu_monitor.profile_batch_report._collect_single_profile_report", side_effect=fake_collect_single_profile_report):
+            collect_profile_reports(urls=urls, settings=settings)
+        self.assertEqual(seen_settings[0], (12, 8))
 
     def test_spread_collection_active_checks_window(self) -> None:
         settings = SimpleNamespace(
@@ -324,7 +447,18 @@ class ProfileBatchReportTest(unittest.TestCase):
                 "works": [],
             }
 
-        settings = SimpleNamespace(xhs_fetch_mode="requests", xhs_batch_concurrency=1)
+        settings = SimpleNamespace(
+            xhs_fetch_mode="requests",
+            xhs_batch_concurrency=1,
+            xhs_batch_request_interval_seconds=0.0,
+            xhs_batch_account_delay_seconds=0.0,
+            xhs_batch_account_jitter_seconds=0.0,
+            xhs_batch_chunk_size=0,
+            xhs_batch_chunk_cooldown_seconds=0.0,
+            xhs_batch_retry_failed_once=False,
+            xhs_batch_retry_delay_seconds=0.0,
+            xhs_batch_project_cooldown_seconds=0.0,
+        )
         url_entries = [
             {"url": "https://www.xiaohongshu.com/user/profile/u1", "project": "项目A"},
             {"url": "https://www.xiaohongshu.com/user/profile/u2", "project": "项目B"},

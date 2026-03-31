@@ -311,6 +311,51 @@ class ProfileReportTest(unittest.TestCase):
         self.assertEqual(enriched["works"][0]["xsec_token"], "token_123")
         self.assertEqual(enriched["works"][0]["comment_count"], 18)
 
+    def test_enrich_profile_report_with_note_metrics_honors_metric_limit(self) -> None:
+        report = {
+            "captured_at": "2026-03-24T10:00:00+08:00",
+            "profile": {"profile_user_id": "u1"},
+            "works": [
+                {
+                    "title_copy": "作品A",
+                    "note_id": "note_001",
+                    "xsec_token": "token_001",
+                    "note_url": "https://www.xiaohongshu.com/explore/note_001",
+                },
+                {
+                    "title_copy": "作品B",
+                    "note_id": "note_002",
+                    "xsec_token": "token_002",
+                    "note_url": "https://www.xiaohongshu.com/explore/note_002",
+                },
+            ],
+        }
+
+        class FakeCollector:
+            def __init__(self, _settings) -> None:
+                self.calls = []
+
+            def collect_note_detail(self, **kwargs):
+                self.calls.append(kwargs.get("note_id"))
+                return NoteSnapshot(note_id=kwargs.get("note_id"), comment_count=12)
+
+            def fetch_note_comments_preview(self, **_kwargs):
+                return []
+
+            def collect(self, _target):
+                raise AssertionError("signed detail path should be used first")
+
+        fake_collector = FakeCollector(None)
+        with patch("xhs_feishu_monitor.profile_report.XHSCollector", return_value=fake_collector):
+            enriched = enrich_profile_report_with_note_metrics(
+                report=report,
+                settings=SimpleNamespace(xhs_fetch_work_comment_counts=True, xhs_work_metric_limit=1),
+            )
+
+        self.assertEqual(fake_collector.calls, ["note_001"])
+        self.assertEqual(enriched["works"][0]["comment_count"], 12)
+        self.assertNotIn("comment_count", enriched["works"][1])
+
     def test_enrich_profile_report_uses_comment_preview_count_as_lower_bound(self) -> None:
         report = {
             "captured_at": "2026-03-24T10:00:00+08:00",
