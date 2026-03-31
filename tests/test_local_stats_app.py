@@ -992,6 +992,41 @@ class LocalStatsAppTest(unittest.TestCase):
             self.assertEqual(projects["项目A"]["sync_status"]["message"], "同步完成")
             self.assertEqual(projects["项目B"]["sync_status"], {})
 
+    def test_get_payload_sanitizes_legacy_feishu_project_error(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = write_monitored_entries(
+                f"{temp_dir}/urls.txt",
+                [{"url": "https://www.xiaohongshu.com/user/profile/u1", "active": True, "project": "项目A"}],
+            )
+            update_project_sync_status(
+                urls_file=str(path),
+                project="项目A",
+                state="success",
+                message="项目「项目A」采集完成",
+                finished_at="2026-03-31T16:50:00+08:00",
+                total_accounts=1,
+                total_works=30,
+            )
+            update_project_sync_status(
+                urls_file=str(path),
+                project="项目A",
+                state="error",
+                message="缺少飞书配置: FEISHU_APP_ID, FEISHU_APP_SECRET",
+                finished_at="2026-03-31T17:03:20+08:00",
+                last_error="缺少飞书配置: FEISHU_APP_ID, FEISHU_APP_SECRET",
+            )
+            store = MonitoringSyncStore(
+                env_file=f"{temp_dir}/.env",
+                urls_file=str(path),
+                dashboard_store=DashboardStore(env_file=f"{temp_dir}/.env"),
+            )
+            payload = store.get_payload()
+
+        project_sync = payload["projects"][0]["sync_status"]
+        self.assertEqual(project_sync["state"], "success")
+        self.assertEqual(project_sync["message"], "本地缓存已更新")
+        self.assertEqual(project_sync["last_error"], "")
+
     def test_request_sync_blocks_manual_cooldown(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             path = write_monitored_entries(
@@ -1264,7 +1299,7 @@ class LocalStatsAppTest(unittest.TestCase):
             )
             result = store.retry_feishu_upload()
         self.assertFalse(result["ok"])
-        self.assertIn("已停用飞书上传", result["message"])
+        self.assertIn("旧的外部协作上传入口已移除", result["message"])
 
     def test_dashboard_store_uses_stale_cache_when_refresh_fails(self) -> None:
         store = DashboardStore(env_file="/tmp/test.env", cache_seconds=0)

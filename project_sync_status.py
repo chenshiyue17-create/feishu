@@ -8,6 +8,17 @@ from typing import Any, Dict, List
 
 
 DEFAULT_PROJECT_STATUS_FILE = "xhs_feishu_monitor/output/project_sync_status.json"
+LEGACY_FEISHU_ERROR_MARKERS = (
+    "缺少飞书配置",
+    "飞书上传失败",
+    "tenant_access_token",
+    "fieldnamenotfound",
+    "rolepermnotallow",
+    "feishu_app_id",
+    "feishu_app_secret",
+    "feishu_bitable_app_token",
+    "feishu_table_id",
+)
 
 
 def iso_now() -> str:
@@ -20,6 +31,32 @@ def resolve_project_status_path(urls_file: str = "", *, fallback: str = DEFAULT_
         suffix = path.suffix or ".txt"
         return path.with_name(f"{path.stem}{suffix}.project_status.json")
     return Path(fallback).expanduser().resolve()
+
+
+def _sanitize_project_sync_status(raw: Dict[str, Any], *, project: str) -> Dict[str, Any]:
+    current = {
+        "project": str(raw.get("project") or project),
+        "state": str(raw.get("state") or ""),
+        "message": str(raw.get("message") or ""),
+        "started_at": str(raw.get("started_at") or ""),
+        "finished_at": str(raw.get("finished_at") or ""),
+        "last_success_at": str(raw.get("last_success_at") or ""),
+        "last_error": str(raw.get("last_error") or ""),
+        "total_accounts": int(raw.get("total_accounts") or 0),
+        "total_works": int(raw.get("total_works") or 0),
+        "updated_at": str(raw.get("updated_at") or ""),
+    }
+    combined_text = f'{current["message"]} {current["last_error"]}'.lower()
+    has_legacy_feishu_error = any(marker in combined_text for marker in LEGACY_FEISHU_ERROR_MARKERS)
+    if current["state"] == "error" and has_legacy_feishu_error:
+        current["last_error"] = ""
+        if current["last_success_at"]:
+            current["state"] = "success"
+            current["message"] = "本地缓存已更新"
+        else:
+            current["state"] = "idle"
+            current["message"] = ""
+    return current
 
 
 def load_project_sync_statuses(urls_file: str = "") -> Dict[str, Dict[str, Any]]:
@@ -36,18 +73,7 @@ def load_project_sync_statuses(urls_file: str = "") -> Dict[str, Dict[str, Any]]
     for project, raw in payload.items():
         if not isinstance(raw, dict):
             continue
-        statuses[str(project)] = {
-            "project": str(raw.get("project") or project),
-            "state": str(raw.get("state") or ""),
-            "message": str(raw.get("message") or ""),
-            "started_at": str(raw.get("started_at") or ""),
-            "finished_at": str(raw.get("finished_at") or ""),
-            "last_success_at": str(raw.get("last_success_at") or ""),
-            "last_error": str(raw.get("last_error") or ""),
-            "total_accounts": int(raw.get("total_accounts") or 0),
-            "total_works": int(raw.get("total_works") or 0),
-            "updated_at": str(raw.get("updated_at") or ""),
-        }
+        statuses[str(project)] = _sanitize_project_sync_status(raw, project=str(project))
     return statuses
 
 

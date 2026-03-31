@@ -359,37 +359,6 @@ function formatDurationShort(seconds) {
   return remainMinutes ? `${hours}小时${remainMinutes}分` : `${hours}小时`;
 }
 
-function getUploadScopeLabel(scope, projectName = "") {
-  const normalized = String(scope || "full").toLowerCase();
-  const projectText = projectName ? `项目「${projectName}」` : "全部项目";
-  if (normalized === "calendar") return `${projectText}日历`;
-  if (normalized === "rankings") return `${projectText}排行榜`;
-  return `${projectText}飞书数据`;
-}
-
-function buildUploadSummaryItems(uploadStatus) {
-  const summary = uploadStatus?.summary || {};
-  const calendarCount = Number(summary.calendar_created || 0) + Number(summary.calendar_updated || 0);
-  const accountRankingCount =
-    Number(summary.project_account_ranking_created || 0) + Number(summary.project_account_ranking_updated || 0);
-  const workRankingCount =
-    Number(summary.single_work_ranking_created || 0) + Number(summary.single_work_ranking_updated || 0);
-  const skippedCount =
-    Number(summary.calendar_skipped || 0) +
-    Number(summary.project_account_ranking_skipped || 0) +
-    Number(summary.single_work_ranking_skipped || 0);
-  const deletedCount =
-    Number(summary.project_account_ranking_deleted || 0) +
-    Number(summary.single_work_ranking_deleted || 0);
-  return [
-    { label: "日历留底", value: calendarCount },
-    { label: "账号榜", value: accountRankingCount },
-    { label: "作品榜", value: workRankingCount },
-    { label: "跳过", value: skippedCount },
-    { label: "清理", value: deletedCount },
-  ];
-}
-
 function getProjectSyncStateText(status) {
   const normalized = String(status || "").toLowerCase();
   if (normalized === "running") return "同步中";
@@ -649,7 +618,7 @@ function renderOperationsHub() {
   const projectName = getSelectedProjectName();
   const selectedProject = (state.monitoring?.projects || []).find((item) => item.name === projectName) || null;
   const syncStatus = state.monitoring?.sync_status || {};
-  const uploadStatus = syncStatus.upload_status || {};
+  const serverPushStatus = syncStatus.server_cache_push_status || {};
   const loginState = state.monitoring?.login_state || {};
   const projectSync = selectedProject?.sync_status || {};
   const manualState = getManualUpdateState(syncStatus);
@@ -666,13 +635,17 @@ function renderOperationsHub() {
             ? "登录态异常"
             : "等待自检";
   const uploadLabel =
-    uploadStatus.state === "running"
-      ? (uploadStatus.scope_label || "飞书上传中")
-      : uploadStatus.last_error
-        ? "上传失败，建议重试"
-        : uploadStatus.last_success_at
-          ? `最近上传 ${formatDateTime(uploadStatus.last_success_at)}`
-          : "飞书待命";
+    serverPushStatus.state === "running"
+      ? "正在推送服务器"
+      : serverPushStatus.state === "waiting_sync"
+        ? "采集成功后自动推送"
+        : serverPushStatus.state === "waiting_login"
+          ? "等待登录后继续自动任务"
+          : serverPushStatus.last_error
+            ? "服务器上传失败，等待重试"
+            : serverPushStatus.last_success_at
+              ? `最近上传 ${formatDateTime(serverPushStatus.last_success_at)}`
+              : "按计划上传服务器";
   const syncLabel =
     syncStatus.state === "running"
       ? "本地采集中"
@@ -688,11 +661,11 @@ function renderOperationsHub() {
       ? "先点立即自检并完成网页登录"
       : syncStatus.state === "running"
         ? "等待本地看板采集完成"
-        : uploadStatus.state === "running"
-          ? "等待飞书上传完成"
+        : serverPushStatus.state === "running"
+          ? "等待服务器上传完成"
           : isAllProjects
-            ? "先选一个项目，再更新看板或上传飞书"
-            : "建议先更新本地看板，再按需上传当前项目到飞书";
+            ? "先选一个项目，再更新看板"
+            : "建议先更新本地看板，必要时再推送到服务器";
 
   summaryNode.textContent = `${projectLabel} · ${syncLabel} · ${uploadLabel}`;
   root.innerHTML = `
@@ -712,7 +685,7 @@ function renderOperationsHub() {
       <div class="operations-list">
         <span>1. 更新本地看板</span>
         <span>2. 检查项目概况与榜单</span>
-        <span>3. 按需上传当前项目到飞书</span>
+        <span>3. 需要共享时推送到服务器</span>
       </div>
     </article>
     <article class="operations-card">
@@ -721,7 +694,7 @@ function renderOperationsHub() {
       <div class="operations-card-copy">${loginState.message || "优先用自检判断是否需要重新登录。"}</div>
       <div class="operations-chip-row">
         ${loginState.checked_at ? `<span class="operations-chip">上次自检 ${formatDateTime(loginState.checked_at)}</span>` : ""}
-        ${uploadStatus.scope_label ? `<span class="operations-chip">${uploadStatus.scope_label}</span>` : ""}
+        ${serverPushStatus.next_auto_run_at ? `<span class="operations-chip">下次计划 ${formatDateTime(serverPushStatus.next_auto_run_at)}</span>` : ""}
       </div>
     </article>
   `;
@@ -1138,7 +1111,6 @@ function getProjectFailureStage(projectSync = {}) {
   if (!text) return "";
   if (text.includes("登录态") || text.includes("登录页")) return "登录态异常";
   if (text.includes("抓取失败") || text.includes("没有成功账号")) return "抓取失败";
-  if (text.includes("飞书上传失败") || text.includes("FieldNameNotFound") || text.includes("RolePermNotAllow")) return "飞书上传失败";
   if (text.includes("网络") || text.includes("Connection aborted") || text.includes("RemoteDisconnected") || text.includes("timed out")) return "网络异常";
   return "同步失败";
 }
@@ -1423,7 +1395,7 @@ function renderProjectHome() {
     }
   }
   summaryParts.push("作品口径按每个账号前 30 条作品统计");
-  summaryParts.push("飞书仅做留底与协作展示");
+  summaryParts.push("服务器和手机端都只读取这份本地缓存");
   summaryNode.textContent = summaryParts.join(" · ");
 
   const statCards = [
@@ -1678,7 +1650,6 @@ function buildProjectTrendMarkup(series, delta, projectName) {
 function renderMonitoring() {
   const monitoring = state.monitoring || {};
   const syncStatus = monitoring.sync_status || {};
-  const uploadStatus = syncStatus.upload_status || {};
   const profileLookupError = monitoring.profile_lookup_error || "";
   const loginState = monitoring.login_state || {};
   const proxyPool = monitoring.proxy_pool || {};
@@ -1734,15 +1705,6 @@ function renderMonitoring() {
   ];
   if (syncStatus.summary?.total_accounts) {
     summaryChips.push(`最近同步 ${formatNumber(syncStatus.summary.total_accounts)} 账号 / ${formatNumber(syncStatus.summary.total_works || 0)} 作品`);
-  }
-  if (uploadStatus.state === "running") {
-    summaryChips.push(`飞书上传中 · ${getUploadScopeLabel(uploadStatus.scope, uploadStatus.summary?.project || "")}`);
-  } else if (uploadStatus.state === "queued") {
-    summaryChips.push(`飞书上传排队中 · ${getUploadScopeLabel(uploadStatus.scope, uploadStatus.summary?.project || "")}`);
-  } else if (uploadStatus.state === "error") {
-    summaryChips.push(`飞书上传失败 · ${getUploadScopeLabel(uploadStatus.scope, uploadStatus.summary?.project || "")}`);
-  } else if (uploadStatus.state === "success" && uploadStatus.summary?.successful_accounts) {
-    summaryChips.push(`${getUploadScopeLabel(uploadStatus.scope, uploadStatus.summary?.project || "")}已上传 ${formatNumber(uploadStatus.summary.successful_accounts)} 账号`);
   }
   if (profileLookupError) {
     summaryChips.push("账号摘要读取失败，已回退本地清单");
@@ -1826,24 +1788,14 @@ function renderSyncProgress(syncStatus) {
   const root = document.getElementById("syncProgressCard");
   if (!root) return;
   const progress = syncStatus?.progress || {};
-  const uploadStatus = syncStatus?.upload_status || {};
-  const uploadProgress = uploadStatus?.progress || {};
   const percent = Math.max(0, Math.min(100, Number(progress.overall_percent || 0)));
   const phasePercent = Math.max(0, Math.min(100, Number(progress.phase_percent || 0)));
   const detailText = progress.detail_text || syncStatus?.message || "当前未开始同步";
   const elapsedText = progress.elapsed_text ? `已用 ${progress.elapsed_text}` : "";
   const etaText = progress.eta_text ? `预计剩余 ${progress.eta_text}` : syncStatus?.state === "running" ? "预计剩余计算中" : "";
-  const uploadPercent = Math.max(0, Math.min(100, Number(uploadProgress.overall_percent || 0)));
-  const uploadElapsedText = uploadProgress.elapsed_text ? `已用 ${uploadProgress.elapsed_text}` : "";
-  const uploadEtaText =
-    uploadProgress.eta_text ? `预计剩余 ${uploadProgress.eta_text}` : uploadStatus?.state === "running" ? "预计剩余计算中" : "";
-  const uploadScopeLabel = getUploadScopeLabel(uploadStatus?.scope, uploadStatus?.summary?.project || "");
   const syncLastSuccessAt = syncStatus?.last_success_at ? formatDateTime(syncStatus.last_success_at) : "";
   const syncLastFinishedAt = syncStatus?.finished_at ? formatDateTime(syncStatus.finished_at) : "";
   const syncLastError = String(syncStatus?.last_error || "").trim();
-  const uploadLastSuccessAt = uploadStatus?.last_success_at ? formatDateTime(uploadStatus.last_success_at) : "";
-  const uploadLastFinishedAt = uploadStatus?.finished_at ? formatDateTime(uploadStatus.finished_at) : "";
-  const uploadLastError = String(uploadStatus?.last_error || "").trim();
   const schedulePlan = syncStatus?.schedule_plan || {};
   const scheduleSummary = buildSchedulePlanSummary(schedulePlan);
   const scheduleProjectChips = (schedulePlan.projects || [])
@@ -1853,7 +1805,7 @@ function renderSyncProgress(syncStatus) {
         `${item.name} ${formatDateTime(item.next_run_at).slice(11, 16)} · 单轮 ${formatNumber(item.per_run || 0)} 个`
     );
 
-  if (syncStatus?.state !== "running" && !progress.phase && (!uploadStatus?.state || uploadStatus.state === "idle")) {
+  if (syncStatus?.state !== "running" && !progress.phase) {
     root.innerHTML = `
       <div class="sync-progress-idle-grid">
         <section class="sync-progress-idle-block">
@@ -1866,17 +1818,6 @@ function renderSyncProgress(syncStatus) {
             ${syncLastFinishedAt && !syncLastSuccessAt ? `<span class="sync-progress-chip">最近结束 ${syncLastFinishedAt}</span>` : ""}
             ${syncLastError ? `<span class="sync-progress-chip is-error">${truncateMiddle(syncLastError, 72)}</span>` : ""}
             ${scheduleProjectChips.map((text) => `<span class="sync-progress-chip">${text}</span>`).join("")}
-          </div>
-        </section>
-        <section class="sync-progress-idle-block">
-          <div class="sync-progress-title">飞书上传</div>
-          <div class="sync-progress-subtitle">当前无活动上传任务 · 默认目标 ${uploadScopeLabel}</div>
-          <div class="sync-progress-meta">
-            <span class="sync-progress-chip">状态 待命</span>
-            <span class="sync-progress-chip">${uploadScopeLabel}</span>
-            ${uploadLastSuccessAt ? `<span class="sync-progress-chip is-success">最近成功 ${uploadLastSuccessAt}</span>` : ""}
-            ${uploadLastFinishedAt && !uploadLastSuccessAt ? `<span class="sync-progress-chip">最近结束 ${uploadLastFinishedAt}</span>` : ""}
-            ${uploadLastError ? `<span class="sync-progress-chip is-error">${truncateMiddle(uploadLastError, 72)}</span>` : ""}
           </div>
         </section>
       </div>
@@ -1892,31 +1833,6 @@ function renderSyncProgress(syncStatus) {
     { text: progress.account ? truncateMiddle(progress.account, 26) : "", tone: "" },
     { text: progress.works ? `${formatNumber(progress.works)} 条作品` : "", tone: "" },
   ].filter((item) => item.text);
-
-  const uploadChips = [
-    { text: uploadProgress.phase_label || (uploadStatus?.state === "success" ? "飞书上传完成" : uploadStatus?.state === "error" ? "飞书上传失败" : uploadStatus?.state === "running" ? "飞书后台上传" : uploadStatus?.state === "queued" ? "飞书上传排队中" : ""), tone: "" },
-    { text: uploadScopeLabel, tone: "" },
-    { text: uploadProgress.total ? `${formatNumber(uploadProgress.current || 0)} / ${formatNumber(uploadProgress.total || 0)}` : "", tone: "" },
-    { text: `成功 ${formatNumber(uploadProgress.success_count || uploadStatus?.summary?.successful_accounts || 0)}`, tone: "success" },
-    { text: `失败 ${formatNumber(uploadProgress.failed_count || uploadStatus?.summary?.failed_accounts || 0)}`, tone: (uploadProgress.failed_count || uploadStatus?.summary?.failed_accounts) ? "error" : "" },
-    { text: uploadProgress.account ? truncateMiddle(uploadProgress.account, 26) : "", tone: "" },
-  ].filter((item) => item.text);
-
-  const showUploadSection =
-    uploadStatus?.state && (uploadStatus.state !== "idle" || uploadProgress.phase || uploadStatus.message || uploadStatus.last_success_at || uploadStatus.last_error);
-  const uploadMessage =
-    uploadProgress.detail_text ||
-    uploadStatus?.message ||
-    "飞书上传待命";
-  const uploadMeta = [
-    uploadProgress.phase_percent ? `阶段进度 ${formatNumber(uploadProgress.phase_percent)}%` : "",
-    uploadElapsedText,
-    uploadEtaText,
-  ].filter(Boolean);
-  const uploadSummaryItems = buildUploadSummaryItems(uploadStatus);
-  const showUploadSummary =
-    uploadStatus?.state === "success" &&
-    uploadSummaryItems.some((item) => Number(item.value || 0) > 0);
 
   root.innerHTML = `
     <div class="sync-progress-top">
@@ -1935,36 +1851,6 @@ function renderSyncProgress(syncStatus) {
       ${etaText ? `<span>${etaText}</span>` : ""}
       ${chips.map((item) => `<span class="sync-progress-chip ${item.tone ? `is-${item.tone}` : ""}">${item.text}</span>`).join("")}
     </div>
-    ${
-      showUploadSection
-        ? `
-    <div class="sync-progress-secondary">
-      <div class="sync-progress-top sync-progress-top-secondary">
-        <div>
-          <div class="sync-progress-title">飞书上传</div>
-          <div class="sync-progress-subtitle">${uploadMessage}</div>
-        </div>
-        <div class="sync-progress-percent">${formatNumber(uploadPercent)}%</div>
-      </div>
-      <div class="sync-progress-bar-shell is-secondary">
-        <div class="sync-progress-bar is-secondary" style="width:${uploadPercent}%"></div>
-      </div>
-      <div class="sync-progress-meta">
-        ${uploadMeta.map((text) => `<span>${text}</span>`).join("")}
-        ${uploadChips.map((item) => `<span class="sync-progress-chip ${item.tone ? `is-${item.tone}` : ""}">${item.text}</span>`).join("")}
-      </div>
-      ${
-        showUploadSummary
-          ? `<div class="sync-progress-meta">
-              ${uploadSummaryItems
-                .map((item) => `<span class="sync-progress-chip">${item.label} ${formatNumber(item.value)}</span>`)
-                .join("")}
-            </div>`
-          : ""
-      }
-    </div>`
-        : ""
-    }
   `;
 }
 
@@ -2250,7 +2136,7 @@ function getManualUpdateState(syncStatus) {
     ? "当前正在采集并更新本地看板，为避免重复请求，采集按钮已临时锁定。"
     : cooldownSeconds > 0
       ? `为降低小红书风控，本地采集冷却中，剩余 ${formatDurationShort(cooldownSeconds)}。每天 14:00 自动更新不受影响。`
-      : "采集和飞书上传已拆开：先更新本地看板，再按需上传当前项目、全部项目、日历或排行榜。每天 14:00 自动更新保持不变。";
+      : "先更新本地看板；需要共享时再推送到服务器。每天 14:00 自动更新保持不变。";
   return { disabled, buttonText, projectButtonText, helperText, cooldownSeconds };
 }
 
@@ -2258,12 +2144,7 @@ function renderManualUpdateState(syncStatus) {
   const { disabled, buttonText, projectButtonText, helperText } = getManualUpdateState(syncStatus);
   const syncButton = document.getElementById("syncNowButton");
   const heroButton = document.getElementById("manualUpdateButton");
-  const retryUploadButton = document.getElementById("retryUploadButton");
-  const uploadAllButton = document.getElementById("uploadAllButton");
-  const uploadCalendarButton = document.getElementById("uploadCalendarButton");
-  const uploadRankingButton = document.getElementById("uploadRankingButton");
   const hintNode = document.getElementById("syncCooldownText");
-  const uploadStatus = syncStatus?.upload_status || {};
   if (syncButton) {
     syncButton.disabled = disabled;
     syncButton.textContent = buttonText;
@@ -2276,34 +2157,6 @@ function renderManualUpdateState(syncStatus) {
     button.disabled = disabled;
     button.textContent = projectButtonText;
   });
-  if (retryUploadButton) {
-    const canUpload =
-      (Boolean(uploadStatus?.has_retry_payload) || Boolean(uploadStatus?.has_cached_payload)) &&
-      uploadStatus?.state !== "running";
-    const selectedProjectName = getSelectedProjectName();
-    const uploadCurrentProject = selectedProjectName !== "all";
-    retryUploadButton.disabled = !canUpload;
-    retryUploadButton.textContent =
-      uploadStatus?.state === "running"
-        ? "飞书上传中"
-        : uploadStatus?.state === "queued"
-          ? "上传已排队"
-          : uploadStatus?.last_error
-            ? (uploadCurrentProject ? "重试当前项目上传" : "重试飞书上传")
-            : (uploadCurrentProject ? "上传当前项目到飞书" : "上传飞书");
-  }
-  if (uploadAllButton) {
-    uploadAllButton.disabled = !(Boolean(uploadStatus?.has_retry_payload) || Boolean(uploadStatus?.has_cached_payload)) || uploadStatus?.state === "running";
-    uploadAllButton.textContent = uploadStatus?.state === "running" ? "飞书上传中" : "上传全部项目";
-  }
-  if (uploadCalendarButton) {
-    uploadCalendarButton.disabled = !(Boolean(uploadStatus?.has_retry_payload) || Boolean(uploadStatus?.has_cached_payload)) || uploadStatus?.state === "running";
-    uploadCalendarButton.textContent = uploadStatus?.state === "running" ? "飞书上传中" : "仅上传日历";
-  }
-  if (uploadRankingButton) {
-    uploadRankingButton.disabled = !(Boolean(uploadStatus?.has_retry_payload) || Boolean(uploadStatus?.has_cached_payload)) || uploadStatus?.state === "running";
-    uploadRankingButton.textContent = uploadStatus?.state === "running" ? "飞书上传中" : "仅上传排行榜";
-  }
   if (hintNode) {
     hintNode.textContent = helperText;
   }
@@ -2313,7 +2166,7 @@ function renderMeta() {
   const payload = state.payload;
   document.getElementById("updatedAt").textContent = `数据更新时间：${formatDateTime(payload.updated_at || payload.generated_at)}${payload.stale ? " · 当前显示缓存" : ""}`;
   document.getElementById("latestDate").textContent = `最新留底：${payload.latest_date || "-"}`;
-  document.getElementById("samplingNote").textContent = "口径说明：每个账号最多采集前 30 条作品；项目增长默认按可比账号计算；飞书上传只做留底和协作展示。";
+  document.getElementById("samplingNote").textContent = "口径说明：每个账号最多采集前 30 条作品；项目增长默认按可比账号计算；服务器和手机端都只读取这份本地缓存。";
   const active = getActiveAccount();
   document.getElementById("weeklySummary").textContent = active?.weekly_summary || "暂无周对比摘要";
   const seriesMeta = payload.series_meta || {};
@@ -2953,7 +2806,7 @@ async function checkLoginState() {
 }
 
 async function retryFeishuUpload({ scope = "full", useSelectedProject = true } = {}) {
-  throw new Error("当前服务器版本已停用飞书上传。");
+  throw new Error("旧的外部协作上传入口已移除。");
 }
 
 document.getElementById("refreshButton").addEventListener("click", () => loadDashboard(true));

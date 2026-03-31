@@ -1767,10 +1767,10 @@ def build_sync_progress(
             overall_percent = round((safe_current / safe_total) * 50)
             detail_text = f"正在抓取账号 {safe_current}/{safe_total}"
     elif phase == "sync":
-        phase_label = "写入飞书"
+        phase_label = "推送服务器缓存"
         phase_percent = round((safe_current / safe_total) * 100)
         overall_percent = 50 + round((safe_current / safe_total) * 50)
-        detail_text = f"正在写入飞书 {safe_current}/{safe_total}"
+        detail_text = f"正在推送服务器缓存 {safe_current}/{safe_total}"
     else:
         phase_percent = 0
 
@@ -2019,7 +2019,7 @@ class MonitoringSyncStore:
         snapshot["server_cache_push_status"] = dict(self._server_push_status)
         snapshot["upload_status"] = {
             "state": "disabled",
-            "message": "服务器当前仅保留本地缓存，不再上传飞书。",
+            "message": "旧的外部协作上传入口已移除，当前只保留本地缓存与服务器查看。",
             "scope": "disabled",
             "started_at": "",
             "finished_at": "",
@@ -2270,7 +2270,7 @@ class MonitoringSyncStore:
             return f"{target_text}日历留底"
         if normalized_scope == "rankings":
             return f"{target_text}排行榜"
-        return f"{target_text}飞书数据"
+        return f"{target_text}缓存数据"
 
     def _start_upload_job_locked(self, upload_job: Dict[str, Any]) -> None:
         reports = [dict(item) for item in (upload_job.get("reports") or []) if isinstance(item, dict)]
@@ -2311,12 +2311,12 @@ class MonitoringSyncStore:
             if self._upload_running:
                 self._pending_upload_job = upload_job
                 self._upload_status["pending"] = True
-                self._upload_status["message"] = "已准备新的飞书上传任务，当前上传完成后可手动再次上传"
+                self._upload_status["message"] = "已准备新的缓存上传任务，当前上传完成后可手动再次上传"
                 return "staged_pending"
             self._upload_status.update(
                 {
                     "state": "idle",
-                    "message": "本地看板已更新，可手动上传飞书",
+                    "message": "本地看板已更新，可按需继续推送缓存",
                     "finished_at": iso_now(),
                     "last_error": "",
                     "pending": False,
@@ -2329,7 +2329,7 @@ class MonitoringSyncStore:
     def retry_feishu_upload(self, *, project: str = "", scope: str = "full") -> Dict[str, Any]:
         return {
             "ok": False,
-            "message": "当前服务器版本已停用飞书上传，只保留本地缓存和手机查看。",
+            "message": "旧的外部协作上传入口已移除，当前只保留本地缓存和手机查看。",
             "sync_status": self._status_snapshot_locked(),
         }
 
@@ -2399,7 +2399,7 @@ class MonitoringSyncStore:
                 "pending": False,
                 "progress": {
                     "phase": "done",
-                    "phase_label": "飞书上传完成",
+                    "phase_label": "缓存上传完成",
                     "current": success_count,
                     "total": total_count,
                     "phase_percent": 100,
@@ -2409,7 +2409,7 @@ class MonitoringSyncStore:
                     "status": "success",
                     "success_count": success_count,
                     "failed_count": int(summary.get("failed_accounts") or 0),
-                    "detail_text": f"已完成 {success_count} 个账号飞书上传",
+                    "detail_text": f"已完成 {success_count} 个账号缓存上传",
                     "elapsed_seconds": timing["elapsed_seconds"],
                     "elapsed_text": timing["elapsed_text"],
                     "eta_seconds": 0,
@@ -2420,7 +2420,7 @@ class MonitoringSyncStore:
         except Exception as exc:
             result = {
                 "state": "error",
-                "message": f"飞书上传失败：{exc}",
+                "message": f"缓存上传失败：{exc}",
                 "scope": self._normalize_upload_scope(str(upload_job.get("upload_scope") or "full")),
                 "started_at": "",
                 "finished_at": finished_at,
@@ -2906,13 +2906,12 @@ class MonitoringSyncStore:
             should_auto_push = False
             try:
                 settings = load_settings(self.env_file)
-                settings.validate_for_sync()
                 current_urls = list(self._current_sync_urls)
                 self._ensure_login_ready_for_sync(
-                settings=settings,
-                sample_url=current_urls[0] if current_urls else "",
-                mode=self._current_sync_mode,
-            )
+                    settings=settings,
+                    sample_url=current_urls[0] if current_urls else "",
+                    mode=self._current_sync_mode,
+                )
                 collect_progress = build_sync_progress(
                     phase="collect",
                     current=0,
