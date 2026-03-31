@@ -31,7 +31,7 @@ DEFAULT_FIELD_MAP = {
     "raw_json": "原始数据",
 }
 
-DEFAULT_SERVER_CACHE_PUSH_URL = "http://47.87.68.74:8787"
+DEFAULT_SERVER_CACHE_PUSH_URL = "http://47.87.68.74"
 
 
 @dataclass

@@ -62,7 +62,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="把本地缓存上传到服务器，供网页和手机端查看。")
     parser.add_argument("--env-file", default="xhs_feishu_monitor/.env")
     parser.add_argument("--urls-file", default="xhs_feishu_monitor/input/robam_multi_profile_urls.txt")
-    parser.add_argument("--server-url", required=True, help="服务器基础地址，例如 http://47.87.68.74:8787")
+    parser.add_argument("--server-url", required=True, help="服务器基础地址，例如 http://47.87.68.74")
     parser.add_argument("--token", default="", help="可选上传令牌，对应 SERVER_CACHE_UPLOAD_TOKEN")
     args = parser.parse_args(argv)
 

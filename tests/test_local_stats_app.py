@@ -95,7 +95,7 @@ class LocalStatsAppTest(unittest.TestCase):
             urls_path = Path(temp_dir) / "urls.txt"
             env_path.write_text("XHS_COOKIE=old_cookie\n", encoding="utf-8")
             payload = load_system_config(str(env_path), str(urls_path))
-            self.assertEqual(payload["config"]["SERVER_CACHE_PUSH_URL"], "http://47.87.68.74:8787")
+            self.assertEqual(payload["config"]["SERVER_CACHE_PUSH_URL"], "http://47.87.68.74")
 
     def test_save_system_config_restores_default_server_push_url_when_blank(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -115,8 +115,8 @@ class LocalStatsAppTest(unittest.TestCase):
                 },
             )
 
-            self.assertEqual(result["config"]["SERVER_CACHE_PUSH_URL"], "http://47.87.68.74:8787")
-            self.assertIn("SERVER_CACHE_PUSH_URL=http://47.87.68.74:8787", env_path.read_text(encoding="utf-8"))
+            self.assertEqual(result["config"]["SERVER_CACHE_PUSH_URL"], "http://47.87.68.74")
+            self.assertIn("SERVER_CACHE_PUSH_URL=http://47.87.68.74", env_path.read_text(encoding="utf-8"))
 
     def test_save_system_config_strips_legacy_feishu_lines(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
