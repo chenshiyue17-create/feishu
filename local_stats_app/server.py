@@ -26,7 +26,7 @@ from ..chrome_cookies import (
     resolve_chrome_profile_directory,
     resolve_chrome_profile_root,
 )
-from ..config import DEFAULT_SERVER_CACHE_PUSH_URL, load_settings, normalize_server_cache_push_url
+from ..config import APP_VERSION, DEFAULT_SERVER_CACHE_PUSH_URL, load_settings, normalize_server_cache_push_url
 from ..profile_cache_push import push_local_cache_to_server
 from ..profile_batch_report import normalize_profile_url
 from ..profile_batch_to_feishu import (
@@ -1457,6 +1457,7 @@ def build_mobile_rankings_payload(
 
     return {
         "ok": True,
+        "version": APP_VERSION,
         "project": normalized_project or "all",
         "projects": normalized_projects,
         "view_mode": "server_cache_only",
@@ -3030,6 +3031,7 @@ def build_handler(
                     {
                         "ok": True,
                         "service": "xhs_local_stats_app",
+                        "version": APP_VERSION,
                         "pid": os.getpid(),
                         "time": iso_now(),
                     },

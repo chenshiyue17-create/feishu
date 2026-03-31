@@ -48,6 +48,14 @@ function buildMobileStatusSummary(payload) {
   return pieces.join(" · ");
 }
 
+function applyVersion(payload) {
+  const version = String(payload?.version || "").trim();
+  if (version) {
+    const node = document.getElementById("versionChip");
+    if (node) node.textContent = version;
+  }
+}
+
 function renderList(rootId, countId, rows, metricLabel) {
   const root = document.getElementById(rootId);
   const count = document.getElementById(countId);
@@ -180,6 +188,7 @@ async function loadDashboard() {
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const payload = await response.json();
     window.__mobilePayload = payload;
+    applyVersion(payload);
     renderProjectOptions(payload.projects || []);
     renderAccountOptions(payload.accounts || []);
     selectedProject = payload.project || selectedProject;
