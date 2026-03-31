@@ -712,6 +712,26 @@ function getMonitoringEntries() {
   return state.monitoring?.entries || [];
 }
 
+function getDashboardAccounts() {
+  const accounts = state.payload?.accounts || [];
+  const monitoringEntries = getMonitoringEntries();
+  if (!accounts.length || !monitoringEntries.length) {
+    return accounts;
+  }
+  const byAccountId = new Map();
+  const byProfileUrl = new Map();
+  monitoringEntries.forEach((entry) => {
+    if (entry.account_id) byAccountId.set(entry.account_id, entry);
+    if (entry.profile_url) byProfileUrl.set(entry.profile_url, entry);
+    if (entry.url) byProfileUrl.set(entry.url, entry);
+  });
+  return accounts.map((item) => {
+    if (item.project) return item;
+    const matchedEntry = byAccountId.get(item.account_id) || byProfileUrl.get(item.profile_url || "");
+    return matchedEntry?.project ? { ...item, project: matchedEntry.project } : item;
+  });
+}
+
 function getSelectedProjectName() {
   return state.monitorProjectFilter || "all";
 }
@@ -750,7 +770,7 @@ function getProjectStatus(projectName = getSelectedProjectName()) {
 }
 
 function getVisibleAccounts() {
-  const accounts = state.payload?.accounts || [];
+  const accounts = getDashboardAccounts();
   const projectName = getSelectedProjectName();
   if (projectName === "all") {
     return accounts;
@@ -832,7 +852,7 @@ function toIsoDate(date) {
 
 function buildProjectCalendarState(projectName = getSelectedProjectName()) {
   const accountSeries = state.payload?.account_series || {};
-  const accountCards = new Map((state.payload?.accounts || []).map((item) => [item.account_id, item]));
+  const accountCards = new Map(getDashboardAccounts().map((item) => [item.account_id, item]));
   const accountIds = projectName === "all" ? new Set(Object.keys(accountSeries)) : getProjectAccountIds(projectName);
   const grouped = new Map();
 
@@ -2141,13 +2161,28 @@ function renderManualUpdateState(syncStatus) {
 
 function renderMeta() {
   const payload = state.payload;
-  document.getElementById("updatedAt").textContent = `数据更新时间：${formatDateTime(payload.updated_at || payload.generated_at)}${payload.stale ? " · 当前显示缓存" : ""}`;
-  document.getElementById("latestDate").textContent = `最新留底：${payload.latest_date || "-"}`;
-  document.getElementById("samplingNote").textContent = "口径说明：每个账号最多采集前 30 条作品；项目增长默认按可比账号计算；服务器和手机端都只读取这份本地缓存。";
+  const updatedAtNode = document.getElementById("updatedAt");
+  const latestDateNode = document.getElementById("latestDate");
+  const samplingNoteNode = document.getElementById("samplingNote");
+  if (updatedAtNode) {
+    updatedAtNode.textContent = `数据更新时间：${formatDateTime(payload.updated_at || payload.generated_at)}${payload.stale ? " · 当前显示缓存" : ""}`;
+  }
+  if (latestDateNode) {
+    latestDateNode.textContent = `最新留底：${payload.latest_date || "-"}`;
+  }
+  if (samplingNoteNode) {
+    samplingNoteNode.textContent = "口径说明：每个账号最多采集前 30 条作品；项目增长默认按可比账号计算；服务器和手机端都只读取这份本地缓存。";
+  }
   const active = getActiveAccount();
-  document.getElementById("weeklySummary").textContent = active?.weekly_summary || "暂无周对比摘要";
+  const weeklySummaryNode = document.getElementById("weeklySummary");
+  if (weeklySummaryNode) {
+    weeklySummaryNode.textContent = active?.weekly_summary || "暂无周对比摘要";
+  }
   const seriesMeta = payload.series_meta || {};
-  document.getElementById("trendModeChip").textContent = `${seriesMeta.mode === "daily" ? "日更" : "趋势"}${seriesMeta.update_time ? ` · ${seriesMeta.update_time}` : ""}`;
+  const trendModeChipNode = document.getElementById("trendModeChip");
+  if (trendModeChipNode) {
+    trendModeChipNode.textContent = `${seriesMeta.mode === "daily" ? "日更" : "趋势"}${seriesMeta.update_time ? ` · ${seriesMeta.update_time}` : ""}`;
+  }
 }
 
 function renderTrendWindowTabs() {
@@ -2164,10 +2199,12 @@ function renderRankingScopeTabs() {
 }
 
 function renderPortalCards() {
+  const portalRoot = document.getElementById("portalCards");
+  if (!portalRoot) return;
   const active = getActiveAccount();
   const projectName = getSelectedProjectName();
   if (projectName === "all") {
-    document.getElementById("portalCards").innerHTML = `<div class="empty-state">请选择单个项目后查看该项目或项目内账号的数据卡。</div>`;
+    portalRoot.innerHTML = `<div class="empty-state">请选择单个项目后查看该项目或项目内账号的数据卡。</div>`;
     return;
   }
   const fullSeries = active ? getActiveSeries() : getProjectSeries(projectName);
@@ -2175,7 +2212,7 @@ function renderPortalCards() {
   if (!active) {
     const accounts = getVisibleAccounts();
     if (!accounts.length) {
-      document.getElementById("portalCards").innerHTML = `<div class="empty-state">当前项目下暂无项目指标。</div>`;
+      portalRoot.innerHTML = `<div class="empty-state">当前项目下暂无项目指标。</div>`;
       return;
     }
     const totalFans = accounts.reduce((sum, item) => sum + Number(item.fans || 0), 0);
@@ -2198,7 +2235,7 @@ function renderPortalCards() {
       ["近7天可比评论增量", projectGrowth && projectGrowth.comparable_ready ? formatSignedNumber(projectGrowth.comments) : "-", comparableHint],
       ["近7天可比作品增量", projectGrowth && projectGrowth.comparable_ready ? formatSignedNumber(projectGrowth.works) : "-", comparableHint],
     ];
-    document.getElementById("portalCards").innerHTML = cards
+    portalRoot.innerHTML = cards
       .map(
         ([label, value, hint]) => `
           <article class="portal-card">
