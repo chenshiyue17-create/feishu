@@ -177,10 +177,10 @@ function renderAccountDetails(payload, detail) {
   const accounts = payload.accounts || [];
   const activeAccount = accounts.find((item) => String(item.account_id || "") === selectedAccountId);
   const label = activeAccount ? (activeAccount.account || activeAccount.account_id) : "全部账号";
-  document.getElementById("accountDetailTitle").textContent = activeAccount ? `${label} 账号内榜单` : "账号内榜单";
-  document.getElementById("accountDetailBadge").textContent = label;
+  document.getElementById("accountDetailTitle").textContent = activeAccount ? `${label} 榜单` : "账号内榜单";
+  document.getElementById("accountDetailBadge").textContent = activeAccount ? "账号内" : "全部";
   document.getElementById("accountDetailSummary").textContent = activeAccount
-    ? `${selectedHistoryDate || payload.latest_date || ""} · ${label}`
+    ? `${selectedHistoryDate || payload.latest_date || ""}`
     : "选择一个账号，查看账号内榜单";
   renderList("accountLikesList", "accountLikesCount", filterRowsByAccount(detail.likes || [], selectedAccountId), "点赞", { reindexRank: true });
   renderList("accountCommentsList", "accountCommentsCount", filterRowsByAccount(detail.comments || [], selectedAccountId), "评论", { reindexRank: true });
