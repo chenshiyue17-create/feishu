@@ -1029,13 +1029,6 @@ function renderProjectCalendar() {
   }
 
   detailNode.innerHTML = `
-    <div class="project-calendar-detail-head">
-      <div>
-        <div class="project-calendar-detail-title">${selected.date} 留底</div>
-        <div class="project-calendar-detail-meta">项目总量：粉丝 ${formatNumber(selected.fans)} · 获赞 ${formatNumber(selected.interaction)} · 点赞 ${formatNumber(selected.likes)} · 评论 ${formatNumber(selected.comments)}</div>
-      </div>
-      <div class="project-calendar-detail-meta">${formatNumber(selected.accounts.length)} 个账号</div>
-    </div>
     <div class="project-calendar-account-list">
       ${selected.accounts
         .slice(0, 8)
@@ -1342,7 +1335,6 @@ function renderProjectHome() {
   const trendTitleNode = document.getElementById("projectHomeTrendTitle");
   const trendSummaryNode = document.getElementById("projectHomeTrendSummary");
   const trendChartNode = document.getElementById("projectHomeTrendChart");
-  const comparePanelNode = document.getElementById("projectComparePanel");
 
   if (projectName === "all") {
     titleNode.textContent = "请选择单个项目";
@@ -1353,12 +1345,9 @@ function renderProjectHome() {
     trendTitleNode.textContent = "项目近 7 天成长";
     trendSummaryNode.textContent = "请选择单个项目后查看项目趋势。";
     trendChartNode.innerHTML = `<div class="empty-state">当前不再显示全部项目的混合趋势。</div>`;
-    comparePanelNode.innerHTML = `<div class="empty-state">请选择单个项目后查看最近一次项目快照对比。</div>`;
     return;
   }
   titleNode.textContent = `项目：${projectName}`;
-  const latestExport = (projects.find((item) => item.name === projectName) || {}).latest_export || {};
-  const latestCompare = latestExport.compare || {};
 
   const totalFans = accounts.reduce((sum, item) => sum + Number(item.fans || 0), 0);
   const totalInteraction = accounts.reduce((sum, item) => sum + Number(item.interaction || 0), 0);
@@ -1388,38 +1377,10 @@ function renderProjectHome() {
   summaryNode.textContent = summaryParts.join(" · ");
 
   const statCards = [
-    ["监测账号数", formatNumber(entries.length), "当前项目监测账号总数"],
-    ["已同步账号数", formatNumber(accounts.length), "当前已有快照数据的账号数"],
-    [
-      "可比账号数",
-      projectGrowth ? formatNumber(projectGrowth.comparable_account_count || 0) : "-",
-      projectGrowth ? `${projectGrowth.start_date} → ${projectGrowth.end_date} 连续留底账号` : "历史不足，暂不显示可比账号",
-    ],
-    [
-      "新增账号数",
-      projectGrowth ? formatNumber(projectGrowth.new_account_count || 0) : "-",
-      projectGrowth ? `${projectGrowth.start_date} → ${projectGrowth.end_date} 新进入统计窗口的账号` : "历史不足，暂不显示新增账号",
-    ],
     ["项目粉丝总量", formatNumber(totalFans), "项目内账号当前粉丝总量"],
     ["项目获赞收藏", formatNumber(totalInteraction), "项目内账号当前获赞收藏总量"],
     ["项目评论总量", formatNumber(totalComments), "项目内账号首页可见作品评论合计"],
-    [
-      "近7天可比作品增量",
-      projectGrowth && projectGrowth.comparable_ready ? formatSignedNumber(projectGrowth.works) : "-",
-      projectGrowth
-        ? `${projectGrowth.start_date} → ${projectGrowth.end_date} · 仅统计 ${formatNumber(projectGrowth.comparable_account_count)} 个可比账号`
-        : "历史不足，暂不显示作品增长",
-    ],
-    ["评论预警数", formatNumber(alerts.length), "当前项目命中的评论预警条数"],
   ];
-  if (projectGrowth) {
-    const comparableHint = projectGrowth.comparable_ready
-      ? `${projectGrowth.start_date} → ${projectGrowth.end_date} · 仅统计 ${formatNumber(projectGrowth.comparable_account_count)} 个可比账号`
-      : `${projectGrowth.start_date} → ${projectGrowth.end_date} · 暂无可比账号`;
-    statCards.push(["近7天可比粉丝增量", projectGrowth.comparable_ready ? formatSignedNumber(projectGrowth.fans) : "-", comparableHint]);
-    statCards.push(["近7天可比点赞增量", projectGrowth.comparable_ready ? formatSignedNumber(projectGrowth.likes) : "-", comparableHint]);
-    statCards.push(["近7天可比评论增量", projectGrowth.comparable_ready ? formatSignedNumber(projectGrowth.comments) : "-", comparableHint]);
-  }
   statsNode.innerHTML = statCards
     .map(
       ([label, value, hint]) => `
@@ -1431,75 +1392,6 @@ function renderProjectHome() {
       `,
     )
     .join("");
-
-  if (!latestExport.snapshot_time) {
-    comparePanelNode.innerHTML = `<div class="empty-state">当前项目还没有导出快照，先点“导出当前项目快照”。</div>`;
-  } else if (!latestCompare || !latestCompare.current_snapshot_time) {
-    comparePanelNode.innerHTML = `
-      <article class="project-compare-card">
-        <div class="project-compare-title">最近一次项目快照</div>
-        <div class="project-compare-meta">快照 ${latestExport.snapshot_time}</div>
-        <div class="project-compare-empty">当前还没有可对比的上一版快照。再导出一次就会自动生成对比。</div>
-      </article>
-    `;
-  } else {
-    const changedAccounts = latestCompare.changed_accounts || [];
-    comparePanelNode.innerHTML = `
-      <article class="project-compare-card">
-        <div class="project-compare-title">最近一次项目快照对比</div>
-        <div class="project-compare-meta">${latestCompare.previous_snapshot_time} → ${latestCompare.current_snapshot_time}</div>
-        <div class="project-compare-summary">${buildCompareSummaryLine(latestCompare)}</div>
-        <div class="project-compare-grid">
-          <div class="project-compare-chip">新增账号 ${formatNumber((latestCompare.added_accounts || []).length)}</div>
-          <div class="project-compare-chip">退出账号 ${formatNumber((latestCompare.removed_accounts || []).length)}</div>
-          <div class="project-compare-chip">变化账号 ${formatNumber(changedAccounts.length)}</div>
-        </div>
-        <div class="project-compare-list">
-          ${
-            changedAccounts.length
-              ? changedAccounts
-                  .slice(0, 5)
-                  .map(
-                    (item) => {
-                      const likeCompare = item.like_compare || {};
-                      const commentCompare = item.comment_compare || {};
-                      const detailParts = [];
-                      if (likeCompare.new_entries?.length) {
-                        detailParts.push(`点赞新进榜 ${likeCompare.new_entries.slice(0, 2).map((entry) => entry.title).join(" / ")}`);
-                      }
-                      if (likeCompare.moved_up?.length) {
-                        detailParts.push(`点赞升榜 ${likeCompare.moved_up.slice(0, 2).map((entry) => entry.title).join(" / ")}`);
-                      }
-                      if (likeCompare.dropped_entries?.length) {
-                        detailParts.push(`点赞掉榜 ${likeCompare.dropped_entries.slice(0, 2).map((entry) => entry.title).join(" / ")}`);
-                      }
-                      if (commentCompare.new_entries?.length) {
-                        detailParts.push(`评论新进榜 ${commentCompare.new_entries.slice(0, 2).map((entry) => entry.title).join(" / ")}`);
-                      }
-                      if (commentCompare.moved_up?.length) {
-                        detailParts.push(`评论升榜 ${commentCompare.moved_up.slice(0, 2).map((entry) => entry.title).join(" / ")}`);
-                      }
-                      if (commentCompare.dropped_entries?.length) {
-                        detailParts.push(`评论掉榜 ${commentCompare.dropped_entries.slice(0, 2).map((entry) => entry.title).join(" / ")}`);
-                      }
-                      return `
-                      <div class="project-compare-item">
-                        <div class="project-compare-item-title">${item.account}</div>
-                        <div class="project-compare-item-meta">点赞 ${formatSignedNumber(item.like_delta)} · 评论 ${formatSignedNumber(item.comment_delta)}</div>
-                        <div class="project-compare-item-detail">
-                          ${detailParts.join(" · ")}
-                        </div>
-                      </div>
-                    `;
-                    },
-                  )
-                  .join("")
-              : '<div class="project-compare-empty">本次快照和上次相比没有明显榜单变化。</div>'
-          }
-        </div>
-      </article>
-    `;
-  }
 
   if (!topAccounts.length) {
     topAccountsNode.innerHTML = `<div class="empty-state">${projectName === "all" ? "暂无项目账号快照。" : "当前项目下暂无已同步账号。"}</div>`;
