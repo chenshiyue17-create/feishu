@@ -1039,18 +1039,11 @@ function renderProjectCalendar() {
 
   const selected = calendarState.selectedDay;
   if (!selected) {
-    detailNode.innerHTML = `<div class="empty-state">当前月份暂无可查看的留底明细。</div>`;
+    detailNode.innerHTML = "";
     return;
   }
 
-  detailNode.innerHTML = `
-    <div class="project-calendar-detail-head">
-      <div>
-        <div class="project-calendar-detail-title">已选择 ${selected.date}</div>
-        <div class="project-calendar-detail-meta">下方榜单中心已同步切换到该日期，避免与这里重复显示。</div>
-      </div>
-    </div>
-  `;
+  detailNode.innerHTML = "";
 }
 
 function getCalendarRankingSnapshot(projectName, dateText) {
