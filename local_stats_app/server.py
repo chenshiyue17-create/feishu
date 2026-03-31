@@ -337,6 +337,42 @@ def build_collection_schedule_plan(*, settings, entries: List[Dict[str, Any]], n
     }
 
 
+def build_auto_project_schedule(*, settings, entries: List[Dict[str, Any]], now: Optional[datetime] = None) -> Dict[str, Dict[str, Any]]:
+    current = now or datetime.now().astimezone()
+    if not bool(getattr(settings, "xhs_spread_schedule_enabled", True)):
+        return {}
+    project_url_map: Dict[str, List[str]] = {}
+    for entry in entries:
+        if not entry.get("active"):
+            continue
+        normalized_project = normalize_project_name(entry.get("project"))
+        url = str(entry.get("url") or "").strip()
+        if not url:
+            continue
+        project_url_map.setdefault(normalized_project, []).append(url)
+    if not project_url_map:
+        return {}
+    start_minutes = _parse_clock_minutes(str(getattr(settings, "xhs_batch_window_start", "14:00") or "14:00"), "14:00")
+    end_minutes = _parse_clock_minutes(str(getattr(settings, "xhs_batch_window_end", "15:00") or "15:00"), "15:00")
+    start_at = current.replace(hour=start_minutes // 60, minute=start_minutes % 60, second=0, microsecond=0)
+    if end_minutes <= start_minutes:
+        end_at = (start_at + timedelta(days=1)).replace(hour=end_minutes // 60, minute=end_minutes % 60, second=0, microsecond=0)
+    else:
+        end_at = current.replace(hour=end_minutes // 60, minute=end_minutes % 60, second=0, microsecond=0)
+    duration_seconds = max(60, int((end_at - start_at).total_seconds()))
+    project_names = sorted(project_url_map)
+    slot_gap_seconds = max(5, duration_seconds // max(1, len(project_names)))
+    schedule: Dict[str, Dict[str, Any]] = {}
+    for index, project_name in enumerate(project_names):
+        schedule[project_name] = {
+            "urls": list(project_url_map.get(project_name) or []),
+            "scheduled_at": start_at + timedelta(seconds=index * slot_gap_seconds),
+            "slot_gap_seconds": slot_gap_seconds,
+            "project_index": index,
+        }
+    return schedule
+
+
 def _sync_login_state_module_dependencies() -> None:
     login_state_module.load_settings = load_settings
     login_state_module.export_xiaohongshu_cookie_header = export_xiaohongshu_cookie_header
@@ -2022,34 +2058,14 @@ class MonitoringSyncStore:
             if not entry.get("active"):
                 continue
             normalized = normalize_project_name(entry.get("project"))
-            grouped.setdefault(normalized, []).append(str(entry.get("url") or "").strip())
-        return {key: [url for url in urls if url] for key, urls in grouped.items() if any(urls)}
+            url = str(entry.get("url") or "").strip()
+            if not url:
+                continue
+            grouped.setdefault(normalized, []).append(url)
+        return grouped
 
     def _build_auto_project_plan(self, *, settings, entries: List[Dict[str, Any]], now: Optional[datetime] = None) -> Dict[str, Dict[str, Any]]:
-        current = now or datetime.now().astimezone()
-        if not bool(getattr(settings, "xhs_spread_schedule_enabled", True)):
-            return {}
-        project_url_map = self._build_project_url_map(entries)
-        if not project_url_map:
-            return {}
-        start_minutes = _parse_clock_minutes(str(getattr(settings, "xhs_batch_window_start", "14:00") or "14:00"), "14:00")
-        end_minutes = _parse_clock_minutes(str(getattr(settings, "xhs_batch_window_end", "15:00") or "15:00"), "15:00")
-        start_at = current.replace(hour=start_minutes // 60, minute=start_minutes % 60, second=0, microsecond=0)
-        if end_minutes <= start_minutes:
-            end_at = (start_at + timedelta(days=1)).replace(hour=end_minutes // 60, minute=end_minutes % 60, second=0, microsecond=0)
-        else:
-            end_at = current.replace(hour=end_minutes // 60, minute=end_minutes % 60, second=0, microsecond=0)
-        duration_seconds = max(60, int((end_at - start_at).total_seconds()))
-        project_names = sorted(project_url_map)
-        slot_gap_seconds = max(5, duration_seconds // max(1, len(project_names)))
-        plan: Dict[str, Dict[str, Any]] = {}
-        for index, project_name in enumerate(project_names):
-            plan[project_name] = {
-                "urls": list(project_url_map.get(project_name) or []),
-                "scheduled_at": start_at + timedelta(seconds=index * slot_gap_seconds),
-                "slot_gap_seconds": slot_gap_seconds,
-            }
-        return plan
+        return build_auto_project_schedule(settings=settings, entries=entries, now=now)
 
     def _pick_due_auto_project_locked(self, now: datetime) -> tuple[str, List[str]]:
         settings = load_settings(self.env_file)
@@ -2168,6 +2184,18 @@ class MonitoringSyncStore:
             time.sleep(AUTO_SERVER_CACHE_PUSH_POLL_SECONDS)
             try:
                 settings = load_settings(self.env_file)
+                if str(getattr(settings, "xhs_schedule_driver", "app") or "app").strip().lower() == "launchd":
+                    with self._lock:
+                        self._server_push_status.update(
+                            {
+                                "state": "idle",
+                                "message": "当前由 launchd 在 14:00-15:00 自动采集并在成功后上传服务器",
+                                "mode": "launchd",
+                                "last_error": "",
+                            }
+                        )
+                        self._update_server_push_schedule_locked(datetime.now().astimezone())
+                    continue
                 server_url = str(getattr(settings, "server_cache_push_url", "") or "").strip()
                 now = datetime.now().astimezone()
                 with self._lock:

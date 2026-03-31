@@ -33,6 +33,7 @@ DEFAULT_FIELD_MAP = {
 
 APP_VERSION = "XHS-26.3.31-V11"
 DEFAULT_SERVER_CACHE_PUSH_URL = "http://47.87.68.74"
+DEFAULT_SCHEDULE_DRIVER = "app"
 
 
 def normalize_server_cache_push_url(value: str) -> str:
@@ -66,6 +67,7 @@ class Settings:
     xhs_batch_risk_retry_delay_seconds: float = 45.0
     xhs_batch_project_cooldown_seconds: float = 45.0
     xhs_spread_schedule_enabled: bool = True
+    xhs_schedule_driver: str = DEFAULT_SCHEDULE_DRIVER
     xhs_batch_schedule_interval_minutes: int = 60
     xhs_batch_window_start: str = "14:00"
     xhs_batch_window_end: str = "15:00"
@@ -171,6 +173,7 @@ def load_settings(env_file: Optional[str] = None) -> Settings:
         xhs_batch_risk_retry_delay_seconds=_env_float("XHS_BATCH_RISK_RETRY_DELAY_SECONDS", env_values, default=45.0),
         xhs_batch_project_cooldown_seconds=_env_float("XHS_BATCH_PROJECT_COOLDOWN_SECONDS", env_values, default=45.0),
         xhs_spread_schedule_enabled=_env_bool("XHS_SPREAD_SCHEDULE_ENABLED", env_values, default=True),
+        xhs_schedule_driver=(_env("XHS_SCHEDULE_DRIVER", env_values) or DEFAULT_SCHEDULE_DRIVER).strip().lower() or DEFAULT_SCHEDULE_DRIVER,
         xhs_batch_schedule_interval_minutes=_env_int("XHS_BATCH_SCHEDULE_INTERVAL_MINUTES", env_values, default=60),
         xhs_batch_window_start=_env("XHS_BATCH_WINDOW_START", env_values) or "14:00",
         xhs_batch_window_end=_env("XHS_BATCH_WINDOW_END", env_values) or "15:00",
