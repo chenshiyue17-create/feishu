@@ -185,17 +185,32 @@ async function exportLongImage() {
   button.disabled = true;
   button.textContent = "导出中...";
   try {
-    const htmlToImage = window.htmlToImage;
-    if (!htmlToImage || typeof htmlToImage.toPng !== "function") {
+    const html2canvas = window.html2canvas;
+    if (document.fonts && typeof document.fonts.ready?.then === "function") {
+      await document.fonts.ready;
+    }
+    if (!html2canvas || typeof html2canvas !== "function") {
       throw new Error("长图组件未加载完成");
     }
     const node = document.querySelector(".app-shell");
-    const dataUrl = await htmlToImage.toPng(node, {
-      cacheBust: true,
-      pixelRatio: 2,
+    const width = Math.ceil(node.getBoundingClientRect().width);
+    const canvas = await html2canvas(node, {
       backgroundColor: "#111318",
-      skipFonts: true,
+      scale: Math.min(window.devicePixelRatio || 2, 3),
+      useCORS: true,
+      logging: false,
+      width,
+      windowWidth: width,
+      scrollX: 0,
+      scrollY: -window.scrollY,
+      onclone: (clonedDocument) => {
+        const clonedNode = clonedDocument.querySelector(".app-shell");
+        if (clonedNode) {
+          clonedNode.style.width = `${width}px`;
+        }
+      },
     });
+    const dataUrl = canvas.toDataURL("image/png");
     const selectedDate = selectedHistoryDate || (window.__mobilePayload || {}).latest_date || "latest";
     const link = document.createElement("a");
     link.href = dataUrl;
