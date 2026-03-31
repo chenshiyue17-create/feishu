@@ -60,8 +60,8 @@ h1 {
 .summary {
   margin: 8px 0 0;
   color: var(--muted);
-  font-size: 13px;
-  line-height: 1.5;
+  font-size: 12px;
+  line-height: 1.4;
 }
 .refresh-button {
   border: 0;
@@ -255,6 +255,15 @@ h1 {
 }
 .is-hidden {
   display: none;
+}
+.footer-note {
+  margin-top: 4px;
+  padding: 10px 12px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: rgba(173, 180, 194, 0.92);
+  background: rgba(255,255,255,0.03);
+  box-shadow: none;
 }
 @media (max-width: 480px) {
   .history-toolbar {

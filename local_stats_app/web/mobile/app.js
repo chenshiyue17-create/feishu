@@ -264,9 +264,9 @@ async function loadDashboard() {
     updateUrlProject(selectedProject);
     document.getElementById("pageTitle").textContent = `${selectedProject} 排行榜`;
     document.getElementById("pageSummary").textContent =
-      `${buildMobileStatusSummary(payload) || `缓存更新 ${formatDateTime(payload.updated_at || payload.generated_at)}`} · 本机采集后推送到服务器，手机端只查看这份缓存`;
+      `${buildMobileStatusSummary(payload) || `缓存更新 ${formatDateTime(payload.updated_at || payload.generated_at)}`}`;
     statusCard.textContent =
-      `当前项目：${selectedProject}。手机端只读取服务器缓存，不采集、不上传。点击榜单卡片会直接跳转到小红书作品或账号主页。`;
+      `仅查看服务器缓存，不采集、不上传。点击榜单卡片可直接跳转到小红书作品或账号主页。`;
     const rankings = payload.rankings || {};
     renderCalendar(payload.calendar || []);
     renderHistoryDetails(payload);
