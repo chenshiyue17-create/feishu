@@ -173,7 +173,7 @@ function renderSystemConfig() {
   document.getElementById("configServerCacheUploadToken").value = config.SERVER_CACHE_UPLOAD_TOKEN || "";
   document.getElementById("configUrlsText").value = payload.urls_text || "";
   document.getElementById("systemConfigSummary").textContent = payload.env_file
-    ? `当前配置：${payload.env_file}${cacheSummary.updatedAt ? ` · 本地缓存更新于 ${formatDateTime(cacheSummary.updatedAt)}` : ""}`
+    ? `${payload.env_file}${cacheSummary.updatedAt ? ` · 更新 ${formatDateTime(cacheSummary.updatedAt)}` : ""}`
     : "当前未加载配置";
   if (cacheStateNode) {
     const cacheReady = cacheSummary.accountCount > 0 || cacheSummary.likeCount > 0 || cacheSummary.commentCount > 0;
@@ -210,35 +210,24 @@ function renderSystemConfig() {
         <div class="system-config-status-value">${cacheReady ? `${formatNumber(cacheSummary.accountCount)} 个账号` : "暂无缓存"}</div>
         <div class="system-config-status-copy">
           ${cacheReady
-            ? `点赞榜 ${formatNumber(cacheSummary.likeCount)} 条 · 评论榜 ${formatNumber(cacheSummary.commentCount)} 条 · 增长榜 ${formatNumber(cacheSummary.growthCount)} 条`
+            ? `${cacheSummary.updatedAt ? `更新 ${formatDateTime(cacheSummary.updatedAt)} · ` : ""}留底 ${cacheSummary.latestDate || "-"} · 点赞 ${formatNumber(cacheSummary.likeCount)} / 评论 ${formatNumber(cacheSummary.commentCount)} / 增长 ${formatNumber(cacheSummary.growthCount)}`
             : "如果你刚更新过本地看板，这里应该会显示账号数和榜单条数。"}
         </div>
       </article>
       <article class="system-config-status-card">
-        <div class="system-config-status-label">最近本地更新</div>
-        <div class="system-config-status-value">${cacheSummary.updatedAt ? formatDateTime(cacheSummary.updatedAt) : "未检测到"}</div>
-        <div class="system-config-status-copy">${cacheSummary.latestDate ? `最新留底 ${cacheSummary.latestDate}${cacheSummary.stale ? " · 当前显示缓存" : ""}` : "还没有可用的本地看板数据。"}</div>
-      </article>
-      <article class="system-config-status-card">
-        <div class="system-config-status-label">推送目标</div>
-        <div class="system-config-status-value">${formatPushTarget(config.SERVER_CACHE_PUSH_URL || "")}</div>
-        <div class="system-config-status-copy">${config.SERVER_CACHE_PUSH_URL ? "点击“推送到服务器”会把当前这份本地缓存上传过去。" : "先填写 SERVER_CACHE_PUSH_URL，再推送到服务器。"}
-        </div>
-      </article>
-      <article class="system-config-status-card">
-        <div class="system-config-status-label">最近推送记录</div>
+        <div class="system-config-status-label">服务器同步</div>
         <div class="system-config-status-value">${lastPushText}</div>
-        <div class="system-config-status-copy">${lastPush ? `${formatPushTarget(lastPushTarget)} · ${formatNumber(lastPush.account_count || 0)} 个账号` : "推送成功后，这里会显示服务器确认时间和目标地址。"}
+        <div class="system-config-status-copy">${config.SERVER_CACHE_PUSH_URL ? `${formatPushTarget(lastPushTarget)}${lastPush ? ` · ${formatNumber(lastPush.account_count || 0)} 个账号` : ""}` : "先填写 SERVER_CACHE_PUSH_URL，再推送到服务器。"}
         </div>
       </article>
       <article class="system-config-status-card">
-        <div class="system-config-status-label">${scheduleDriver === "launchd" ? "自动采集与上传" : "自动上传计划"}</div>
+        <div class="system-config-status-label">${scheduleDriver === "launchd" ? "自动任务" : "自动上传"}</div>
         <div class="system-config-status-value">${autoPushText}</div>
         <div class="system-config-status-copy">${autoPushCopy}</div>
       </article>
       ${scheduleDriver === "launchd" ? `
       <article class="system-config-status-card">
-        <div class="system-config-status-label">今日自动计划</div>
+        <div class="system-config-status-label">今日计划</div>
         <div class="system-config-status-value">${schedulePlanValue || "等待计划生成"}</div>
         <div class="system-config-status-copy">${schedulePlanCopy || "launchd 已接管定时任务，稍后会显示项目排程。"}</div>
       </article>

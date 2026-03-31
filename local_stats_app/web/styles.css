@@ -95,11 +95,11 @@ body {
 }
 
 .hero-copy {
-  max-width: 760px;
-  margin: 14px 0 0;
+  max-width: 520px;
+  margin: 12px 0 0;
   color: var(--muted);
-  font-size: 15px;
-  line-height: 1.7;
+  font-size: 14px;
+  line-height: 1.5;
 }
 
 .hero-actions {
@@ -130,13 +130,6 @@ body {
   line-height: 1.5;
 }
 
-.strategy-strip {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
-  margin: 0 0 24px;
-}
-
 .system-config-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -152,7 +145,7 @@ body {
 
 .system-config-status-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
   gap: 12px;
   margin: 14px 0 10px;
 }
@@ -189,92 +182,6 @@ body {
 
 .system-config-textarea {
   min-height: 120px;
-}
-
-.operations-panel {
-  margin-bottom: 24px;
-}
-
-.operations-hub {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 14px;
-}
-
-.operations-card {
-  padding: 18px 20px;
-  border-radius: 22px;
-  background: rgba(255,255,255,0.035);
-  border: 1px solid rgba(255,255,255,0.07);
-  display: grid;
-  gap: 10px;
-}
-
-.operations-card.is-focus {
-  background: linear-gradient(180deg, rgba(255,107,61,0.1), rgba(255,255,255,0.03));
-  border-color: rgba(255,107,61,0.2);
-}
-
-.operations-card-label {
-  color: var(--accent-alt);
-  font-size: 12px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
-.operations-card-title {
-  color: #fff5ef;
-  font-size: 22px;
-  font-weight: 800;
-  line-height: 1.15;
-}
-
-.operations-card-copy {
-  color: var(--muted);
-  font-size: 14px;
-  line-height: 1.6;
-}
-
-.operations-chip-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.operations-chip {
-  padding: 8px 12px;
-  border-radius: 999px;
-  background: rgba(255,255,255,0.06);
-  color: #eaf1fa;
-  font-size: 12px;
-}
-
-.operations-list {
-  display: grid;
-  gap: 6px;
-  color: #fff1e8;
-  font-size: 13px;
-}
-
-.strategy-card {
-  padding: 14px 16px;
-  border-radius: 18px;
-  background: rgba(255,255,255,0.04);
-  border: 1px solid rgba(255,255,255,0.06);
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.03);
-}
-
-.strategy-title {
-  margin-bottom: 6px;
-  color: #fff0e7;
-  font-size: 14px;
-  font-weight: 700;
-}
-
-.strategy-copy {
-  color: var(--muted);
-  font-size: 13px;
-  line-height: 1.6;
 }
 
 .primary-button {
@@ -1550,12 +1457,12 @@ body {
 }
 
 .summary-text {
-  max-width: 420px;
+  max-width: 360px;
   margin: 4px 0 0;
   color: var(--muted);
-  line-height: 1.6;
+  line-height: 1.45;
   text-align: right;
-  font-size: 13px;
+  font-size: 12px;
 }
 
 .trend-summary-block {
@@ -2100,9 +2007,7 @@ body {
     grid-template-columns: 1fr;
   }
 
-  .system-config-status-grid,
-  .operations-hub,
-  .strategy-strip {
+  .system-config-status-grid {
     grid-template-columns: 1fr;
   }
 

@@ -13,7 +13,7 @@
         <div>
           <p class="eyebrow">Local Stats App</p>
           <h1>小红书数据本地统计台</h1>
-          <p class="hero-copy">以项目为主维度管理账号、增长、排行和预警。本机负责采集与本地缓存，服务器只接收缓存并提供网页和手机端查看。</p>
+          <p class="hero-copy">本机采集与缓存，服务器只负责查看。</p>
         </div>
         <div class="hero-actions">
           <div class="hero-action-row">
@@ -27,26 +27,12 @@
           <p id="samplingNote" class="subtle hero-note">作品采集口径说明加载中</p>
         </div>
       </header>
-      <section class="strategy-strip">
-        <article class="strategy-card">
-          <div class="strategy-title">本地看板</div>
-          <div class="strategy-copy">实时查看项目概况、账号榜、作品榜和互动预警。</div>
-        </article>
-        <article class="strategy-card">
-          <div class="strategy-title">统一口径</div>
-          <div class="strategy-copy">每个账号最多采集前 30 条作品；项目增长默认看可比账号，不把新增账号误算成成长。</div>
-        </article>
-        <article class="strategy-card">
-          <div class="strategy-title">服务器查看</div>
-          <div class="strategy-copy">先在本机更新本地看板，再把缓存推到服务器；手机端和服务器网页都只读取这份缓存。</div>
-        </article>
-      </section>
 
       <section class="panel system-config-panel">
         <div class="panel-header">
           <div>
             <p class="panel-label">系统配置</p>
-            <h2>导入当前项目配置</h2>
+            <h2>本地配置</h2>
           </div>
           <p id="systemConfigSummary" class="summary-text"></p>
         </div>
@@ -78,22 +64,11 @@
           <textarea id="configUrlsText" class="monitor-input system-config-textarea" placeholder="一行一个主页链接，或保留项目格式"></textarea>
         </label>
         <div class="form-actions">
-          <button id="reloadSystemConfigButton" class="primary-button secondary-button">导入当前项目配置</button>
+          <button id="reloadSystemConfigButton" class="primary-button secondary-button">导入配置</button>
           <button id="saveSystemConfigButton" class="primary-button">保存配置</button>
           <button id="pushServerCacheButton" class="primary-button secondary-button">推送到服务器</button>
           <span id="systemConfigResult" class="subtle"></span>
         </div>
-      </section>
-
-      <section class="panel operations-panel">
-        <div class="panel-header">
-          <div>
-            <p class="panel-label">运营主入口</p>
-            <h2>今日操作</h2>
-          </div>
-          <p id="operationsSummary" class="summary-text"></p>
-        </div>
-        <div id="operationsHub" class="operations-hub"></div>
       </section>
 
       <section class="panel monitor-panel">
