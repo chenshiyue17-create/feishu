@@ -181,110 +181,35 @@
           <div id="projectCalendar" class="project-calendar-grid"></div>
           <div id="projectCalendarDetail" class="project-calendar-detail"></div>
         </div>
-        <div class="panel project-home-trend-panel">
-          <div class="panel-header">
-            <div>
-              <p class="panel-label">项目趋势</p>
-              <h3 id="projectHomeTrendTitle">项目近 7 天成长</h3>
-            </div>
-            <p id="projectHomeTrendSummary" class="summary-text"></p>
-          </div>
-          <div id="projectHomeTrendChart" class="chart-shell"></div>
-        </div>
-        <div class="project-home-layout">
-          <div class="project-home-column">
-            <div class="project-home-subtitle">项目内 Top 账号</div>
-            <div id="projectTopAccounts" class="project-home-list"></div>
-          </div>
-          <div class="project-home-column">
-            <div class="project-home-subtitle">项目内 Top 内容</div>
-            <div id="projectTopContents" class="project-home-list"></div>
-          </div>
-        </div>
       </section>
-
-      <section id="portalCards" class="portal-grid"></section>
 
       <section class="panel account-focus-panel">
         <div class="panel-header">
           <div>
-            <p class="panel-label">账号视角</p>
-            <h2 id="activeAccountTitle">当前账号</h2>
+            <p class="panel-label">账号切换</p>
+            <h2 id="activeAccountTitle">选择账号</h2>
           </div>
           <p id="activeAccountSummary" class="summary-text"></p>
-        </div>
-        <div class="account-export-row">
-          <input
-            id="accountRankingExportDir"
-            class="monitor-search-input account-export-input"
-            type="text"
-            placeholder="/Users/cc/Downloads/飞书缓存/账号榜单导出"
-          />
-          <button id="exportAccountRankingButton" class="monitor-inline-button" type="button">导出当前账号榜单</button>
-          <button id="exportProjectRankingButton" class="monitor-inline-button" type="button">导出当前项目快照</button>
-          <span id="accountExportResult" class="subtle"></span>
         </div>
         <div id="accountFilterBar" class="account-filter-bar"></div>
       </section>
 
-      <section class="panel trend-panel">
+      <section class="panel ranking-panel">
         <div class="panel-header">
           <div>
-            <p class="panel-label">近阶段走势</p>
-            <h2 id="trendTitle">账号趋势</h2>
+            <p class="panel-label">单条内容</p>
+            <h2 id="rankingTitle">榜单中心</h2>
+            <p id="rankingSummaryText" class="summary-text"></p>
           </div>
-          <div class="trend-summary-block">
-            <div class="trend-window-tabs">
-              <button class="trend-window-button" data-trend-window="1">1天</button>
-              <button class="trend-window-button is-active" data-trend-window="7">7天</button>
+          <div class="ranking-controls">
+            <div class="scope-tabs">
+              <button class="scope-button is-active" data-ranking-scope="account">当前账号</button>
+              <button class="scope-button" data-ranking-scope="all">所有账号</button>
             </div>
-            <span id="trendModeChip" class="trend-mode-chip">日更</span>
-            <p id="weeklySummary" class="summary-text"></p>
           </div>
         </div>
-        <div id="trendChart" class="chart-shell"></div>
-      </section>
-
-      <section class="ranking-layout">
-        <section class="panel ranking-panel">
-          <div class="panel-header">
-            <div>
-              <p class="panel-label">单条内容</p>
-              <h2 id="rankingTitle">榜单中心</h2>
-              <p id="rankingSummaryText" class="summary-text"></p>
-            </div>
-            <div class="ranking-controls">
-              <div class="scope-tabs">
-                <button class="scope-button is-active" data-ranking-scope="account">当前账号</button>
-                <button class="scope-button" data-ranking-scope="all">所有账号</button>
-              </div>
-            </div>
-          </div>
-          <div id="rankingSummaryBar" class="ranking-summary-bar"></div>
-          <div id="rankingList" class="ranking-board"></div>
-        </section>
-
-        <section class="panel accounts-panel">
-          <div class="panel-header">
-            <div>
-              <p class="panel-label">最新快照</p>
-              <h2>账号表现</h2>
-            </div>
-          </div>
-          <div id="accountCards" class="account-grid"></div>
-        </section>
-      </section>
-
-      <section class="panel alerts-panel">
-        <div class="panel-header">
-          <div>
-            <p class="panel-label">评论预警</p>
-            <h2>最近提醒</h2>
-            <p id="alertsSummaryText" class="summary-text"></p>
-          </div>
-        </div>
-        <div id="alertsSummaryBar" class="ranking-summary-bar"></div>
-        <div id="alertsList" class="alerts-list"></div>
+        <div id="rankingSummaryBar" class="ranking-summary-bar"></div>
+        <div id="rankingList" class="ranking-board"></div>
       </section>
     </main>
     <script src="/app.js"></script>

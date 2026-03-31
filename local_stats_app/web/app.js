@@ -591,13 +591,8 @@ function renderApp() {
   renderProjectHome();
   renderProjectCalendar();
   renderAccountFocus();
-  renderPortalCards();
-  renderTrendWindowTabs();
-  renderTrendChart();
   renderRankingScopeTabs();
   renderRankingList();
-  renderAccounts();
-  renderAlerts();
 }
 
 function renderOperationsHub() {
@@ -1184,6 +1179,9 @@ function renderAccountFocus() {
   const summaryNode = document.getElementById("activeAccountSummary");
   const exportButton = document.getElementById("exportAccountRankingButton");
   const exportProjectButton = document.getElementById("exportProjectRankingButton");
+  if (!root || !titleNode || !summaryNode) {
+    return;
+  }
   const projectName = getSelectedProjectName();
   if (exportButton) {
     exportButton.disabled = projectName === "all" || !getActiveAccount();
@@ -1192,8 +1190,8 @@ function renderAccountFocus() {
     exportProjectButton.disabled = projectName === "all" || !getVisibleAccounts().length;
   }
   if (projectName === "all") {
-    titleNode.textContent = "当前账号";
-    summaryNode.textContent = "请选择单个项目后再进入账号视角，不再混合跨项目数据。";
+    titleNode.textContent = "选择账号";
+    summaryNode.textContent = "先选项目，再切换账号。";
     root.innerHTML = `<div class="empty-state">先在上方项目卡中进入一个项目，再查看该项目内的账号。</div>`;
     return;
   }
@@ -1201,8 +1199,7 @@ function renderAccountFocus() {
   const active = getActiveAccount();
   if (!accounts.length || !active) {
     titleNode.textContent = `项目：${projectName}`;
-    summaryNode.textContent =
-      `当前默认展示项目「${projectName}」总览，点一个账号进入单账号视角。`;
+    summaryNode.textContent = "当前显示项目总览，点一个账号切到账号视角。";
     root.innerHTML = `
       <button class="account-filter-button is-active" data-account-id="">
         ${projectName} 总览
@@ -1229,10 +1226,7 @@ function renderAccountFocus() {
     return;
   }
   titleNode.textContent = active.account;
-  summaryNode.textContent =
-    getSelectedProjectName() === "all"
-      ? active.weekly_summary || "当前账号暂无周对比摘要"
-      : `项目：${getSelectedProjectName()} · ${active.weekly_summary || "当前账号暂无周对比摘要"}`;
+  summaryNode.textContent = `项目：${getSelectedProjectName()}`;
   root.innerHTML = accounts
     .map(
       (item) => `
@@ -1315,36 +1309,21 @@ async function exportCurrentProjectRankings() {
 
 function renderProjectHome() {
   const projectName = getSelectedProjectName();
-  const projects = state.monitoring?.projects || [];
   const entries = getProjectEntries(projectName);
   const accounts = getVisibleAccounts();
-  const alerts = getVisibleAlerts();
-  const topAccounts = [...accounts]
-    .sort((a, b) => (b.fans - a.fans) || (b.interaction - a.interaction) || (b.likes - a.likes))
-    .slice(0, 5);
-  const topContents = getProjectTopContentRows(5);
   const projectStatus = getProjectStatus(projectName);
-  const projectSeries = getProjectSeries(projectName);
-  const projectGrowth = buildProjectComparableGrowth(projectName, 7);
 
   const titleNode = document.getElementById("projectHomeTitle");
   const summaryNode = document.getElementById("projectHomeSummary");
   const statsNode = document.getElementById("projectHomeStats");
-  const topAccountsNode = document.getElementById("projectTopAccounts");
-  const topContentsNode = document.getElementById("projectTopContents");
-  const trendTitleNode = document.getElementById("projectHomeTrendTitle");
-  const trendSummaryNode = document.getElementById("projectHomeTrendSummary");
-  const trendChartNode = document.getElementById("projectHomeTrendChart");
+  if (!titleNode || !summaryNode || !statsNode) {
+    return;
+  }
 
   if (projectName === "all") {
     titleNode.textContent = "请选择单个项目";
-    summaryNode.textContent = "项目首页默认只展示单项目运营数据，请先从上方项目卡进入一个项目。";
+    summaryNode.textContent = "先从上方进入单个项目。";
     statsNode.innerHTML = `<div class="empty-state">请选择单个项目后查看该项目的总览指标。</div>`;
-    topAccountsNode.innerHTML = `<div class="empty-state">请选择单个项目后查看项目内 Top 账号。</div>`;
-    topContentsNode.innerHTML = `<div class="empty-state">请选择单个项目后查看项目内 Top 内容。</div>`;
-    trendTitleNode.textContent = "项目近 7 天成长";
-    trendSummaryNode.textContent = "请选择单个项目后查看项目趋势。";
-    trendChartNode.innerHTML = `<div class="empty-state">当前不再显示全部项目的混合趋势。</div>`;
     return;
   }
   titleNode.textContent = `项目：${projectName}`;
@@ -1360,20 +1339,7 @@ function renderProjectHome() {
   } else if (projectStatus.updated_at) {
     summaryParts.push(`最近状态 ${formatDateTime(projectStatus.updated_at)}`);
   }
-  if (projectGrowth) {
-    if (projectGrowth.comparable_ready) {
-      summaryParts.push(
-        `${projectGrowth.label} 可比账号 ${formatNumber(projectGrowth.comparable_account_count)} 个 · 粉丝 ${formatSignedNumber(projectGrowth.fans)} / 点赞 ${formatSignedNumber(projectGrowth.likes)} / 评论 ${formatSignedNumber(projectGrowth.comments)}`,
-      );
-    } else {
-      summaryParts.push(`${projectGrowth.label} 暂无可比账号`);
-    }
-    if (projectGrowth.new_account_count) {
-      summaryParts.push(`新增账号 ${formatNumber(projectGrowth.new_account_count)} 个`);
-    }
-  }
-  summaryParts.push("作品口径按每个账号前 30 条作品统计");
-  summaryParts.push("服务器和手机端都只读取这份本地缓存");
+  summaryParts.push("本地主视图与手机版对齐");
   summaryNode.textContent = summaryParts.join(" · ");
 
   const statCards = [
@@ -1392,53 +1358,6 @@ function renderProjectHome() {
       `,
     )
     .join("");
-
-  if (!topAccounts.length) {
-    topAccountsNode.innerHTML = `<div class="empty-state">${projectName === "all" ? "暂无项目账号快照。" : "当前项目下暂无已同步账号。"}</div>`;
-  } else {
-    topAccountsNode.innerHTML = topAccounts
-      .map(
-        (item, index) => `
-          <article class="project-home-item">
-            <div class="project-home-rank">${index + 1}</div>
-            <div class="project-home-item-body">
-              <div class="project-home-item-title">${item.profile_url ? `<a class="note-link" href="${item.profile_url}" target="_blank" rel="noreferrer">${item.account}</a>` : item.account}</div>
-              <div class="project-home-item-meta">粉丝 ${formatNumber(item.fans)} · 获赞 ${formatNumber(item.interaction)} · 作品 ${item.works_display || formatNumber(item.works)}</div>
-            </div>
-          </article>
-        `,
-      )
-      .join("");
-  }
-
-  if (!topContents.length) {
-    topContentsNode.innerHTML = `<div class="empty-state">${projectName === "all" ? "暂无项目内容排行。" : "当前项目下暂无内容排行。"}</div>`;
-  } else {
-    topContentsNode.innerHTML = topContents
-      .map(
-        (item, index) => `
-          <article class="project-home-item is-content">
-            <div class="project-home-rank">${index + 1}</div>
-            <div class="project-home-cover-shell">
-              ${buildCoverMarkup(item, { size: "mini", rank: "" })}
-            </div>
-            <div class="project-home-item-body">
-              <div class="project-home-item-title">${item.note_url ? `<a class="note-link" href="${item.note_url}" target="_blank" rel="noreferrer">${item.title}</a>` : item.title}</div>
-              <div class="project-home-item-meta">${item.account} · 点赞 ${formatNumber(item.metric)}</div>
-            </div>
-          </article>
-        `,
-      )
-      .join("");
-  }
-
-  trendTitleNode.textContent = `${projectName} · 近 7 天成长`;
-  trendSummaryNode.textContent = projectGrowth
-    ? projectGrowth.comparable_ready
-      ? `${projectGrowth.start_date} → ${projectGrowth.end_date} · 可比账号 ${formatNumber(projectGrowth.comparable_account_count)} 个 · 粉丝 ${formatSignedNumber(projectGrowth.fans)} / 点赞 ${formatSignedNumber(projectGrowth.likes)} / 评论 ${formatSignedNumber(projectGrowth.comments)}${projectGrowth.new_account_count ? ` · 新增账号 ${formatNumber(projectGrowth.new_account_count)} 个` : ""}`
-      : `${projectGrowth.start_date} → ${projectGrowth.end_date} · 暂无可比账号${projectGrowth.new_account_count ? ` · 新增账号 ${formatNumber(projectGrowth.new_account_count)} 个` : ""}`
-    : "历史不足，暂不显示项目级周对比";
-  trendChartNode.innerHTML = buildProjectTrendMarkup(projectSeries, projectGrowth, projectName);
 }
 
 function buildProjectTrendMarkup(series, delta, projectName) {
@@ -2733,16 +2652,22 @@ document.getElementById("calendarNextMonth").addEventListener("click", () => {
     renderProjectCalendar();
   }
 });
-document.getElementById("exportAccountRankingButton").addEventListener("click", () => {
-  exportCurrentAccountRankings().catch((error) => {
-    document.getElementById("accountExportResult").textContent = error.message;
+const exportAccountRankingButton = document.getElementById("exportAccountRankingButton");
+if (exportAccountRankingButton) {
+  exportAccountRankingButton.addEventListener("click", () => {
+    exportCurrentAccountRankings().catch((error) => {
+      document.getElementById("accountExportResult").textContent = error.message;
+    });
   });
-});
-document.getElementById("exportProjectRankingButton").addEventListener("click", () => {
-  exportCurrentProjectRankings().catch((error) => {
-    document.getElementById("accountExportResult").textContent = error.message;
+}
+const exportProjectRankingButton = document.getElementById("exportProjectRankingButton");
+if (exportProjectRankingButton) {
+  exportProjectRankingButton.addEventListener("click", () => {
+    exportCurrentProjectRankings().catch((error) => {
+      document.getElementById("accountExportResult").textContent = error.message;
+    });
   });
-});
+}
 document.getElementById("monitorSearchInput").addEventListener("input", (event) => {
   state.monitorQuery = event.target.value || "";
   resetMonitoringPage();
@@ -2832,6 +2757,9 @@ window.setInterval(() => {
 }, 1000);
 
 Promise.all([loadDashboard(), loadMonitoring(), loadSystemConfig()]).catch((error) => {
-  document.getElementById("portalCards").innerHTML = `<div class="empty-state">${error.message}</div>`;
+  const statsNode = document.getElementById("projectHomeStats");
+  if (statsNode) {
+    statsNode.innerHTML = `<div class="empty-state">${error.message}</div>`;
+  }
   document.getElementById("monitorList").innerHTML = `<div class="empty-state">${error.message}</div>`;
 });
