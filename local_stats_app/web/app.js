@@ -1294,11 +1294,9 @@ function resetMonitoringPage() {
 
 function renderAccountFocus() {
   const root = document.getElementById("accountFilterBar");
-  const titleNode = document.getElementById("activeAccountTitle");
-  const summaryNode = document.getElementById("activeAccountSummary");
   const exportButton = document.getElementById("exportAccountRankingButton");
   const exportProjectButton = document.getElementById("exportProjectRankingButton");
-  if (!root || !titleNode || !summaryNode) {
+  if (!root) {
     return;
   }
   const projectName = getSelectedProjectName();
@@ -1309,16 +1307,12 @@ function renderAccountFocus() {
     exportProjectButton.disabled = projectName === "all" || !getVisibleAccounts().length;
   }
   if (projectName === "all") {
-    titleNode.textContent = "选择账号";
-    summaryNode.textContent = "先选项目，再切换账号。";
     root.innerHTML = `<div class="empty-state">先在上方项目卡中进入一个项目，再查看该项目内的账号。</div>`;
     return;
   }
   const accounts = getVisibleAccounts();
   const active = getActiveAccount();
   if (!accounts.length || !active) {
-    titleNode.textContent = `项目：${projectName}`;
-    summaryNode.textContent = "当前显示项目总览，点一个账号切到账号视角。";
     root.innerHTML = `
       <button class="account-filter-button is-active" data-account-id="">
         ${projectName} 总览
@@ -1344,17 +1338,20 @@ function renderAccountFocus() {
     });
     return;
   }
-  titleNode.textContent = active.account;
-  summaryNode.textContent = `项目：${getSelectedProjectName()}`;
-  root.innerHTML = accounts
-    .map(
-      (item) => `
-        <button class="account-filter-button ${item.account_id === active.account_id ? "is-active" : ""}" data-account-id="${item.account_id}">
-          ${item.account}
-        </button>
-      `,
-    )
-    .join("");
+  root.innerHTML = `
+    <button class="account-filter-button" data-account-id="">
+      ${projectName} 总览
+    </button>
+    ${accounts
+      .map(
+        (item) => `
+          <button class="account-filter-button ${item.account_id === active.account_id ? "is-active" : ""}" data-account-id="${item.account_id}">
+            ${item.account}
+          </button>
+        `,
+      )
+      .join("")}
+  `;
   root.querySelectorAll(".account-filter-button").forEach((button) => {
     button.addEventListener("click", () => {
       state.activeAccountId = button.dataset.accountId || "";

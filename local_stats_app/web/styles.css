@@ -582,14 +582,15 @@ body {
   line-height: 1.45;
 }
 
-.account-focus-panel {
-  margin-bottom: 24px;
-}
-
 .account-filter-bar {
   display: flex;
   gap: 10px;
   flex-wrap: wrap;
+}
+
+.ranking-filter-bar {
+  justify-content: flex-end;
+  max-width: 860px;
 }
 
 .account-export-row {
@@ -1652,12 +1653,14 @@ body {
   display: grid;
   gap: 10px;
   justify-items: end;
+  width: min(100%, 880px);
 }
 
 .scope-tabs {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .scope-button {

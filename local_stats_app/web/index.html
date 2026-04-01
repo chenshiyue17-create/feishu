@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>XHS Local Stats App</title>
-    <link rel="stylesheet" href="/styles.css?v=20260331-local-3" />
+    <link rel="stylesheet" href="/styles.css?v=20260401-local-4" />
   </head>
   <body>
     <div class="backdrop"></div>
@@ -195,17 +195,6 @@
         </div>
       </section>
 
-      <section class="panel account-focus-panel">
-        <div class="panel-header">
-          <div>
-            <p class="panel-label">账号切换</p>
-            <h2 id="activeAccountTitle">选择账号</h2>
-          </div>
-          <p id="activeAccountSummary" class="summary-text"></p>
-        </div>
-        <div id="accountFilterBar" class="account-filter-bar"></div>
-      </section>
-
       <section class="panel ranking-panel">
         <div class="panel-header">
           <div>
@@ -214,6 +203,7 @@
             <p id="rankingSummaryText" class="summary-text"></p>
           </div>
           <div class="ranking-controls">
+            <div id="accountFilterBar" class="account-filter-bar ranking-filter-bar"></div>
             <div class="scope-tabs">
               <button class="scope-button is-active" data-ranking-scope="account">当前账号</button>
               <button class="scope-button" data-ranking-scope="all">所有账号</button>
@@ -260,6 +250,6 @@
         <div id="alertsList" class="alerts-list"></div>
       </section>
     </main>
-    <script src="/app.js?v=20260331-local-3"></script>
+    <script src="/app.js?v=20260401-local-4"></script>
   </body>
 </html>
