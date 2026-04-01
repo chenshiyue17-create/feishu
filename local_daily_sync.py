@@ -335,7 +335,7 @@ def run_local_daily_sync(*, env_file: str, urls_file: str) -> Dict[str, Any]:
                 raw_text="",
                 urls_file=None,
                 project=project_name,
-                scheduled=False,
+                scheduled=True,
             )
             if str(summary.get("status") or "").strip() == "partial":
                 raise RuntimeError(

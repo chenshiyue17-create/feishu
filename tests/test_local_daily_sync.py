@@ -172,6 +172,7 @@ class LocalDailySyncTest(unittest.TestCase):
         self.assertEqual(wait_mock.call_count, 2)
         self.assertEqual(wait_mock.call_args.kwargs["timeout_seconds"], 0)
         self.assertEqual(collect_mock.call_count, 2)
+        self.assertTrue(all(call.kwargs["scheduled"] for call in collect_mock.call_args_list))
         push_mock.assert_called_once_with(env_file=str(env_path), urls_file="/tmp/urls.txt")
         self.assertEqual(persisted["state"], "success")
         self.assertEqual(persisted["phase"], "finished")
