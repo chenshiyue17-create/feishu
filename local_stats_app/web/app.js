@@ -64,6 +64,14 @@ function formatClockTime(value) {
   return text === "未更新" ? "" : text.slice(11, 16);
 }
 
+function parseTimeMs(value) {
+  const text = String(value || "").trim();
+  if (!text) return 0;
+  const normalized = text.includes("T") ? text : text.replace(" ", "T");
+  const result = Date.parse(normalized);
+  return Number.isNaN(result) ? 0 : result;
+}
+
 function formatLaunchdPhaseLabel(status = {}) {
   const phase = String(status.phase || "").trim();
   const state = String(status.state || "").trim();
@@ -109,6 +117,25 @@ function buildLaunchdProgressCopy(status = {}, plan = {}) {
     pieces.push(`上次自动采集 ${formatDateTime(status.last_success_at)}`);
   }
   return pieces.filter(Boolean).join(" · ");
+}
+
+function buildLaunchdDisplayState(status = {}, plan = {}, lastPush = null) {
+  const finishedAtMs = parseTimeMs(status.finished_at || status.updated_at || "");
+  const lastPushMs = parseTimeMs(lastPush?.server_updated_at || lastPush?.pushed_at || "");
+  const manualPushIsNewer = lastPushMs > 0 && lastPushMs >= finishedAtMs;
+  if (String(status.phase || "") === "finished" && String(status.state || "") === "partial" && manualPushIsNewer) {
+    return {
+      value: "已手动补传",
+      copy: [
+        lastPush?.server_updated_at ? `服务器确认 ${formatDateTime(lastPush.server_updated_at)}` : "",
+        plan.next_run_at ? `下一轮 ${formatDateTime(plan.next_run_at)}` : "",
+      ].filter(Boolean).join(" · "),
+    };
+  }
+  return {
+    value: buildLaunchdProgressValue(status),
+    copy: buildLaunchdProgressCopy(status, plan),
+  };
 }
 
 function buildLaunchdPlanPreview(plan = {}) {
@@ -186,14 +213,14 @@ function renderSystemConfig() {
         ? `本机发起 ${formatDateTime(lastPush.pushed_at)}`
         : "还没有成功推送记录";
     const autoPushText = scheduleDriver === "launchd"
-      ? buildLaunchdProgressValue(launchdStatus)
+      ? buildLaunchdDisplayState(launchdStatus, schedulePlan, lastPush).value
       : autoPushStatus?.last_success_at
         ? `上次自动上传 ${formatDateTime(autoPushStatus.last_success_at)}`
         : autoPushStatus?.next_auto_run_at
           ? `下次自动上传 ${formatDateTime(autoPushStatus.next_auto_run_at)}`
           : "每天 14:00 自动上传到服务器";
     const autoPushCopy = scheduleDriver === "launchd"
-      ? buildLaunchdProgressCopy(launchdStatus, schedulePlan) || "launchd 会在 14:00 后一次采集全部项目，成功后再自动上传服务器"
+      ? buildLaunchdDisplayState(launchdStatus, schedulePlan, lastPush).copy || "launchd 会在 14:00 后一次采集全部项目，成功后再自动上传服务器"
       : autoPushStatus?.state === "error"
         ? `自动上传失败：${autoPushStatus.last_error || autoPushStatus.message || "未知错误"}`
         : autoPushStatus?.state === "running"
