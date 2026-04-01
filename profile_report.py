@@ -294,11 +294,28 @@ def build_profile_report(*, initial_state: Dict[str, Any], profile_url: str) -> 
 
 
 def enrich_profile_report_with_note_metrics(*, report: Dict[str, Any], settings) -> Dict[str, Any]:
-    return _enrich_profile_report_with_note_metrics(
+    enriched = _enrich_profile_report_with_note_metrics(
         report=report,
         settings=settings,
         collector_factory=XHSCollector,
     )
+    pending_works = [work for work in (enriched.get("works") or []) if work.get("comment_count") is None]
+    if not pending_works:
+        return enriched
+    for fallback_settings in _build_profile_fetch_setting_variants(settings)[1:]:
+        if not pending_works:
+            break
+        _enrich_profile_report_with_note_metrics(
+            report={
+                "captured_at": enriched.get("captured_at"),
+                "profile": enriched.get("profile") or {},
+                "works": pending_works,
+            },
+            settings=fallback_settings,
+            collector_factory=XHSCollector,
+        )
+        pending_works = [work for work in pending_works if work.get("comment_count") is None]
+    return enriched
 
 
 def _extract_profile_cards(notes: List[Any], *, limit: int = DEFAULT_PROFILE_WORK_PAGE_SIZE) -> List[Dict[str, Any]]:

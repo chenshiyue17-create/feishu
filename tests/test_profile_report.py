@@ -462,6 +462,56 @@ class ProfileReportTest(unittest.TestCase):
         self.assertEqual(payload["final_url"], "https://www.xiaohongshu.com/user/profile/u1")
         self.assertEqual(payload["initial_state"]["user"]["userPageData"]["basicInfo"]["nickname"], "回退账号")
 
+    def test_enrich_profile_report_with_note_metrics_retries_only_missing_works_via_fallback_channel(self) -> None:
+        report = {
+            "captured_at": "2026-04-01T10:00:00+08:00",
+            "profile": {"profile_user_id": "u1", "nickname": "测试账号"},
+            "works": [
+                {
+                    "title_copy": "作品A",
+                    "note_url": "https://www.xiaohongshu.com/explore/note_a?xsec_token=token_a&xsec_source=pc_user",
+                    "note_id": "note_a",
+                    "xsec_token": "token_a",
+                },
+                {
+                    "title_copy": "作品B",
+                    "note_url": "https://www.xiaohongshu.com/explore/note_b?xsec_token=token_b&xsec_source=pc_user",
+                    "note_id": "note_b",
+                    "xsec_token": "token_b",
+                },
+            ],
+        }
+        settings = SimpleNamespace(
+            xhs_fetch_work_comment_counts=True,
+            xhs_fetch_mode="requests",
+            playwright_user_data_dir="/tmp/xhs-browser",
+            playwright_storage_state="",
+            playwright_browser_mode="local_profile",
+            xhs_chrome_cookie_profile="",
+        )
+        calls = []
+
+        class FakeCollector:
+            def __init__(self, active_settings) -> None:
+                self.settings = active_settings
+
+            def collect_note_detail(self, **kwargs):
+                calls.append((self.settings.xhs_fetch_mode, kwargs.get("note_id")))
+                note_id = kwargs.get("note_id")
+                if self.settings.xhs_fetch_mode == "requests":
+                    return NoteSnapshot(note_id=note_id, note_url=kwargs.get("note_url") or "", comment_count=14 if note_id == "note_a" else None)
+                return NoteSnapshot(note_id=note_id, note_url=kwargs.get("note_url") or "", comment_count=22 if note_id == "note_b" else None)
+
+            def collect(self, _target):
+                return NoteSnapshot(comment_count=None)
+
+        with patch("xhs_feishu_monitor.profile_report.XHSCollector", FakeCollector):
+            enriched = enrich_profile_report_with_note_metrics(report=report, settings=settings)
+
+        self.assertEqual(enriched["works"][0]["comment_count"], 14)
+        self.assertEqual(enriched["works"][1]["comment_count"], 22)
+        self.assertEqual(calls, [("requests", "note_a"), ("requests", "note_b"), ("playwright", "note_b")])
+
     def test_load_profile_report_payload_uses_signed_pages_to_complete_exact_work_count(self) -> None:
         settings = SimpleNamespace(xhs_retry_attempts=1, xhs_retry_delay_seconds=0)
         initial_state = {
