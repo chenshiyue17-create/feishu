@@ -238,7 +238,7 @@ function renderSystemConfig() {
         <div class="system-config-status-value">${cacheReady ? `${formatNumber(cacheSummary.accountCount)} 个账号` : "暂无缓存"}</div>
         <div class="system-config-status-copy">
           ${cacheReady
-            ? `${cacheSummary.updatedAt ? `更新 ${formatDateTime(cacheSummary.updatedAt)} · ` : ""}留底 ${cacheSummary.latestDate || "-"} · 点赞 ${formatNumber(cacheSummary.likeCount)} / 评论 ${formatNumber(cacheSummary.commentCount)} / 增长 ${formatNumber(cacheSummary.growthCount)}`
+            ? `${cacheSummary.updatedAt ? `更新 ${formatDateTime(cacheSummary.updatedAt)} · ` : ""}留底 ${cacheSummary.latestDate || "-"} · 点赞榜 ${formatNumber(cacheSummary.likeCount)} 条 / 评论榜 ${formatNumber(cacheSummary.commentCount)} 条 / 增长榜 ${formatNumber(cacheSummary.growthCount)} 条`
             : "如果你刚更新过本地看板，这里应该会显示账号数和榜单条数。"}
         </div>
       </article>
@@ -1150,6 +1150,15 @@ function getProjectTopContentRows(limit = 5) {
   return sourceRows.filter((item) => projectAccountIds.has(item.account_id)).slice(0, limit);
 }
 
+function getProjectRankingCount(projectName, rankType) {
+  const rows = state.payload?.rankings?.[rankType] || [];
+  if (!projectName || projectName === "all") {
+    return rows.length;
+  }
+  const projectAccountIds = getProjectAccountIds(projectName);
+  return rows.filter((item) => projectAccountIds.has(item.account_id)).length;
+}
+
 function getProjectAlertCount(projectName) {
   if (!projectName || projectName === "all") {
     return (state.payload?.alerts || []).length;
@@ -1453,6 +1462,13 @@ function renderProjectHome() {
   const totalFans = accounts.reduce((sum, item) => sum + Number(item.fans || 0), 0);
   const totalInteraction = accounts.reduce((sum, item) => sum + Number(item.interaction || 0), 0);
   const totalComments = accounts.reduce((sum, item) => sum + Number(item.comments || 0), 0);
+  const projectCommentRankingCount = getProjectRankingCount(projectName, "单条评论排行");
+  const commentTotalValue = totalComments > 0 ? formatNumber(totalComments) : projectCommentRankingCount > 0 ? "待刷新" : "0";
+  const commentTotalHint = totalComments > 0
+    ? "项目内账号首页可见作品评论合计"
+    : projectCommentRankingCount > 0
+      ? `本轮账号评论总量还没刷新；当前已有 ${formatNumber(projectCommentRankingCount)} 条作品评论榜数据`
+      : "项目内账号首页可见作品评论合计";
   const summaryParts = [];
   summaryParts.push(`监测 ${formatNumber(entries.length)} 个账号`);
   summaryParts.push(`已同步 ${formatNumber(accounts.length)} 个账号`);
@@ -1476,7 +1492,7 @@ function renderProjectHome() {
   const statCards = [
     ["项目粉丝总量", formatNumber(totalFans), "项目内账号当前粉丝总量"],
     ["项目获赞收藏", formatNumber(totalInteraction), "项目内账号当前获赞收藏总量"],
-    ["项目评论总量", formatNumber(totalComments), "项目内账号首页可见作品评论合计"],
+    ["项目评论总量", commentTotalValue, commentTotalHint],
   ];
   statsNode.innerHTML = statCards
     .map(
