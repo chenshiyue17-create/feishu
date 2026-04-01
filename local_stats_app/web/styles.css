@@ -593,6 +593,10 @@ body {
   max-width: 860px;
 }
 
+.ranking-controls .account-filter-button {
+  padding: 8px 14px;
+}
+
 .account-export-row {
   margin-bottom: 14px;
   display: flex;

@@ -1293,12 +1293,14 @@ function resetMonitoringPage() {
 }
 
 function renderAccountFocus() {
+  const projectRoot = document.getElementById("projectFilterBar");
   const root = document.getElementById("accountFilterBar");
   const exportButton = document.getElementById("exportAccountRankingButton");
   const exportProjectButton = document.getElementById("exportProjectRankingButton");
-  if (!root) {
+  if (!root || !projectRoot) {
     return;
   }
+  const projects = state.monitoring?.projects || [];
   const projectName = getSelectedProjectName();
   if (exportButton) {
     exportButton.disabled = projectName === "all" || !getActiveAccount();
@@ -1306,6 +1308,32 @@ function renderAccountFocus() {
   if (exportProjectButton) {
     exportProjectButton.disabled = projectName === "all" || !getVisibleAccounts().length;
   }
+  projectRoot.innerHTML = `
+    <button class="account-filter-button ${projectName === "all" ? "is-active" : ""}" data-project-name="all">
+      全部项目
+    </button>
+    ${projects
+      .map(
+        (project) => `
+          <button class="account-filter-button ${project.name === projectName ? "is-active" : ""}" data-project-name="${project.name}">
+            ${project.name}
+          </button>
+        `,
+      )
+      .join("")}
+  `;
+  projectRoot.querySelectorAll(".account-filter-button").forEach((button) => {
+    button.addEventListener("click", () => {
+      const nextProject = button.dataset.projectName || "all";
+      state.monitorProjectFilter = nextProject;
+      state.activeAccountId = "";
+      state.rankingScope = "all";
+      resetMonitoringPage();
+      ensureActiveAccount();
+      renderMonitoring();
+      renderApp();
+    });
+  });
   if (projectName === "all") {
     root.innerHTML = `<div class="empty-state">先在上方项目卡中进入一个项目，再查看该项目内的账号。</div>`;
     return;
