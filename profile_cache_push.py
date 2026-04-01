@@ -180,10 +180,50 @@ def _filter_history_rankings(history_payload: dict, account_ids: set[str]) -> di
     return filtered
 
 
+def _filter_dashboard_payload_by_monitored_entries(dashboard_payload: dict, monitored_entries: list[dict]) -> dict:
+    if not isinstance(dashboard_payload, dict):
+        return {}
+    normalized_entries = [dict(item or {}) for item in (monitored_entries or []) if isinstance(item, dict)]
+    allowed_account_ids = {
+        str(item.get("account_id") or extract_profile_user_id(str(item.get("url") or "")) or "").strip()
+        for item in normalized_entries
+        if str(item.get("account_id") or extract_profile_user_id(str(item.get("url") or "")) or "").strip()
+    }
+    if not allowed_account_ids:
+        return dict(dashboard_payload)
+
+    filtered = dict(dashboard_payload)
+    filtered["accounts"] = [
+        dict(item)
+        for item in (dashboard_payload.get("accounts") or [])
+        if str(item.get("account_id") or "").strip() in allowed_account_ids
+    ]
+    filtered["account_series"] = {
+        str(account_id): [dict(point) for point in points]
+        for account_id, points in (dashboard_payload.get("account_series") or {}).items()
+        if str(account_id or "").strip() in allowed_account_ids
+    }
+    filtered["rankings"] = {
+        str(rank_type): [
+            dict(item)
+            for item in (rows or [])
+            if str(item.get("account_id") or "").strip() in allowed_account_ids
+        ]
+        for rank_type, rows in (dashboard_payload.get("rankings") or {}).items()
+    }
+    filtered["alerts"] = [
+        dict(item)
+        for item in (dashboard_payload.get("alerts") or [])
+        if str(item.get("account_id") or "").strip() in allowed_account_ids
+    ]
+    return filtered
+
+
 def _build_upload_payload(*, env_file: str, urls_file: str, account_ids: Optional[List[str]] = None) -> dict:
     dashboard_payload = dict(_load_dashboard_payload(env_file, urls_file))
     monitored_entries = parse_monitored_entries(urls_file)
     monitored_metadata = load_monitored_metadata(urls_file)
+    dashboard_payload = _filter_dashboard_payload_by_monitored_entries(dashboard_payload, monitored_entries)
     normalized_account_ids = {
         str(item or "").strip()
         for item in (account_ids or [])
