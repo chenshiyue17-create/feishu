@@ -2074,26 +2074,12 @@ def merge_report_with_existing_work_details(
         )
         existing_fields = (works_records.get(fingerprint) or {}).get("fields") or {}
         existing_note_url = extract_link_value(existing_fields.get("作品链接"))
-        existing_comment_count = to_optional_int(existing_fields.get("评论数"))
-        existing_comment_text = str(existing_fields.get("评论文本") or "").strip()
-        existing_comment_summary = str(existing_fields.get("最新评论摘要") or "").strip()
-
         if existing_note_url and not str(work.get("note_url") or "").strip():
             work["note_url"] = existing_note_url
         if existing_note_url and not str(work.get("note_id") or "").strip():
             note_id = extract_note_id_from_url(existing_note_url)
             if note_id:
                 work["note_id"] = note_id
-        if existing_comment_count is not None and work.get("comment_count") is None:
-            work["comment_count"] = existing_comment_count
-            work["comment_count_basis"] = "旧缓存"
-            work["comment_count_is_lower_bound"] = False
-        if existing_comment_text and not str(work.get("comment_count_text") or "").strip():
-            work["comment_count_text"] = existing_comment_text
-        elif existing_comment_count is not None and not str(work.get("comment_count_text") or "").strip():
-            work["comment_count_text"] = str(existing_comment_count)
-        if existing_comment_summary and not str(work.get("recent_comments_summary") or "").strip():
-            work["recent_comments_summary"] = existing_comment_summary
         merged_works.append(work)
 
     merged_report = dict(report)

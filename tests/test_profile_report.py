@@ -234,10 +234,7 @@ class ProfileReportTest(unittest.TestCase):
 
         self.assertEqual(enriched["works"][0]["comment_count"], 28)
         self.assertEqual(enriched["works"][0]["comment_count_text"], "28")
-        self.assertEqual(
-            enriched["works"][0]["recent_comments_summary"],
-            "用户A: 第一条评论 | 用户B: 第二条评论",
-        )
+        self.assertNotIn("recent_comments_summary", enriched["works"][0])
 
     def test_enrich_profile_report_with_note_metrics_falls_back_to_public_note_page(self) -> None:
         report = {
@@ -393,9 +390,10 @@ class ProfileReportTest(unittest.TestCase):
                 settings=SimpleNamespace(xhs_fetch_work_comment_counts=True, xhs_fetch_work_comment_preview=True),
             )
 
-        self.assertEqual(enriched["works"][0]["comment_count"], 3)
-        self.assertEqual(enriched["works"][0]["comment_count_text"], "3+")
-        self.assertTrue(enriched["works"][0]["comment_count_is_lower_bound"])
+        self.assertIsNone(enriched["works"][0]["comment_count"])
+        self.assertEqual(enriched["works"][0]["comment_count_text"], "")
+        self.assertFalse(enriched["works"][0]["comment_count_is_lower_bound"])
+        self.assertEqual(enriched["works"][0]["comment_count_basis"], "详情缺失")
 
     def test_load_profile_report_payload_retries_after_initial_state_failure(self) -> None:
         settings = SimpleNamespace(xhs_retry_attempts=2, xhs_retry_delay_seconds=0)

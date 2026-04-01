@@ -328,7 +328,7 @@ class ProfileBatchToFeishuTest(unittest.TestCase):
             ],
         )
 
-    def test_merge_report_with_existing_work_details_preserves_note_url_and_comments(self) -> None:
+    def test_merge_report_with_existing_work_details_preserves_note_url_only(self) -> None:
         report = {
             "profile": {"profile_user_id": "u1"},
             "works": [
@@ -362,9 +362,9 @@ class ProfileBatchToFeishuTest(unittest.TestCase):
         merged = merge_report_with_existing_work_details(report=report, works_records=works_records)
         self.assertEqual(merged["works"][0]["note_url"], "https://www.xiaohongshu.com/explore/abc123")
         self.assertEqual(merged["works"][0]["note_id"], "abc123")
-        self.assertEqual(merged["works"][0]["comment_count"], 18)
-        self.assertEqual(merged["works"][0]["comment_count_text"], "18")
-        self.assertEqual(merged["works"][0]["recent_comments_summary"], "用户A: 老评论")
+        self.assertIsNone(merged["works"][0]["comment_count"])
+        self.assertEqual(str(merged["works"][0].get("comment_count_text") or ""), "")
+        self.assertEqual(str(merged["works"][0].get("recent_comments_summary") or ""), "")
 
     def test_resolve_launchd_paths(self) -> None:
         paths = resolve_launchd_paths(label="com.cc.test-profile-batch-sync")
@@ -905,9 +905,8 @@ class ProfileBatchToFeishuTest(unittest.TestCase):
                 }
             },
         )
-        self.assertEqual(merged["works"][0]["comment_count"], 2)
-        self.assertEqual(merged["works"][0]["comment_count_basis"], "旧缓存")
-        self.assertFalse(merged["works"][0]["comment_count_is_lower_bound"])
+        self.assertIsNone(merged["works"][0]["comment_count"])
+        self.assertEqual(str(merged["works"][0].get("comment_count_text") or ""), "")
 
     def test_sync_project_rankings_into_single_table_falls_back_project_to_card_label(self) -> None:
         client = _FakeRankingClient(

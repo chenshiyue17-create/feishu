@@ -125,7 +125,9 @@ function renderList(rootId, countId, rows, metricLabel, options = {}) {
       ? "评论下限"
       : String(item.comment_basis || "").trim() === "旧缓存"
         ? "旧缓存"
-        : "";
+        : String(item.comment_basis || "").trim() === "详情缺失"
+          ? "详情缺失"
+          : "";
     return `
       <a class="rank-card" href="${safeHref}" target="_blank" rel="noreferrer">
         <div class="rank-index">${item.rank || "-"}</div>

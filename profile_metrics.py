@@ -19,7 +19,6 @@ def enrich_profile_report_with_note_metrics(*, report: Dict[str, Any], settings,
     target_works = works[:metric_limit] if metric_limit > 0 else works
     for work in target_works:
         signed_snapshot = None
-        comment_preview: List[Dict[str, Any]] = []
         note_url = str(work.get("note_url") or "").strip()
         note_id = str(work.get("note_id") or "").strip()
         xsec_token = str(work.get("xsec_token") or "").strip()
@@ -40,19 +39,6 @@ def enrich_profile_report_with_note_metrics(*, report: Dict[str, Any], settings,
                 )
             except Exception:
                 signed_snapshot = None
-        if getattr(settings, "xhs_fetch_work_comment_preview", True) and note_id and xsec_token:
-            try:
-                comment_preview = collector.fetch_note_comments_preview(
-                    note_id=note_id,
-                    xsec_token=xsec_token,
-                    note_url=note_url,
-                    limit=int(getattr(settings, "xhs_work_comment_preview_limit", 3) or 3),
-                )
-            except Exception:
-                comment_preview = []
-            if comment_preview:
-                work["recent_comments"] = comment_preview
-                work["recent_comments_summary"] = build_recent_comments_summary(comment_preview)
         if signed_snapshot is not None:
             if signed_snapshot.note_id:
                 work["note_id"] = signed_snapshot.note_id
@@ -66,11 +52,10 @@ def enrich_profile_report_with_note_metrics(*, report: Dict[str, Any], settings,
                 continue
         note_url = str(work.get("note_url") or "").strip()
         if not note_url:
-            if comment_preview and work.get("comment_count") is None:
-                preview_count = len(comment_preview)
-                work["comment_count"] = preview_count
-                work["comment_count_text"] = f"{preview_count}+"
-                work["comment_count_is_lower_bound"] = True
+            work["comment_count_basis"] = "详情缺失"
+            work["comment_count_is_lower_bound"] = False
+            work["comment_count"] = None
+            work["comment_count_text"] = ""
             continue
         try:
             snapshot = collector.collect(Target(name="work-detail", url=note_url))
@@ -82,12 +67,10 @@ def enrich_profile_report_with_note_metrics(*, report: Dict[str, Any], settings,
             work["comment_count_basis"] = "精确值"
             work["comment_count_is_lower_bound"] = False
             continue
-        if comment_preview and work.get("comment_count") is None:
-            preview_count = len(comment_preview)
-            work["comment_count"] = preview_count
-            work["comment_count_text"] = f"{preview_count}+"
-            work["comment_count_is_lower_bound"] = True
-            work["comment_count_basis"] = "评论预览下限"
+        work["comment_count_basis"] = "详情缺失"
+        work["comment_count_is_lower_bound"] = False
+        work["comment_count"] = None
+        work["comment_count_text"] = ""
     return report
 
 

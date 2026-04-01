@@ -569,12 +569,15 @@ function buildCoverMarkup(item, { size = "hero", rank = 1 } = {}) {
 function renderCommentBasisChip(item) {
   const basis = String(item?.comment_basis || "").trim();
   if (!basis) return "";
-  const label = basis === "评论预览下限" ? "评论下限" : basis === "旧缓存" ? "旧缓存" : basis;
+  const label = basis === "评论预览下限" ? "评论下限" : basis === "旧缓存" ? "旧缓存" : basis === "详情缺失" ? "详情缺失" : basis;
   return `<span class="ranking-basis-chip">${label}</span>`;
 }
 
 function buildCommentBasisHint(item) {
   const basis = String(item?.comment_basis || "").trim();
+  if (basis === "详情缺失") {
+    return "这条作品没有拿到精确评论数，因此不计入评论榜和评论总量";
+  }
   if (basis === "评论预览下限") {
     return "该评论数来自评论预览下限，不是精确总数";
   }
