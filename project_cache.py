@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
+import mimetypes
 import re
+import urllib.parse
+import urllib.request
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -24,6 +28,7 @@ DEFAULT_DASHBOARD_CACHE_FILE = "dashboard_all.json"
 TRACKED_WORKS_CACHE_FILE = "tracked_works.json"
 TRACKED_WORK_HISTORY_CACHE_FILE = "tracked_work_history.json"
 DEFAULT_EXPORT_CACHE_DIR = "账号榜单导出"
+DEFAULT_PROJECT_COVER_DIR = "covers"
 
 
 def resolve_project_cache_dir(settings) -> Path:
@@ -156,6 +161,7 @@ def write_project_cache_bundle(*, reports: List[Dict[str, Any]], settings) -> Di
             project_dir=project_dir,
             settings=settings,
         )
+        _persist_project_cover_assets(project_dir=project_dir, tracked_state=tracked_state)
         tracked_account_ids = {
             str(item.get("account_id") or "").strip()
             for item in ((tracked_state.get("payload") or {}).get("items") or [])
@@ -193,6 +199,83 @@ def write_project_cache_bundle(*, reports: List[Dict[str, Any]], settings) -> Di
         "projects": project_paths,
         "combined_dashboard_path": str(cache_dir / DEFAULT_DASHBOARD_CACHE_FILE),
     }
+
+
+def _persist_project_cover_assets(*, project_dir: Path, tracked_state: Dict[str, Any]) -> None:
+    cover_dir = project_dir / DEFAULT_PROJECT_COVER_DIR
+    payload_items = list((tracked_state.get("payload") or {}).get("items") or [])
+    ranking_items = list(tracked_state.get("ranking_items") or [])
+    if not payload_items and not ranking_items:
+        return
+
+    local_path_by_fingerprint: Dict[str, str] = {}
+    for entry in payload_items:
+        cover_url = str(entry.get("cover_url") or "").strip()
+        fingerprint = str(entry.get("fingerprint") or entry.get("raw_fingerprint") or "").strip()
+        if not cover_url or not fingerprint:
+            continue
+        local_path = _save_cover_asset(cover_dir=cover_dir, fingerprint=fingerprint, cover_url=cover_url)
+        if not local_path:
+            continue
+        entry["local_cover_path"] = local_path
+        local_path_by_fingerprint[fingerprint] = local_path
+
+    for item in ranking_items:
+        fingerprint = str(item.get("fingerprint") or item.get("baseline_fingerprint") or "").strip()
+        local_path = local_path_by_fingerprint.get(fingerprint, "")
+        if local_path:
+            item["local_cover_path"] = local_path
+
+
+def _save_cover_asset(*, cover_dir: Path, fingerprint: str, cover_url: str) -> str:
+    cover_dir.mkdir(parents=True, exist_ok=True)
+    stem = hashlib.sha1(f"{fingerprint}|{cover_url}".encode("utf-8")).hexdigest()
+    existing = next(iter(sorted(cover_dir.glob(f"{stem}.*"))), None)
+    if existing is not None:
+        return str(existing)
+
+    request = urllib.request.Request(
+        cover_url,
+        headers={
+            "User-Agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
+            ),
+            "Referer": "https://www.xiaohongshu.com/",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            payload = response.read()
+            content_type = ""
+            headers = getattr(response, "headers", None)
+            if headers is not None:
+                content_type = str(getattr(headers, "get_content_type", lambda: "")() or headers.get("Content-Type") or "").strip()
+    except Exception:
+        return ""
+    if not payload:
+        return ""
+
+    suffix = _guess_cover_suffix(cover_url=cover_url, content_type=content_type)
+    target_path = cover_dir / f"{stem}{suffix}"
+    try:
+        target_path.write_bytes(payload)
+    except Exception:
+        return ""
+    return str(target_path)
+
+
+def _guess_cover_suffix(*, cover_url: str, content_type: str) -> str:
+    parsed = urllib.parse.urlparse(str(cover_url or "").strip())
+    suffix = Path(parsed.path).suffix.lower()
+    if suffix in {".jpg", ".jpeg", ".png", ".webp", ".gif"}:
+        return suffix
+    guessed = mimetypes.guess_extension(str(content_type or "").split(";", 1)[0].strip() or "")
+    if guessed in {".jpg", ".jpe"}:
+        return ".jpg"
+    if guessed in {".jpeg", ".png", ".webp", ".gif"}:
+        return guessed
+    return ".jpg"
 
 
 def _build_ranking_rows(reports: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
