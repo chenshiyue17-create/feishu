@@ -31,7 +31,7 @@ DEFAULT_FIELD_MAP = {
     "raw_json": "原始数据",
 }
 
-APP_VERSION = "XHS-26.3.31-V15"
+APP_VERSION = "XHS-26.4.1-V1"
 DEFAULT_SERVER_CACHE_PUSH_URL = "http://47.87.68.74"
 DEFAULT_SCHEDULE_DRIVER = "app"
 
@@ -81,7 +81,7 @@ class Settings:
     xhs_batch_slot_offset_seconds: int = 0
     xhs_batch_sampling_state_file: str = ""
     xhs_manual_sync_cooldown_minutes: int = 0
-    xhs_fetch_work_comment_counts: bool = False
+    xhs_fetch_work_comment_counts: bool = True
     xhs_enable_signed_profile_pages: bool = False
     xhs_signed_profile_max_pages: int = 1
     xhs_fetch_work_comment_preview: bool = False
@@ -198,7 +198,7 @@ def load_settings(env_file: Optional[str] = None) -> Settings:
             base_dir,
         ),
         xhs_manual_sync_cooldown_minutes=_env_int("XHS_MANUAL_SYNC_COOLDOWN_MINUTES", env_values, default=0),
-        xhs_fetch_work_comment_counts=_env_bool("XHS_FETCH_WORK_COMMENT_COUNTS", env_values, default=False),
+        xhs_fetch_work_comment_counts=_env_bool("XHS_FETCH_WORK_COMMENT_COUNTS", env_values, default=True),
         xhs_enable_signed_profile_pages=_env_bool("XHS_ENABLE_SIGNED_PROFILE_PAGES", env_values, default=False),
         xhs_signed_profile_max_pages=_env_int("XHS_SIGNED_PROFILE_MAX_PAGES", env_values, default=1),
         xhs_fetch_work_comment_preview=_env_bool("XHS_FETCH_WORK_COMMENT_PREVIEW", env_values, default=False),
