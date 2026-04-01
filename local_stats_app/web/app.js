@@ -1335,9 +1335,11 @@ function renderAccountFocus() {
     });
   });
   if (projectName === "all") {
-    root.innerHTML = `<div class="empty-state">先在上方项目卡中进入一个项目，再查看该项目内的账号。</div>`;
+    root.innerHTML = "";
+    root.hidden = true;
     return;
   }
+  root.hidden = false;
   const accounts = getVisibleAccounts();
   const active = getActiveAccount();
   if (!accounts.length || !active) {
