@@ -798,6 +798,7 @@ def _build_tracked_work_entry(*, report: Dict[str, Any], profile: Dict[str, Any]
         "like_count_text": like_count_text or str(like_count),
         "comment_count": comment_count,
         "comment_count_text": comment_count_text or (str(comment_count) if comment_count is not None else ""),
+        "comment_count_basis": str(work.get("comment_count_basis") or "").strip(),
         "comment_count_is_lower_bound": bool(work.get("comment_count_is_lower_bound")),
         "recent_comments_summary": str(work.get("recent_comments_summary") or "").strip(),
         "captured_at": captured_at,
@@ -812,6 +813,21 @@ def _build_tracked_work_entry(*, report: Dict[str, Any], profile: Dict[str, Any]
 def _merge_tracked_work_entry(*, existing_entry: Optional[Dict[str, Any]], current_entry: Dict[str, Any]) -> Dict[str, Any]:
     merged = dict(existing_entry or {})
     merged.update(current_entry)
+    existing_comment_count = _to_optional_int((existing_entry or {}).get("comment_count"))
+    existing_comment_basis = str((existing_entry or {}).get("comment_count_basis") or "").strip()
+    existing_is_lower_bound = bool((existing_entry or {}).get("comment_count_is_lower_bound"))
+    current_comment_count = _to_optional_int(current_entry.get("comment_count"))
+    current_comment_basis = str(current_entry.get("comment_count_basis") or "").strip()
+    current_is_lower_bound = bool(current_entry.get("comment_count_is_lower_bound"))
+    existing_has_exact_comment = existing_comment_count is not None and not existing_is_lower_bound and existing_comment_basis != "详情缺失"
+    current_has_exact_comment = current_comment_count is not None and not current_is_lower_bound and current_comment_basis != "详情缺失"
+    if existing_has_exact_comment and not current_has_exact_comment:
+        merged["comment_count"] = existing_comment_count
+        merged["comment_count_text"] = str((existing_entry or {}).get("comment_count_text") or existing_comment_count)
+        merged["comment_count_basis"] = existing_comment_basis or "精确值"
+        merged["comment_count_is_lower_bound"] = False
+        if str((existing_entry or {}).get("recent_comments_summary") or "").strip():
+            merged["recent_comments_summary"] = str((existing_entry or {}).get("recent_comments_summary") or "").strip()
     merged["tracked_key"] = _resolve_tracked_work_key(merged)
     merged["first_seen_at"] = str((existing_entry or {}).get("first_seen_at") or current_entry.get("captured_at") or "").strip()
     merged["last_seen_at"] = str(current_entry.get("captured_at") or "").strip()
@@ -859,25 +875,22 @@ def _refresh_tracked_work_entry(*, entry: Dict[str, Any], collector: Any, captur
                 refreshed["comment_count_text"] = str(snapshot.comment_count)
                 refreshed["comment_count_is_lower_bound"] = False
                 refreshed["comment_count_basis"] = "精确值"
-    preview_limit = max(0, int(getattr(settings, "xhs_work_comment_preview_limit", 3) or 0))
-    if note_id and xsec_token and getattr(settings, "xhs_fetch_work_comment_preview", True) and preview_limit > 0:
-        try:
-            comment_preview = collector.fetch_note_comments_preview(
-                note_id=note_id,
-                xsec_token=xsec_token,
-                note_url=note_url,
-                limit=preview_limit,
-            )
-        except Exception:
-            comment_preview = []
-        if comment_preview:
-            refreshed["recent_comments_summary"] = build_recent_comments_summary(comment_preview)
-            if refreshed.get("comment_count") is None:
-                preview_count = len(comment_preview)
-                refreshed["comment_count"] = preview_count
-                refreshed["comment_count_text"] = f"{preview_count}+"
-                refreshed["comment_count_is_lower_bound"] = True
-                refreshed["comment_count_basis"] = "评论预览下限"
+    if _to_optional_int(refreshed.get("comment_count")) is None:
+        existing_comment_count = _to_optional_int(entry.get("comment_count"))
+        existing_basis = str(entry.get("comment_count_basis") or "").strip()
+        existing_is_lower_bound = bool(entry.get("comment_count_is_lower_bound"))
+        if existing_comment_count is not None and not existing_is_lower_bound and existing_basis != "详情缺失":
+            refreshed["comment_count"] = existing_comment_count
+            refreshed["comment_count_text"] = str(entry.get("comment_count_text") or existing_comment_count)
+            refreshed["comment_count_is_lower_bound"] = False
+            refreshed["comment_count_basis"] = existing_basis or "精确值"
+            if str(entry.get("recent_comments_summary") or "").strip():
+                refreshed["recent_comments_summary"] = str(entry.get("recent_comments_summary") or "").strip()
+        else:
+            refreshed["comment_count"] = None
+            refreshed["comment_count_text"] = ""
+            refreshed["comment_count_is_lower_bound"] = False
+            refreshed["comment_count_basis"] = "详情缺失"
     refreshed["tracked_key"] = _resolve_tracked_work_key(refreshed)
     refreshed["captured_at"] = captured_at
     refreshed["snapshot_date"] = snapshot_date

@@ -35,6 +35,107 @@ class FakeCollector:
 
 
 class ProjectCacheTest(unittest.TestCase):
+    def test_write_project_cache_bundle_preserves_existing_exact_comment_count_when_new_run_missing_it(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            settings = SimpleNamespace(
+                project_cache_dir=tmpdir,
+                feishu_review_upload_days=14,
+                xhs_fetch_work_comment_preview=False,
+                xhs_work_comment_preview_limit=0,
+            )
+            cache_dir = Path(tmpdir)
+            project_dir = cache_dir / "默认项目"
+            project_dir.mkdir(parents=True, exist_ok=True)
+            (project_dir / "tracked_works.json").write_text(
+                json.dumps(
+                    {
+                        "project": "默认项目",
+                        "updated_at": "2026-04-01T14:00:00+08:00",
+                        "tracking_window_days": 14,
+                        "items": [
+                            {
+                                "tracked_key": "note:keep-note",
+                                "fingerprint": "note:keep-note",
+                                "raw_fingerprint": "u1-keep-fingerprint",
+                                "note_id": "keep-note",
+                                "note_url": "https://www.xiaohongshu.com/explore/keep-note?xsec_token=keep-token&xsec_source=pc_user",
+                                "xsec_token": "keep-token",
+                                "account_id": "u1",
+                                "account": "账号A",
+                                "profile_url": "https://www.xiaohongshu.com/user/profile/u1",
+                                "title_copy": "老作品",
+                                "note_type": "video",
+                                "cover_url": "https://img.example.com/keep.jpg",
+                                "like_count": 20,
+                                "like_count_text": "20",
+                                "comment_count": 11,
+                                "comment_count_text": "11",
+                                "comment_count_basis": "精确值",
+                                "comment_count_is_lower_bound": False,
+                                "recent_comments_summary": "用户A: 老评论",
+                                "captured_at": "2026-04-01T14:00:00+08:00",
+                                "snapshot_date": "2026-04-01",
+                                "first_seen_at": "2026-03-31T14:00:00+08:00",
+                                "last_seen_at": "2026-04-01T14:00:00+08:00",
+                                "last_refreshed_at": "2026-04-01T14:00:00+08:00",
+                                "source": "tracked",
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+            report = {
+                "captured_at": "2026-04-01T17:00:00+08:00",
+                "project": "默认项目",
+                "profile": {
+                    "profile_user_id": "u1",
+                    "nickname": "账号A",
+                    "profile_url": "https://www.xiaohongshu.com/user/profile/u1",
+                    "fans_count_text": "100",
+                    "interaction_count_text": "200",
+                    "work_count_display_text": "30+",
+                    "visible_work_count": 30,
+                },
+                "works": [
+                    {
+                        "title_copy": "老作品",
+                        "note_type": "video",
+                        "like_count": 22,
+                        "like_count_text": "22",
+                        "comment_count": None,
+                        "comment_count_text": "",
+                        "comment_count_basis": "详情缺失",
+                        "comment_count_is_lower_bound": False,
+                        "cover_url": "https://img.example.com/keep.jpg",
+                        "note_url": "https://www.xiaohongshu.com/explore/keep-note?xsec_token=keep-token&xsec_source=pc_user",
+                        "xsec_token": "keep-token",
+                        "note_id": "keep-note",
+                        "index": 0,
+                    }
+                ],
+            }
+
+            class MissingCommentCollector:
+                def __init__(self, _settings) -> None:
+                    pass
+
+                def collect_note_detail(self, *, note_id, note_url="", xsec_token="", xsec_source="pc_user"):
+                    return NoteSnapshot(note_id=note_id, note_url=note_url, like_count=22, comment_count=None)
+
+            with patch("xhs_feishu_monitor.project_cache.XHSCollector", MissingCommentCollector):
+                write_project_cache_bundle(reports=[report], settings=settings)
+
+            tracked_payload = json.loads((project_dir / "tracked_works.json").read_text(encoding="utf-8"))
+            tracked_items = {str(item.get("tracked_key") or ""): item for item in tracked_payload.get("items") or []}
+            kept = tracked_items["note:keep-note"]
+            self.assertEqual(kept["comment_count"], 11)
+            self.assertEqual(kept["comment_count_basis"], "精确值")
+            self.assertEqual(kept["comment_count_text"], "11")
+            self.assertFalse(kept["comment_count_is_lower_bound"])
+
     def test_rebuild_dashboard_cache_from_project_dirs_merges_all_projects(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             settings = SimpleNamespace(project_cache_dir=tmpdir)
@@ -332,7 +433,7 @@ class ProjectCacheTest(unittest.TestCase):
             refreshed_old = tracked_items["note:old-note"]
             self.assertEqual(refreshed_old["like_count"], 25)
             self.assertEqual(refreshed_old["comment_count"], 13)
-            self.assertEqual(refreshed_old["recent_comments_summary"], "用户A: 第一条评论 | 用户B: 第二条评论")
+            self.assertEqual(refreshed_old["recent_comments_summary"], "")
             old_like_row = next(
                 row
                 for row in ranking_rows
