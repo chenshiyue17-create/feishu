@@ -1172,6 +1172,28 @@ function getProjectRankingCount(projectName, rankType) {
   return rows.filter((item) => projectAccountIds.has(item.account_id)).length;
 }
 
+function getProjectRankingRows(projectName, rankType) {
+  const rows = state.payload?.rankings?.[rankType] || [];
+  if (!projectName || projectName === "all") {
+    return rows;
+  }
+  const projectAccountIds = getProjectAccountIds(projectName);
+  return rows.filter((item) => projectAccountIds.has(item.account_id));
+}
+
+function getProjectCommentSummary(projectName) {
+  const rows = getProjectRankingRows(projectName, "单条评论排行");
+  const exactRows = rows.filter((item) => String(item.comment_basis || "") === "精确值");
+  const nonExactCount = rows.length - exactRows.length;
+  const exactTotal = exactRows.reduce((sum, item) => sum + Number(item.metric || 0), 0);
+  return {
+    rowCount: rows.length,
+    exactCount: exactRows.length,
+    nonExactCount,
+    exactTotal,
+  };
+}
+
 function getProjectAlertCount(projectName) {
   if (!projectName || projectName === "all") {
     return (state.payload?.alerts || []).length;
@@ -1502,13 +1524,26 @@ function renderProjectHome() {
   const totalFans = accounts.reduce((sum, item) => sum + Number(item.fans || 0), 0);
   const totalInteraction = accounts.reduce((sum, item) => sum + Number(item.interaction || 0), 0);
   const totalComments = accounts.reduce((sum, item) => sum + Number(item.comments || 0), 0);
-  const projectCommentRankingCount = getProjectRankingCount(projectName, "单条评论排行");
-  const commentTotalValue = totalComments > 0 ? formatNumber(totalComments) : projectCommentRankingCount > 0 ? "待刷新" : "0";
-  const commentTotalHint = totalComments > 0
-    ? "项目内账号首页可见作品评论合计"
-    : projectCommentRankingCount > 0
-      ? `本轮账号评论总量还没刷新；当前已有 ${formatNumber(projectCommentRankingCount)} 条作品评论榜数据`
-      : "项目内账号首页可见作品评论合计";
+  const projectCommentSummary = getProjectCommentSummary(projectName);
+  const commentTotalValue =
+    projectCommentSummary.exactTotal > 0
+      ? formatNumber(projectCommentSummary.exactTotal)
+      : totalComments > 0
+        ? formatNumber(totalComments)
+        : projectCommentSummary.rowCount > 0
+          ? "缺失"
+          : "0";
+  let commentTotalHint = "项目内账号首页可见作品评论合计";
+  if (projectCommentSummary.exactTotal > 0) {
+    commentTotalHint =
+      projectCommentSummary.nonExactCount > 0
+        ? `按 ${formatNumber(projectCommentSummary.exactCount)} 条精确评论作品汇总；另有 ${formatNumber(projectCommentSummary.nonExactCount)} 条非精确作品未计入`
+        : `按 ${formatNumber(projectCommentSummary.exactCount)} 条精确评论作品汇总`;
+  } else if (totalComments > 0) {
+    commentTotalHint = "项目内账号首页可见作品评论合计";
+  } else if (projectCommentSummary.rowCount > 0) {
+    commentTotalHint = `当前已有 ${formatNumber(projectCommentSummary.rowCount)} 条评论榜数据，但缺少精确评论总量，主卡未计入`;
+  }
   const summaryParts = [];
   summaryParts.push(`监测 ${formatNumber(entries.length)} 个账号`);
   summaryParts.push(`已同步 ${formatNumber(accounts.length)} 个账号`);
@@ -2130,6 +2165,8 @@ function renderProjectCards(projects, syncStatus) {
 
 function getManualUpdateState(syncStatus) {
   const running = syncStatus?.state === "running";
+  const launchdStatus = syncStatus?.launchd_status || {};
+  const autoRunning = String(launchdStatus.state || "") === "running";
   let cooldownSeconds = Number(syncStatus?.manual_cooldown_seconds_remaining || 0);
   if (syncStatus?.manual_available_at) {
     const availableAt = new Date(syncStatus.manual_available_at).getTime();
@@ -2137,20 +2174,33 @@ function getManualUpdateState(syncStatus) {
       cooldownSeconds = Math.max(0, Math.ceil((availableAt - Date.now()) / 1000));
     }
   }
-  const disabled = running || cooldownSeconds > 0;
-  const allButtonText = running ? "采集中..." : cooldownSeconds > 0 ? `冷却 ${formatDurationShort(cooldownSeconds)}` : "更新全部项目";
+  const disableAll = running || autoRunning || cooldownSeconds > 0;
+  const disableProject = running || cooldownSeconds > 0;
+  const disableAccount = running || cooldownSeconds > 0;
+  const allButtonText = running || autoRunning ? "采集中..." : cooldownSeconds > 0 ? `冷却 ${formatDurationShort(cooldownSeconds)}` : "更新全部项目";
   const projectButtonText = running ? "采集中" : cooldownSeconds > 0 ? "冷却中" : "更新当前项目";
   const accountButtonText = running ? "采集中" : cooldownSeconds > 0 ? "冷却中" : "更新当前账号";
   const helperText = running
-    ? "当前正在采集并更新本地看板，为避免重复请求，采集按钮已临时锁定。"
+    ? "当前正在手动采集并更新本地看板，为避免重复请求，采集按钮已临时锁定。"
+    : autoRunning
+      ? "自动任务正在整批采集，已临时锁定“更新全部项目”；如需补采，可继续更新当前项目或当前账号。"
     : cooldownSeconds > 0
       ? `为降低小红书风控，本地采集冷却中，剩余 ${formatDurationShort(cooldownSeconds)}。每天 14:00 自动更新不受影响。`
       : "可以分别更新全部项目、当前项目或当前账号；需要共享时再推送到服务器。";
-  return { disabled, allButtonText, projectButtonText, accountButtonText, helperText, cooldownSeconds };
+  return {
+    disableAll,
+    disableProject,
+    disableAccount,
+    allButtonText,
+    projectButtonText,
+    accountButtonText,
+    helperText,
+    cooldownSeconds,
+  };
 }
 
 function renderManualUpdateState(syncStatus) {
-  const { disabled, allButtonText, projectButtonText, accountButtonText, helperText } = getManualUpdateState(syncStatus);
+  const { disableAll, disableProject, disableAccount, allButtonText, projectButtonText, accountButtonText, helperText } = getManualUpdateState(syncStatus);
   const selectedProject = getSelectedProjectName();
   const hasProjectScope = selectedProject !== "all";
   const activeAccount = getActiveAccount();
@@ -2162,35 +2212,35 @@ function renderManualUpdateState(syncStatus) {
   const syncAccountButton = document.getElementById("syncAccountButton");
   const hintNode = document.getElementById("syncCooldownText");
   if (syncButton) {
-    syncButton.disabled = disabled || !hasProjectScope;
+    syncButton.disabled = disableProject || !hasProjectScope;
     syncButton.textContent = projectButtonText;
     syncButton.title = hasProjectScope ? "" : "先进入一个项目，再更新当前项目";
   }
   if (heroButton) {
-    heroButton.disabled = disabled;
+    heroButton.disabled = disableAll;
     heroButton.textContent = allButtonText;
   }
   if (syncAllButton) {
-    syncAllButton.disabled = disabled;
+    syncAllButton.disabled = disableAll;
     syncAllButton.textContent = allButtonText;
   }
   if (heroProjectButton) {
-    heroProjectButton.disabled = disabled || !hasProjectScope;
+    heroProjectButton.disabled = disableProject || !hasProjectScope;
     heroProjectButton.textContent = projectButtonText;
     heroProjectButton.title = hasProjectScope ? "" : "先进入一个项目，再更新当前项目";
   }
   if (heroAccountButton) {
-    heroAccountButton.disabled = disabled || !activeAccount;
+    heroAccountButton.disabled = disableAccount || !activeAccount;
     heroAccountButton.textContent = accountButtonText;
     heroAccountButton.title = activeAccount ? "" : "先选择一个账号，再更新当前账号";
   }
   if (syncAccountButton) {
-    syncAccountButton.disabled = disabled || !activeAccount;
+    syncAccountButton.disabled = disableAccount || !activeAccount;
     syncAccountButton.textContent = accountButtonText;
     syncAccountButton.title = activeAccount ? "" : "先选择一个账号，再更新当前账号";
   }
   document.querySelectorAll(".project-sync-button").forEach((button) => {
-    button.disabled = disabled;
+    button.disabled = disableProject;
     button.textContent = projectButtonText;
   });
   if (hintNode) {
@@ -2257,6 +2307,25 @@ function renderPortalCards() {
     const totalFans = accounts.reduce((sum, item) => sum + Number(item.fans || 0), 0);
     const totalInteraction = accounts.reduce((sum, item) => sum + Number(item.interaction || 0), 0);
     const totalComments = accounts.reduce((sum, item) => sum + Number(item.comments || 0), 0);
+    const projectCommentSummary = getProjectCommentSummary(projectName);
+    const projectCommentCardValue =
+      projectCommentSummary.exactTotal > 0
+        ? formatNumber(projectCommentSummary.exactTotal)
+        : totalComments > 0
+          ? formatNumber(totalComments)
+          : projectCommentSummary.rowCount > 0
+            ? "缺失"
+            : "0";
+    const projectCommentCardHint =
+      projectCommentSummary.exactTotal > 0
+        ? projectCommentSummary.nonExactCount > 0
+          ? `按 ${formatNumber(projectCommentSummary.exactCount)} 条精确评论作品汇总；另有 ${formatNumber(projectCommentSummary.nonExactCount)} 条非精确作品未计入`
+          : `按 ${formatNumber(projectCommentSummary.exactCount)} 条精确评论作品汇总`
+        : totalComments > 0
+          ? "当前范围下首页可见作品评论合计"
+          : projectCommentSummary.rowCount > 0
+            ? `当前已有 ${formatNumber(projectCommentSummary.rowCount)} 条评论榜数据，但缺少精确评论总量，主卡未计入`
+            : "当前范围下首页可见作品评论合计";
     const projectGrowth = buildProjectComparableGrowth(projectName, 7);
     const comparableHint = projectGrowth
       ? projectGrowth.comparable_ready
@@ -2266,7 +2335,7 @@ function renderPortalCards() {
     const cards = [
       ["项目粉丝总量", formatNumber(totalFans), "当前范围下账号粉丝总量"],
       ["项目获赞收藏", formatNumber(totalInteraction), "当前范围下账号获赞收藏总量"],
-      ["项目评论总量", formatNumber(totalComments), "当前范围下首页可见作品评论合计"],
+      ["项目评论总量", projectCommentCardValue, projectCommentCardHint],
       ["可比账号数", projectGrowth ? formatNumber(projectGrowth.comparable_account_count || 0) : "-", comparableHint],
       ["新增账号数", projectGrowth ? formatNumber(projectGrowth.new_account_count || 0) : "-", projectGrowth ? `${projectGrowth.start_date} → ${projectGrowth.end_date} 新进入统计窗口的账号` : "历史不足，暂不显示新增账号"],
       ["近7天可比粉丝增量", projectGrowth && projectGrowth.comparable_ready ? formatSignedNumber(projectGrowth.fans) : "-", comparableHint],

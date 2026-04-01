@@ -211,7 +211,8 @@ class ProfileBatchReportTest(unittest.TestCase):
         self.assertEqual(runtime.xhs_timeout_seconds, 12)
         self.assertEqual(runtime.xhs_retry_attempts, 1)
         self.assertTrue(runtime.xhs_fetch_work_comment_counts)
-        self.assertFalse(runtime.xhs_fetch_work_comment_preview)
+        self.assertTrue(runtime.xhs_fetch_work_comment_preview)
+        self.assertEqual(runtime.xhs_work_comment_preview_limit, 2)
         self.assertFalse(runtime.xhs_enable_signed_profile_pages)
 
     def test_build_batch_pressure_controller_reads_threshold_and_multiplier(self) -> None:

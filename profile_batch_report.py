@@ -870,8 +870,10 @@ def build_batch_runtime_settings(*, settings, total_accounts: int):
     setattr(runtime_settings, "xhs_retry_delay_seconds", 0)
     setattr(runtime_settings, "xhs_timeout_seconds", min(12, max(5, int(getattr(runtime_settings, "xhs_timeout_seconds", 12) or 12))))
     setattr(runtime_settings, "xhs_enable_signed_profile_pages", False)
-    setattr(runtime_settings, "xhs_fetch_work_comment_preview", False)
-    setattr(runtime_settings, "xhs_work_comment_preview_limit", 0)
+    # Keep a very small preview fallback in batch mode so accounts do not lose
+    # all comment data when detail endpoints return empty.
+    setattr(runtime_settings, "xhs_fetch_work_comment_preview", True)
+    setattr(runtime_settings, "xhs_work_comment_preview_limit", 2)
     page_cap = max(0, int(getattr(settings, "xhs_batch_signed_profile_page_cap", 0) or 0))
     current_page_cap = max(1, int(getattr(runtime_settings, "xhs_signed_profile_max_pages", 40) or 40))
     if page_cap > 0:
