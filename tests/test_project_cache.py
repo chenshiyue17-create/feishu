@@ -101,6 +101,93 @@ class ProjectCacheTest(unittest.TestCase):
             saved_item = (tracked_payload.get("items") or [])[0]
             self.assertEqual(Path(saved_item["local_cover_path"]).resolve(), cover_files[0].resolve())
 
+    def test_write_project_cache_bundle_reuses_same_cover_asset_without_redownloading(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            settings = SimpleNamespace(
+                project_cache_dir=tmpdir,
+                feishu_review_upload_days=14,
+                xhs_fetch_work_comment_preview=False,
+                xhs_work_comment_preview_limit=0,
+            )
+            report = {
+                "captured_at": "2026-04-01T18:20:00+08:00",
+                "project": "默认项目",
+                "profile": {
+                    "profile_user_id": "u1",
+                    "nickname": "账号A",
+                    "profile_url": "https://www.xiaohongshu.com/user/profile/u1",
+                    "fans_count_text": "100",
+                    "interaction_count_text": "200",
+                    "work_count_display_text": "30+",
+                    "visible_work_count": 30,
+                },
+                "works": [
+                    {
+                        "title_copy": "作品A",
+                        "note_type": "video",
+                        "like_count": 12,
+                        "like_count_text": "12",
+                        "comment_count": 5,
+                        "comment_count_text": "5",
+                        "comment_count_basis": "精确值",
+                        "comment_count_is_lower_bound": False,
+                        "cover_url": "https://ci.xiaohongshu.com/abc/asset-a!nc_n_webp_mw_1",
+                        "note_url": "https://www.xiaohongshu.com/explore/note-a?xsec_token=t&xsec_source=pc_user",
+                        "xsec_token": "t",
+                        "note_id": "note-a",
+                        "index": 0,
+                    },
+                    {
+                        "title_copy": "作品B",
+                        "note_type": "video",
+                        "like_count": 15,
+                        "like_count_text": "15",
+                        "comment_count": 8,
+                        "comment_count_text": "8",
+                        "comment_count_basis": "精确值",
+                        "comment_count_is_lower_bound": False,
+                        "cover_url": "https://sns-avatar-qc.xhscdn.com/other/asset-a!nc_n_webp_mw_1",
+                        "note_url": "https://www.xiaohongshu.com/explore/note-b?xsec_token=t&xsec_source=pc_user",
+                        "xsec_token": "t",
+                        "note_id": "note-b",
+                        "index": 1,
+                    },
+                ],
+            }
+
+            class FakeImageResponse:
+                def __init__(self, payload: bytes) -> None:
+                    self._payload = payload
+                    self.headers = Message()
+                    self.headers["Content-Type"] = "image/jpeg"
+
+                def read(self) -> bytes:
+                    return self._payload
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, exc_type, exc, tb) -> None:
+                    return None
+
+            with patch(
+                "xhs_feishu_monitor.project_cache.urllib.request.urlopen",
+                return_value=FakeImageResponse(b"jpeg-bytes"),
+            ) as urlopen_mock:
+                write_project_cache_bundle(reports=[report], settings=settings)
+
+            project_dir = Path(tmpdir) / "默认项目"
+            cover_files = list((project_dir / "covers").glob("*"))
+            self.assertEqual(len(cover_files), 1)
+            self.assertEqual(urlopen_mock.call_count, 1)
+            tracked_payload = json.loads((project_dir / "tracked_works.json").read_text(encoding="utf-8"))
+            items = tracked_payload.get("items") or []
+            self.assertEqual(len(items), 2)
+            self.assertEqual(
+                {Path(item["local_cover_path"]).resolve() for item in items},
+                {cover_files[0].resolve()},
+            )
+
     def test_write_project_cache_bundle_preserves_existing_exact_comment_count_when_new_run_missing_it(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             settings = SimpleNamespace(

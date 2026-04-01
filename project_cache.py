@@ -19,7 +19,11 @@ from .profile_dashboard_to_feishu import (
     build_single_work_ranking_fields,
     build_single_work_rankings,
 )
-from .profile_works_to_feishu import build_work_calendar_history_index, build_work_fingerprint
+from .profile_works_to_feishu import (
+    build_work_calendar_history_index,
+    build_work_fingerprint,
+    normalize_cover_asset_key,
+)
 from .xhs import XHSCollector
 
 
@@ -209,16 +213,26 @@ def _persist_project_cover_assets(*, project_dir: Path, tracked_state: Dict[str,
         return
 
     local_path_by_fingerprint: Dict[str, str] = {}
+    local_path_by_cover_key: Dict[str, str] = {}
     for entry in payload_items:
         cover_url = str(entry.get("cover_url") or "").strip()
         fingerprint = str(entry.get("fingerprint") or entry.get("raw_fingerprint") or "").strip()
         if not cover_url or not fingerprint:
             continue
-        local_path = _save_cover_asset(cover_dir=cover_dir, fingerprint=fingerprint, cover_url=cover_url)
+        cover_key = _build_cover_asset_key(cover_url=cover_url, fingerprint=fingerprint)
+        local_path = local_path_by_cover_key.get(cover_key, "")
+        if not local_path:
+            local_path = _save_cover_asset(
+                cover_dir=cover_dir,
+                fingerprint=fingerprint,
+                cover_url=cover_url,
+                cover_key=cover_key,
+            )
         if not local_path:
             continue
         entry["local_cover_path"] = local_path
         local_path_by_fingerprint[fingerprint] = local_path
+        local_path_by_cover_key[cover_key] = local_path
 
     for item in ranking_items:
         fingerprint = str(item.get("fingerprint") or item.get("baseline_fingerprint") or "").strip()
@@ -227,9 +241,9 @@ def _persist_project_cover_assets(*, project_dir: Path, tracked_state: Dict[str,
             item["local_cover_path"] = local_path
 
 
-def _save_cover_asset(*, cover_dir: Path, fingerprint: str, cover_url: str) -> str:
+def _save_cover_asset(*, cover_dir: Path, fingerprint: str, cover_url: str, cover_key: str = "") -> str:
     cover_dir.mkdir(parents=True, exist_ok=True)
-    stem = hashlib.sha1(f"{fingerprint}|{cover_url}".encode("utf-8")).hexdigest()
+    stem = hashlib.sha1(_build_cover_asset_key(cover_url=cover_url, fingerprint=fingerprint, cover_key=cover_key).encode("utf-8")).hexdigest()
     existing = next(iter(sorted(cover_dir.glob(f"{stem}.*"))), None)
     if existing is not None:
         return str(existing)
@@ -263,6 +277,13 @@ def _save_cover_asset(*, cover_dir: Path, fingerprint: str, cover_url: str) -> s
     except Exception:
         return ""
     return str(target_path)
+
+
+def _build_cover_asset_key(*, cover_url: str, fingerprint: str, cover_key: str = "") -> str:
+    normalized_cover_key = str(cover_key or normalize_cover_asset_key(cover_url)).strip()
+    if normalized_cover_key:
+        return normalized_cover_key
+    return f"fingerprint:{fingerprint.strip()}|url:{str(cover_url or '').strip()}"
 
 
 def _guess_cover_suffix(*, cover_url: str, content_type: str) -> str:
