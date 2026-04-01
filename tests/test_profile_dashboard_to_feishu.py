@@ -112,6 +112,23 @@ class ProfileDashboardToFeishuTest(unittest.TestCase):
         self.assertIn("日历标题", fields)
         self.assertEqual(fields["周对比摘要"], "暂无 7 天前留底，周对比将在积累满 7 天后显示")
 
+    def test_build_single_work_ranking_fields_uses_comment_basis_from_item(self) -> None:
+        item = {
+            "fingerprint": "note:abc",
+            "account_id": "u1",
+            "account": "账号A",
+            "title_copy": "作品1",
+            "note_type": "video",
+            "like_count": 9,
+            "comment_count": 2,
+            "comment_count_is_lower_bound": False,
+            "comment_count_basis": "旧缓存",
+            "captured_at": "2026-03-17T18:30:00+08:00",
+        }
+        fields = build_single_work_ranking_fields(item=item, rank_type="单条评论排行", rank=1)
+        self.assertEqual(fields["评论数口径"], "旧缓存")
+        self.assertEqual(fields["单选"], "旧缓存")
+
     def test_build_dashboard_calendar_fields_with_weekly_baseline(self) -> None:
         baseline = {
             "日期文本": "2026-03-10",

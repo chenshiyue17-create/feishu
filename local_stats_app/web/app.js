@@ -567,8 +567,21 @@ function buildCoverMarkup(item, { size = "hero", rank = 1 } = {}) {
 }
 
 function renderCommentBasisChip(item) {
-  if (!item?.comment_is_lower_bound) return "";
-  return `<span class="ranking-basis-chip">评论下限</span>`;
+  const basis = String(item?.comment_basis || "").trim();
+  if (!basis) return "";
+  const label = basis === "评论预览下限" ? "评论下限" : basis === "旧缓存" ? "旧缓存" : basis;
+  return `<span class="ranking-basis-chip">${label}</span>`;
+}
+
+function buildCommentBasisHint(item) {
+  const basis = String(item?.comment_basis || "").trim();
+  if (basis === "评论预览下限") {
+    return "该评论数来自评论预览下限，不是精确总数";
+  }
+  if (basis === "旧缓存") {
+    return "该评论数来自上次成功采集的旧缓存，本轮未刷新到新值";
+  }
+  return "";
 }
 
 async function loadDashboard(force = false) {
@@ -2502,7 +2515,7 @@ function renderRankingHero(config, item) {
           </div>
         </div>
         <div class="subtle">${item.summary || "当前榜单头部内容"}</div>
-        ${item.comment_is_lower_bound ? `<div class="ranking-basis-row">${renderCommentBasisChip(item)}<span class="subtle">该评论数来自评论预览下限，不是精确总数</span></div>` : ""}
+        ${renderCommentBasisChip(item) ? `<div class="ranking-basis-row">${renderCommentBasisChip(item)}${buildCommentBasisHint(item) ? `<span class="subtle">${buildCommentBasisHint(item)}</span>` : ""}</div>` : ""}
         <div class="action-row">
           ${buildActionLink(item.profile_url, "账号主页")}
           ${buildActionLink(primaryUrl, primaryLabel)}

@@ -61,6 +61,8 @@ def enrich_profile_report_with_note_metrics(*, report: Dict[str, Any], settings,
             if signed_snapshot.comment_count is not None:
                 work["comment_count"] = signed_snapshot.comment_count
                 work["comment_count_text"] = str(signed_snapshot.comment_count)
+                work["comment_count_basis"] = "精确值"
+                work["comment_count_is_lower_bound"] = False
                 continue
         note_url = str(work.get("note_url") or "").strip()
         if not note_url:
@@ -77,12 +79,15 @@ def enrich_profile_report_with_note_metrics(*, report: Dict[str, Any], settings,
         if snapshot is not None and snapshot.comment_count is not None:
             work["comment_count"] = snapshot.comment_count
             work["comment_count_text"] = str(snapshot.comment_count)
+            work["comment_count_basis"] = "精确值"
+            work["comment_count_is_lower_bound"] = False
             continue
         if comment_preview and work.get("comment_count") is None:
             preview_count = len(comment_preview)
             work["comment_count"] = preview_count
             work["comment_count_text"] = f"{preview_count}+"
             work["comment_count_is_lower_bound"] = True
+            work["comment_count_basis"] = "评论预览下限"
     return report
 
 

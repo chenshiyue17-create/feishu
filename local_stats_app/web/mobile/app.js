@@ -121,6 +121,11 @@ function renderList(rootId, countId, rows, metricLabel, options = {}) {
   root.innerHTML = displayRows.map((item) => {
     const href = item.note_url || item.profile_url || "#";
     const safeHref = href === "#" ? "#" : href;
+    const basisLabel = String(item.comment_basis || "").trim() === "评论预览下限"
+      ? "评论下限"
+      : String(item.comment_basis || "").trim() === "旧缓存"
+        ? "旧缓存"
+        : "";
     return `
       <a class="rank-card" href="${safeHref}" target="_blank" rel="noreferrer">
         <div class="rank-index">${item.rank || "-"}</div>
@@ -128,7 +133,7 @@ function renderList(rootId, countId, rows, metricLabel, options = {}) {
           <p class="rank-title">${item.title || "未命名作品"}</p>
           <div class="rank-meta">
             <span>${item.account || "未知账号"}</span>
-            <span>${item.comment_is_lower_bound ? "评论为下限口径" : ""}</span>
+            <span>${basisLabel}</span>
           </div>
           <div class="rank-metric">${metricLabel} ${formatNumber(item.metric)}</div>
         </div>

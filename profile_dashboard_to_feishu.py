@@ -1136,6 +1136,7 @@ def build_single_work_items(reports: List[Dict[str, Any]]) -> List[Dict[str, Any
                     "like_count": work_numeric_like(work),
                     "comment_count": work_numeric_comment(work),
                     "comment_count_is_lower_bound": bool(work.get("comment_count_is_lower_bound")),
+                    "comment_count_basis": str(work.get("comment_count_basis") or "").strip(),
                     "xsec_token": work.get("xsec_token") or "",
                     "tracking_status": str(work.get("tracking_status") or "").strip(),
                     "first_seen_date": str(work.get("first_seen_date") or "").strip(),
@@ -1187,7 +1188,7 @@ def build_single_work_ranking_fields(*, item: Dict[str, Any], rank_type: str, ra
     }
     if item.get("comment_count") is not None:
         fields["评论数"] = item["comment_count"]
-        comment_basis = "评论预览下限" if item.get("comment_count_is_lower_bound") else "精确值"
+        comment_basis = str(item.get("comment_count_basis") or "").strip() or ("评论预览下限" if item.get("comment_count_is_lower_bound") else "精确值")
         fields["评论数口径"] = comment_basis
         # 当前排行榜单表没有新增字段权限时，复用现有空闲列承载这条信息。
         fields["单选"] = comment_basis

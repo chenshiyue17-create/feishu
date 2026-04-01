@@ -2086,6 +2086,8 @@ def merge_report_with_existing_work_details(
                 work["note_id"] = note_id
         if existing_comment_count is not None and work.get("comment_count") is None:
             work["comment_count"] = existing_comment_count
+            work["comment_count_basis"] = "旧缓存"
+            work["comment_count_is_lower_bound"] = False
         if existing_comment_text and not str(work.get("comment_count_text") or "").strip():
             work["comment_count_text"] = existing_comment_text
         elif existing_comment_count is not None and not str(work.get("comment_count_text") or "").strip():

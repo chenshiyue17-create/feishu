@@ -765,6 +765,7 @@ def _refresh_tracked_work_entry(*, entry: Dict[str, Any], collector: Any, captur
                 refreshed["comment_count"] = int(snapshot.comment_count)
                 refreshed["comment_count_text"] = str(snapshot.comment_count)
                 refreshed["comment_count_is_lower_bound"] = False
+                refreshed["comment_count_basis"] = "精确值"
     preview_limit = max(0, int(getattr(settings, "xhs_work_comment_preview_limit", 3) or 0))
     if note_id and xsec_token and getattr(settings, "xhs_fetch_work_comment_preview", True) and preview_limit > 0:
         try:
@@ -783,6 +784,7 @@ def _refresh_tracked_work_entry(*, entry: Dict[str, Any], collector: Any, captur
                 refreshed["comment_count"] = preview_count
                 refreshed["comment_count_text"] = f"{preview_count}+"
                 refreshed["comment_count_is_lower_bound"] = True
+                refreshed["comment_count_basis"] = "评论预览下限"
     refreshed["tracked_key"] = _resolve_tracked_work_key(refreshed)
     refreshed["captured_at"] = captured_at
     refreshed["snapshot_date"] = snapshot_date

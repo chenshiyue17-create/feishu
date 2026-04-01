@@ -877,6 +877,38 @@ class ProfileBatchToFeishuTest(unittest.TestCase):
         self.assertEqual(comment_row["单选"], "评论预览下限")
         self.assertNotIn("评论数口径", comment_row)
 
+    def test_merge_report_with_existing_work_details_marks_comment_count_as_cached(self) -> None:
+        report = {
+            "profile": {"profile_user_id": "u1"},
+            "works": [
+                {
+                    "title_copy": "作品A",
+                    "cover_url": "https://img.example.com/a.jpg",
+                    "comment_count": None,
+                    "comment_count_text": "",
+                }
+            ],
+        }
+        fingerprint = build_work_fingerprint(
+            profile_user_id="u1",
+            title="作品A",
+            cover_url="https://img.example.com/a.jpg",
+        )
+        merged = merge_report_with_existing_work_details(
+            report=report,
+            works_records={
+                fingerprint: {
+                    "fields": {
+                        "评论数": 2,
+                        "评论文本": "2",
+                    }
+                }
+            },
+        )
+        self.assertEqual(merged["works"][0]["comment_count"], 2)
+        self.assertEqual(merged["works"][0]["comment_count_basis"], "旧缓存")
+        self.assertFalse(merged["works"][0]["comment_count_is_lower_bound"])
+
     def test_sync_project_rankings_into_single_table_falls_back_project_to_card_label(self) -> None:
         client = _FakeRankingClient(
             tables=[{"name": "小红书单条作品排行", "table_id": "tbl_data"}],
