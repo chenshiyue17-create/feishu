@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from xhs_feishu_monitor.profile_batch_report import (
+    _collect_single_profile_report,
     build_batch_throttle,
     build_batch_runtime_settings,
     build_project_batches,
@@ -284,6 +285,28 @@ class ProfileBatchReportTest(unittest.TestCase):
         self.assertTrue(all(event["phase"] == "collect" for event in progress_events))
         self.assertEqual(progress_events[-1]["success_count"], 2)
         self.assertEqual(progress_events[-1]["failed_count"], 0)
+
+    def test_collect_single_profile_report_fails_when_note_details_are_incomplete(self) -> None:
+        with patch(
+            "xhs_feishu_monitor.profile_batch_report.load_profile_report_payload",
+            return_value={"initial_state": {}, "final_url": "https://www.xiaohongshu.com/user/profile/u1"},
+        ), patch(
+            "xhs_feishu_monitor.profile_batch_report.build_profile_report",
+            return_value={
+                "profile": {"nickname": "账号A", "profile_user_id": "u1"},
+                "works": [{"title_copy": "作品A", "comment_count": None, "comment_count_basis": "详情缺失"}],
+            },
+        ), patch(
+            "xhs_feishu_monitor.profile_batch_report.enrich_profile_report_with_note_metrics",
+            side_effect=lambda report, settings: report,
+        ):
+            result = _collect_single_profile_report(
+                url="https://www.xiaohongshu.com/user/profile/u1",
+                settings=SimpleNamespace(),
+            )
+
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("作品详情缺失 1 条", result["error"])
 
     def test_collect_profile_reports_switches_to_slow_mode_after_consecutive_pressure_failures(self) -> None:
         def fake_collect_single_profile_report(*, url, settings):

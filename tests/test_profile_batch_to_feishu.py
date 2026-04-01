@@ -88,6 +88,30 @@ class ProfileBatchToFeishuTest(unittest.TestCase):
                     report_json=None,
                 )
 
+    def test_load_reports_for_sync_rejects_incomplete_note_details(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings = SimpleNamespace(project_cache_dir=temp_dir)
+            with patch(
+                "xhs_feishu_monitor.profile_batch_to_feishu.collect_profile_reports_with_progress",
+                return_value=[
+                    {
+                        "status": "success",
+                        "requested_url": "https://www.xiaohongshu.com/user/profile/u1",
+                        "profile": {"profile_user_id": "u1", "nickname": "账号A"},
+                        "works": [{"title_copy": "作品A", "comment_count": None, "comment_count_basis": "详情缺失"}],
+                    }
+                ],
+            ):
+                with self.assertRaisesRegex(ValueError, "批量抓取没有成功结果"):
+                    load_reports_for_sync(
+                        settings=settings,
+                        explicit_urls=["https://www.xiaohongshu.com/user/profile/u1"],
+                        raw_text="",
+                        urls_file=None,
+                        project="项目A",
+                        report_json=None,
+                    )
+
     def test_load_reports_for_sync_resumes_from_checkpoint(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             settings = SimpleNamespace(project_cache_dir=temp_dir)

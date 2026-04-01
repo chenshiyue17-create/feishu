@@ -955,6 +955,19 @@ def _collect_single_profile_report(*, url: str, settings) -> Dict[str, Any]:
         payload = load_profile_report_payload(settings=settings, profile_url=url)
         report = build_profile_report(initial_state=payload["initial_state"], profile_url=payload["final_url"])
         report = enrich_profile_report_with_note_metrics(report=report, settings=settings)
+        incomplete_titles = extract_incomplete_report_titles(report)
+        if incomplete_titles:
+            preview = " / ".join(incomplete_titles[:3])
+            if len(incomplete_titles) > 3:
+                preview = f"{preview} 等"
+            return {
+                "status": "failed",
+                "requested_url": url,
+                "final_url": payload["final_url"],
+                "profile": report["profile"],
+                "works": report["works"],
+                "error": f"作品详情缺失 {len(incomplete_titles)} 条：{preview}",
+            }
         return {
             "status": "success",
             "requested_url": url,
@@ -968,6 +981,24 @@ def _collect_single_profile_report(*, url: str, settings) -> Dict[str, Any]:
             "requested_url": url,
             "error": str(exc),
         }
+
+
+def extract_incomplete_report_titles(report: Dict[str, Any]) -> List[str]:
+    incomplete_titles: List[str] = []
+    for work in list(report.get("works") or []):
+        if not isinstance(work, dict):
+            continue
+        basis = str(work.get("comment_count_basis") or "").strip()
+        comment_count = work.get("comment_count")
+        if basis != "详情缺失" and comment_count is not None:
+            continue
+        title = (
+            str(work.get("title_copy") or "").strip()
+            or str(work.get("note_id") or "").strip()
+            or "未命名作品"
+        )
+        incomplete_titles.append(title)
+    return incomplete_titles
 
 
 def write_batch_csv(path_text: str, reports: List[Dict[str, Any]]) -> None:
