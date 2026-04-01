@@ -2082,28 +2082,56 @@ function getManualUpdateState(syncStatus) {
     }
   }
   const disabled = running || cooldownSeconds > 0;
-  const buttonText = running ? "采集中..." : cooldownSeconds > 0 ? `冷却 ${formatDurationShort(cooldownSeconds)}` : "更新本地看板";
-  const projectButtonText = running ? "采集中" : cooldownSeconds > 0 ? "冷却中" : "更新项目看板";
+  const allButtonText = running ? "采集中..." : cooldownSeconds > 0 ? `冷却 ${formatDurationShort(cooldownSeconds)}` : "更新全部项目";
+  const projectButtonText = running ? "采集中" : cooldownSeconds > 0 ? "冷却中" : "更新当前项目";
+  const accountButtonText = running ? "采集中" : cooldownSeconds > 0 ? "冷却中" : "更新当前账号";
   const helperText = running
     ? "当前正在采集并更新本地看板，为避免重复请求，采集按钮已临时锁定。"
     : cooldownSeconds > 0
       ? `为降低小红书风控，本地采集冷却中，剩余 ${formatDurationShort(cooldownSeconds)}。每天 14:00 自动更新不受影响。`
-      : "先更新本地看板；需要共享时再推送到服务器。每天 14:00 自动更新保持不变。";
-  return { disabled, buttonText, projectButtonText, helperText, cooldownSeconds };
+      : "可以分别更新全部项目、当前项目或当前账号；需要共享时再推送到服务器。";
+  return { disabled, allButtonText, projectButtonText, accountButtonText, helperText, cooldownSeconds };
 }
 
 function renderManualUpdateState(syncStatus) {
-  const { disabled, buttonText, projectButtonText, helperText } = getManualUpdateState(syncStatus);
+  const { disabled, allButtonText, projectButtonText, accountButtonText, helperText } = getManualUpdateState(syncStatus);
+  const selectedProject = getSelectedProjectName();
+  const hasProjectScope = selectedProject !== "all";
+  const activeAccount = getActiveAccount();
   const syncButton = document.getElementById("syncNowButton");
   const heroButton = document.getElementById("manualUpdateButton");
+  const syncAllButton = document.getElementById("syncAllButton");
+  const heroProjectButton = document.getElementById("manualUpdateProjectButton");
+  const heroAccountButton = document.getElementById("manualUpdateAccountButton");
+  const syncAccountButton = document.getElementById("syncAccountButton");
   const hintNode = document.getElementById("syncCooldownText");
   if (syncButton) {
-    syncButton.disabled = disabled;
-    syncButton.textContent = buttonText;
+    syncButton.disabled = disabled || !hasProjectScope;
+    syncButton.textContent = projectButtonText;
+    syncButton.title = hasProjectScope ? "" : "先进入一个项目，再更新当前项目";
   }
   if (heroButton) {
     heroButton.disabled = disabled;
-    heroButton.textContent = buttonText;
+    heroButton.textContent = allButtonText;
+  }
+  if (syncAllButton) {
+    syncAllButton.disabled = disabled;
+    syncAllButton.textContent = allButtonText;
+  }
+  if (heroProjectButton) {
+    heroProjectButton.disabled = disabled || !hasProjectScope;
+    heroProjectButton.textContent = projectButtonText;
+    heroProjectButton.title = hasProjectScope ? "" : "先进入一个项目，再更新当前项目";
+  }
+  if (heroAccountButton) {
+    heroAccountButton.disabled = disabled || !activeAccount;
+    heroAccountButton.textContent = accountButtonText;
+    heroAccountButton.title = activeAccount ? "" : "先选择一个账号，再更新当前账号";
+  }
+  if (syncAccountButton) {
+    syncAccountButton.disabled = disabled || !activeAccount;
+    syncAccountButton.textContent = accountButtonText;
+    syncAccountButton.title = activeAccount ? "" : "先选择一个账号，再更新当前账号";
   }
   document.querySelectorAll(".project-sync-button").forEach((button) => {
     button.disabled = disabled;
@@ -2619,12 +2647,8 @@ async function addMonitoredAccounts() {
 }
 
 async function syncCurrentList() {
-  if (getSelectedProjectName() !== "all") {
-    await syncProject(getSelectedProjectName());
-    return;
-  }
   const resultNode = document.getElementById("addResult");
-  resultNode.textContent = "正在触发同步...";
+  resultNode.textContent = "正在同步全部项目...";
   const response = await fetch("/api/monitored-accounts/sync", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -2634,27 +2658,39 @@ async function syncCurrentList() {
   if (!response.ok || !payload.ok) {
     throw new Error(payload.message || `同步失败: ${response.status}`);
   }
-  resultNode.textContent = payload.message || "已开始同步当前监测清单。";
+  resultNode.textContent = payload.message || "已开始同步全部项目。";
   await loadMonitoring();
 }
 
 async function syncProject(project) {
+  const normalizedProject = String(project || "").trim();
+  if (!normalizedProject || normalizedProject === "all") {
+    throw new Error("先进入一个项目，再更新当前项目");
+  }
   const resultNode = document.getElementById("addResult");
-  resultNode.textContent = `正在同步项目「${project}」...`;
+  resultNode.textContent = `正在同步项目「${normalizedProject}」...`;
   const response = await fetch("/api/monitored-accounts/sync-project", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ project }),
+    body: JSON.stringify({ project: normalizedProject }),
   });
   const payload = await response.json();
   if (!response.ok || !payload.ok) {
     throw new Error(payload.message || `项目同步失败: ${response.status}`);
   }
-  state.monitorProjectFilter = project || "all";
+  state.monitorProjectFilter = normalizedProject;
   state.activeAccountId = "";
   state.rankingScope = "all";
-  resultNode.textContent = payload.message || `已开始同步项目「${project}」。`;
+  resultNode.textContent = payload.message || `已开始同步项目「${normalizedProject}」。`;
   await loadMonitoring();
+}
+
+async function syncActiveAccount() {
+  const active = getActiveAccount();
+  if (!active?.profile_url) {
+    throw new Error("先点一个账号，再更新当前账号");
+  }
+  await retryMonitoredAccount(active.profile_url);
 }
 
 async function toggleMonitoredAccount(url, active) {
@@ -2793,13 +2829,33 @@ document.getElementById("manualUpdateButton").addEventListener("click", () => {
     document.getElementById("addResult").textContent = error.message;
   });
 });
+document.getElementById("manualUpdateProjectButton").addEventListener("click", () => {
+  syncProject(getSelectedProjectName()).catch((error) => {
+    document.getElementById("addResult").textContent = error.message;
+  });
+});
+document.getElementById("manualUpdateAccountButton").addEventListener("click", () => {
+  syncActiveAccount().catch((error) => {
+    document.getElementById("addResult").textContent = error.message;
+  });
+});
 document.getElementById("addAccountButton").addEventListener("click", () => {
   addMonitoredAccounts().catch((error) => {
     document.getElementById("addResult").textContent = error.message;
   });
 });
-document.getElementById("syncNowButton").addEventListener("click", () => {
+document.getElementById("syncAllButton").addEventListener("click", () => {
   syncCurrentList().catch((error) => {
+    document.getElementById("addResult").textContent = error.message;
+  });
+});
+document.getElementById("syncNowButton").addEventListener("click", () => {
+  syncProject(getSelectedProjectName()).catch((error) => {
+    document.getElementById("addResult").textContent = error.message;
+  });
+});
+document.getElementById("syncAccountButton").addEventListener("click", () => {
+  syncActiveAccount().catch((error) => {
     document.getElementById("addResult").textContent = error.message;
   });
 });
