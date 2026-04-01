@@ -1859,6 +1859,7 @@ function renderLoginState(loginState) {
   ].filter(Boolean);
   const hintText = String((loginState?.hints || [])[0] || "").trim();
   const proxyPool = state.monitoring?.sync_status?.proxy_pool_status || {};
+  const mergedHintText = [hintText, buildProxyPoolSummary(proxyPool)].filter(Boolean).join(" · ");
   root.innerHTML = `
     <div class="login-state-top">
       <span class="login-state-badge is-${status}">${getLoginStateText(status)}</span>
@@ -1868,31 +1869,25 @@ function renderLoginState(loginState) {
     <div class="login-state-chip-row">
       ${chips.map((text) => `<span class="login-state-chip">${text}</span>`).join("")}
     </div>
-    ${hintText ? `<div class="login-state-hints"><span>${hintText}</span></div>` : ""}
-    ${buildProxyPoolInline(proxyPool)}
+    ${mergedHintText ? `<div class="login-state-hints"><span>${mergedHintText}</span></div>` : ""}
   `;
 }
 
-function buildProxyPoolInline(proxyPool) {
+function buildProxyPoolSummary(proxyPool) {
   if (!proxyPool) return "";
-  const chips = [
-    proxyPool?.enabled ? `IP池 ${formatNumber(proxyPool.total || 0)}` : "本机网络",
-    proxyPool?.current_ip ? `IP ${proxyPool.current_ip}` : "",
-    proxyPool?.ready_count ? `可用 ${formatNumber(proxyPool.ready_count || 0)}` : "",
-    proxyPool?.cooling_count ? `冷却 ${formatNumber(proxyPool.cooling_count || 0)}` : "",
-  ].filter(Boolean);
-  const summary = proxyPool?.enabled
-    ? proxyPool.last_error || "最近没有代理错误"
-    : proxyPool?.current_ip_error
-      ? `IP 检测失败：${proxyPool.current_ip_error}`
-      : "当前未启用 IP 池，采集将直接使用本机网络。";
-  return `
-    <div class="login-state-inline-status">
-      <div class="login-state-inline-title">IP 池状态</div>
-      <div class="login-state-inline-copy">${summary}</div>
-      ${chips.length ? `<div class="login-state-chip-row">${chips.map((text) => `<span class="login-state-chip">${text}</span>`).join("")}</div>` : ""}
-    </div>
-  `;
+  const pieces = [];
+  if (proxyPool?.enabled) {
+    pieces.push(`IP池 ${formatNumber(proxyPool.total || 0)}`);
+    if (proxyPool?.ready_count) pieces.push(`可用 ${formatNumber(proxyPool.ready_count || 0)}`);
+    if (proxyPool?.cooling_count) pieces.push(`冷却 ${formatNumber(proxyPool.cooling_count || 0)}`);
+    if (proxyPool?.current_ip) pieces.push(`当前IP ${proxyPool.current_ip}`);
+    if (proxyPool?.last_error) pieces.push(proxyPool.last_error);
+  } else if (proxyPool?.current_ip_error) {
+    pieces.push(`IP 检测失败：${proxyPool.current_ip_error}`);
+  } else {
+    pieces.push("IP池未启用，当前使用本机网络");
+  }
+  return pieces.filter(Boolean).join(" · ");
 }
 
 function renderProxyPool(proxyPool) {
