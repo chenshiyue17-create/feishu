@@ -15,13 +15,14 @@ from .profile_dashboard_to_feishu import (
     build_single_work_ranking_fields,
     build_single_work_rankings,
 )
-from .profile_works_to_feishu import build_work_fingerprint
+from .profile_works_to_feishu import build_work_calendar_history_index, build_work_fingerprint
 from .xhs import XHSCollector
 
 
 DEFAULT_PROJECT_CACHE_DIR = "/Users/cc/Downloads/飞书缓存"
 DEFAULT_DASHBOARD_CACHE_FILE = "dashboard_all.json"
 TRACKED_WORKS_CACHE_FILE = "tracked_works.json"
+TRACKED_WORK_HISTORY_CACHE_FILE = "tracked_work_history.json"
 DEFAULT_EXPORT_CACHE_DIR = "账号榜单导出"
 
 
@@ -165,7 +166,10 @@ def write_project_cache_bundle(*, reports: List[Dict[str, Any]], settings) -> Di
         if valid_account_ids:
             existing_calendar_rows = _filter_calendar_rows_by_account_ids(existing_calendar_rows, valid_account_ids)
         calendar_rows = _merge_calendar_rows(existing_calendar_rows, [build_dashboard_calendar_fields(report) for report in project_reports])
-        ranking_rows = _build_ranking_rows_from_items(tracked_state["ranking_items"])
+        ranking_rows = _build_ranking_rows_from_items(
+            tracked_state["ranking_items"],
+            history_index=tracked_state["history_index"],
+        )
         alert_rows = tracked_state["alert_rows"]
         payload = build_dashboard_payload_from_tables(
             portal_rows=[build_dashboard_portal_fields(project_reports)] if project_reports else [],
@@ -177,6 +181,7 @@ def write_project_cache_bundle(*, reports: List[Dict[str, Any]], settings) -> Di
         _write_json(project_dir / "calendar_rows.json", calendar_rows)
         _write_json(project_dir / "ranking_rows.json", ranking_rows)
         _write_json(project_dir / TRACKED_WORKS_CACHE_FILE, tracked_state["payload"])
+        _write_json(project_dir / TRACKED_WORK_HISTORY_CACHE_FILE, tracked_state["history_payload"])
         _write_csv(project_dir / "账号日历留底.csv", calendar_rows)
         _write_csv(project_dir / "单条排行榜.csv", ranking_rows)
         project_paths[project_name] = str(project_dir)
@@ -194,13 +199,16 @@ def _build_ranking_rows(reports: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return _build_ranking_rows_from_items(_build_tracked_ranking_items_from_reports(reports))
 
 
-def _build_ranking_rows_from_items(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _build_ranking_rows_from_items(
+    items: List[Dict[str, Any]],
+    *,
+    history_index: Optional[Dict[str, List[Any]]] = None,
+) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
-    history_index: Dict[str, List[Any]] = {}
     for rank_type, ranked_items in build_single_work_rankings(
         reports=[],
         items=items,
-        history_index=history_index,
+        history_index=history_index or {},
     ).items():
         for rank, item in enumerate(ranked_items, start=1):
             rows.append(build_single_work_ranking_fields(item=item, rank_type=rank_type, rank=rank))
@@ -464,6 +472,7 @@ def _build_project_tracked_work_state(
     collector_factory=None,
 ) -> Dict[str, Any]:
     existing_payload = _read_json(project_dir / TRACKED_WORKS_CACHE_FILE, {})
+    existing_history_payload = _read_json(project_dir / TRACKED_WORK_HISTORY_CACHE_FILE, [])
     existing_items = existing_payload.get("items") if isinstance(existing_payload, dict) else []
     previous_items_by_key: Dict[str, Dict[str, Any]] = {}
     tracked_items: Dict[str, Dict[str, Any]] = {}
@@ -534,6 +543,13 @@ def _build_project_tracked_work_state(
         snapshot_date=latest_snapshot_date,
         active_cutoff=active_cutoff,
     )
+    history_payload = _merge_tracked_history_payload(
+        existing_history_payload=existing_history_payload,
+        previous_items=list(previous_items_by_key.values()),
+        current_items=list(tracked_items.values()),
+        active_cutoff=active_cutoff,
+    )
+    history_index = build_work_calendar_history_index(history_payload)
     alert_rows = _build_alert_rows_from_tracked_items(
         current_items=tracked_items,
         previous_items=previous_items_by_key,
@@ -553,7 +569,84 @@ def _build_project_tracked_work_state(
             ),
         ),
     }
-    return {"payload": payload, "ranking_items": ranking_items, "alert_rows": alert_rows}
+    return {
+        "payload": payload,
+        "ranking_items": ranking_items,
+        "history_payload": history_payload,
+        "history_index": history_index,
+        "alert_rows": alert_rows,
+    }
+
+
+def _build_tracked_history_records(*, items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    records: List[Dict[str, Any]] = []
+    for item in items:
+        snapshot_date = str(item.get("snapshot_date") or "").strip()
+        if not snapshot_date:
+            continue
+        like_count = _to_optional_int(item.get("like_count"))
+        comment_count = _to_optional_int(item.get("comment_count"))
+        candidate_fingerprints = [
+            str(item.get("fingerprint") or "").strip(),
+            str(item.get("raw_fingerprint") or "").strip(),
+        ]
+        seen: set[str] = set()
+        for fingerprint in candidate_fingerprints:
+            if not fingerprint or fingerprint in seen:
+                continue
+            seen.add(fingerprint)
+            records.append(
+                {
+                    "fields": {
+                        "作品指纹": fingerprint,
+                        "日期文本": snapshot_date,
+                        "点赞数": like_count,
+                        "评论数": comment_count,
+                    }
+                }
+            )
+    return records
+
+
+def _merge_tracked_history_payload(
+    *,
+    existing_history_payload: Any,
+    previous_items: List[Dict[str, Any]],
+    current_items: List[Dict[str, Any]],
+    active_cutoff,
+) -> List[Dict[str, Any]]:
+    merged: Dict[tuple[str, str], Dict[str, Any]] = {}
+    for record in existing_history_payload if isinstance(existing_history_payload, list) else []:
+        if not isinstance(record, dict):
+            continue
+        fields = record.get("fields") or {}
+        fingerprint = str(fields.get("作品指纹") or "").strip()
+        snapshot_date = str(fields.get("日期文本") or fields.get("日历日期") or "").strip()
+        if not fingerprint or not snapshot_date:
+            continue
+        merged[(fingerprint, snapshot_date)] = {"fields": dict(fields)}
+
+    for record in _build_tracked_history_records(items=previous_items) + _build_tracked_history_records(items=current_items):
+        fields = record.get("fields") or {}
+        fingerprint = str(fields.get("作品指纹") or "").strip()
+        snapshot_date = str(fields.get("日期文本") or "").strip()
+        if not fingerprint or not snapshot_date:
+            continue
+        merged[(fingerprint, snapshot_date)] = {"fields": dict(fields)}
+
+    min_date = active_cutoff.isoformat() if active_cutoff is not None else ""
+    filtered = []
+    for (_, snapshot_date), record in merged.items():
+        if min_date and snapshot_date < min_date:
+            continue
+        filtered.append(record)
+    filtered.sort(
+        key=lambda record: (
+            str((record.get("fields") or {}).get("日期文本") or ""),
+            str((record.get("fields") or {}).get("作品指纹") or ""),
+        )
+    )
+    return filtered
 
 
 def _build_alert_rows_from_tracked_items(

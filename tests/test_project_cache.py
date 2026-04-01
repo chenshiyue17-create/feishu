@@ -226,6 +226,14 @@ class ProjectCacheTest(unittest.TestCase):
             self.assertEqual(alerts[0]["account_id"], "u1")
             self.assertEqual(alerts[0]["like_delta"], 15)
             self.assertEqual(alerts[0]["comment_delta"], 15)
+            growth_rows = [
+                row
+                for row in json.loads((project_dir / "ranking_rows.json").read_text(encoding="utf-8"))
+                if str(row.get("榜单类型") or "") == "单条第二天增长排行"
+            ]
+            self.assertEqual(len(growth_rows), 1)
+            self.assertEqual(growth_rows[0]["账号ID"], "u1")
+            self.assertEqual(growth_rows[0]["互动次日增量"], 30)
 
     def test_write_project_cache_bundle_keeps_tracked_work_after_top30_changes(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -339,3 +347,81 @@ class ProjectCacheTest(unittest.TestCase):
             self.assertEqual(old_like_row["首次入池日期"], "2026-03-20")
             self.assertEqual(new_like_row["追踪状态"], "新入池")
             self.assertEqual(new_like_row["首次入池日期"], "2026-03-26")
+
+    def test_write_project_cache_bundle_keeps_growth_history_across_same_day_reruns(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            settings = SimpleNamespace(
+                project_cache_dir=tmpdir,
+                feishu_review_upload_days=14,
+                xhs_fetch_work_comment_preview=False,
+                xhs_work_comment_preview_limit=0,
+                interaction_alert_delta_threshold=10,
+                comment_alert_min_previous_count=0,
+            )
+            day_one_report = {
+                "captured_at": "2026-03-31T14:00:00+08:00",
+                "project": "默认项目",
+                "profile": {
+                    "profile_user_id": "u1",
+                    "nickname": "账号A",
+                    "profile_url": "https://www.xiaohongshu.com/user/profile/u1",
+                    "fans_count_text": "100",
+                    "interaction_count_text": "200",
+                    "work_count_display_text": "30+",
+                    "visible_work_count": 30,
+                },
+                "works": [
+                    {
+                        "title_copy": "老作品",
+                        "note_type": "video",
+                        "like_count": 20,
+                        "like_count_text": "20",
+                        "comment_count": 11,
+                        "comment_count_text": "11",
+                        "cover_url": "https://img.example.com/old.jpg",
+                        "note_url": "https://www.xiaohongshu.com/explore/old-note?xsec_token=old-token&xsec_source=pc_user",
+                        "xsec_token": "old-token",
+                        "note_id": "old-note",
+                        "index": 0,
+                    }
+                ],
+            }
+            day_two_report = {
+                **day_one_report,
+                "captured_at": "2026-04-01T09:00:00+08:00",
+                "works": [
+                    {
+                        **day_one_report["works"][0],
+                        "like_count": 35,
+                        "like_count_text": "35",
+                        "comment_count": 26,
+                        "comment_count_text": "26",
+                    }
+                ],
+            }
+            same_day_rerun = {
+                **day_one_report,
+                "captured_at": "2026-04-01T18:00:00+08:00",
+                "works": [
+                    {
+                        **day_one_report["works"][0],
+                        "like_count": 36,
+                        "like_count_text": "36",
+                        "comment_count": 27,
+                        "comment_count_text": "27",
+                    }
+                ],
+            }
+
+            write_project_cache_bundle(reports=[day_one_report], settings=settings)
+            write_project_cache_bundle(reports=[day_two_report], settings=settings)
+            write_project_cache_bundle(reports=[same_day_rerun], settings=settings)
+
+            ranking_rows = json.loads(
+                (Path(tmpdir) / "默认项目" / "ranking_rows.json").read_text(encoding="utf-8")
+            )
+            growth_rows = [
+                row for row in ranking_rows if str(row.get("榜单类型") or "") == "单条第二天增长排行"
+            ]
+            self.assertEqual(len(growth_rows), 1)
+            self.assertEqual(growth_rows[0]["互动次日增量"], 32)
