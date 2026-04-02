@@ -93,9 +93,7 @@ def login_state_requires_interactive_login(payload: Dict[str, Any]) -> bool:
 def login_state_allows_collection_start(payload: Dict[str, Any]) -> bool:
     if login_state_requires_interactive_login(payload):
         return False
-    if not bool(payload.get("detail_ready")):
-        return False
-    return int(payload.get("comment_count_ready") or 0) > 0
+    return bool(payload.get("detail_ready"))
 
 
 def explain_collection_start_block(payload: Dict[str, Any]) -> str:
@@ -105,12 +103,6 @@ def explain_collection_start_block(payload: Dict[str, Any]) -> str:
         return "检测到小红书登录态异常，当前不会开始采集；请先完成登录后再试。"
     if not bool(payload.get("detail_ready")):
         return "样本账号还拿不到作品详情，当前不会开始采集，避免空跑。"
-    comment_count_ready = int(payload.get("comment_count_ready") or 0)
-    work_count = int(payload.get("work_count") or 0)
-    if comment_count_ready <= 0:
-        if work_count > 0:
-            return f"样本作品精确评论数仍不可用（0/{work_count}），当前不会开始采集，避免空跑覆盖。"
-        return "样本作品精确评论数仍不可用，当前不会开始采集，避免空跑覆盖。"
     return ""
 
 

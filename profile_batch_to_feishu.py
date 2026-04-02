@@ -25,7 +25,6 @@ from .launchd import (
 from .profile_batch_report import (
     collect_profile_reports_with_progress,
     compute_slots_per_day,
-    extract_incomplete_report_titles,
     load_url_entries_file,
     normalize_profile_url,
     normalize_profile_url_entries,
@@ -495,9 +494,7 @@ def load_reports_for_sync(
             }
         )
     reports: List[Dict[str, Any]] = []
-    reports.extend(
-        report for report in merged_resumed_reports if not extract_incomplete_report_titles(report)
-    )
+    reports.extend(merged_resumed_reports)
     for item in items:
         if item.get("status") != "success":
             continue
@@ -516,8 +513,6 @@ def load_reports_for_sync(
             ),
         )
         if not _report_matches_requested_profile(report):
-            continue
-        if extract_incomplete_report_titles(report):
             continue
         reports.append(report)
     reports = _merge_batch_resume_reports(reports)
@@ -648,8 +643,6 @@ def load_reports_from_json(path_text: str) -> List[Dict[str, Any]]:
         if not isinstance(item, dict) or item.get("status") != "success":
             continue
         report = normalize_batch_item_to_report(item)
-        if extract_incomplete_report_titles(report):
-            continue
         reports.append(report)
     if not reports:
         raise ValueError("批量报告里没有可同步的成功记录")

@@ -2834,7 +2834,7 @@ class MonitoringSyncStore:
                 }
             if self.login_state_store:
                 login_state = self.login_state_store.get_payload(force=True, sample_url=urls[0])
-                if not login_state_allows_collection_start(login_state):
+                if login_state_requires_interactive_login(login_state):
                     return {
                         "ok": False,
                         "message": explain_collection_start_block(login_state),
@@ -2967,20 +2967,6 @@ class MonitoringSyncStore:
                     f"检测到小红书未登录，已弹出网页登录窗口；等待 {format_duration_text(LOGIN_WAIT_TIMEOUT_SECONDS)} 仍未完成登录，请登录后再试。"
                 )
             raise RuntimeError("检测到小红书登录态异常，且未能自动打开网页登录，请先手动登录后再试。")
-        block_reason = explain_collection_start_block(payload)
-        if block_reason:
-            progress = build_sync_progress(
-                phase="login",
-                current=0,
-                total=1,
-                status=block_reason,
-                success_count=0,
-                failed_count=0,
-                started_at=str(self._status.get("started_at") or ""),
-            )
-            self._set_running_progress(progress, message=block_reason)
-            raise RuntimeError(block_reason)
-
     def _sync_loop(self) -> None:
         while True:
             finished_at = iso_now()

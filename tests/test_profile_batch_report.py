@@ -286,7 +286,7 @@ class ProfileBatchReportTest(unittest.TestCase):
         self.assertEqual(progress_events[-1]["success_count"], 2)
         self.assertEqual(progress_events[-1]["failed_count"], 0)
 
-    def test_collect_single_profile_report_fails_when_note_details_are_incomplete(self) -> None:
+    def test_collect_single_profile_report_keeps_incomplete_note_details(self) -> None:
         with patch(
             "xhs_feishu_monitor.profile_batch_report.load_profile_report_payload",
             return_value={"initial_state": {}, "final_url": "https://www.xiaohongshu.com/user/profile/u1"},
@@ -305,8 +305,8 @@ class ProfileBatchReportTest(unittest.TestCase):
                 settings=SimpleNamespace(),
             )
 
-        self.assertEqual(result["status"], "failed")
-        self.assertIn("作品详情缺失 1 条", result["error"])
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["works"][0]["comment_count_basis"], "详情缺失")
 
     def test_collect_profile_reports_switches_to_slow_mode_after_consecutive_pressure_failures(self) -> None:
         def fake_collect_single_profile_report(*, url, settings):

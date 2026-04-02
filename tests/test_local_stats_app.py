@@ -861,7 +861,7 @@ class LocalStatsAppTest(unittest.TestCase):
                 {"state": "warning", "detail_ready": False, "comment_count_ready": 0}
             )
         )
-        self.assertFalse(
+        self.assertTrue(
             login_state_allows_collection_start(
                 {"state": "warning", "detail_ready": True, "comment_count_ready": 0, "work_count": 2}
             )
@@ -871,9 +871,9 @@ class LocalStatsAppTest(unittest.TestCase):
                 {"state": "ok", "detail_ready": True, "comment_count_ready": 2, "work_count": 2}
             )
         )
-        self.assertIn(
-            "精确评论数仍不可用",
+        self.assertEqual(
             explain_collection_start_block({"state": "warning", "detail_ready": True, "comment_count_ready": 0, "work_count": 2}),
+            "",
         )
 
     def test_is_transient_self_check_failure(self) -> None:
@@ -1062,7 +1062,7 @@ class LocalStatsAppTest(unittest.TestCase):
             self.assertEqual(captured["mode"], "manual")
             self.assertIn("项目「项目A」", captured["reason"])
 
-    def test_request_sync_blocks_when_exact_comment_counts_unavailable(self) -> None:
+    def test_request_sync_allows_when_comment_counts_unavailable_but_detail_ready(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             path = write_monitored_entries(
                 f"{temp_dir}/urls.txt",
@@ -1081,10 +1081,9 @@ class LocalStatsAppTest(unittest.TestCase):
                 return_value={"state": "warning", "detail_ready": True, "comment_count_ready": 0, "work_count": 5},
             ), patch.object(store, "_request_sync_locked") as request_mock:
                 result = store.request_sync(project="项目A")
-        self.assertFalse(result["ok"])
-        self.assertFalse(result["sync_started"])
-        self.assertIn("精确评论数仍不可用", result["message"])
-        request_mock.assert_not_called()
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["sync_started"])
+        request_mock.assert_called_once()
 
     def test_retry_account_triggers_single_account_sync(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

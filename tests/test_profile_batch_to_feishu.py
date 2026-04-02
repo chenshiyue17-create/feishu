@@ -88,7 +88,7 @@ class ProfileBatchToFeishuTest(unittest.TestCase):
                     report_json=None,
                 )
 
-    def test_load_reports_for_sync_rejects_incomplete_note_details(self) -> None:
+    def test_load_reports_for_sync_keeps_incomplete_note_details(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             settings = SimpleNamespace(project_cache_dir=temp_dir)
             with patch(
@@ -102,15 +102,16 @@ class ProfileBatchToFeishuTest(unittest.TestCase):
                     }
                 ],
             ):
-                with self.assertRaisesRegex(ValueError, "批量抓取没有成功结果"):
-                    load_reports_for_sync(
-                        settings=settings,
-                        explicit_urls=["https://www.xiaohongshu.com/user/profile/u1"],
-                        raw_text="",
-                        urls_file=None,
-                        project="项目A",
-                        report_json=None,
-                    )
+                reports = load_reports_for_sync(
+                    settings=settings,
+                    explicit_urls=["https://www.xiaohongshu.com/user/profile/u1"],
+                    raw_text="",
+                    urls_file=None,
+                    project="项目A",
+                    report_json=None,
+                )
+                self.assertEqual(len(reports), 1)
+                self.assertEqual(reports[0]["works"][0]["comment_count_basis"], "详情缺失")
 
     def test_load_reports_for_sync_resumes_from_checkpoint(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
