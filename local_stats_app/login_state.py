@@ -15,7 +15,11 @@ from ..chrome_cookies import (
 )
 from ..config import load_settings
 from ..profile_batch_report import normalize_profile_url
-from ..profile_report import build_profile_report, load_profile_report_payload
+from ..profile_report import (
+    build_profile_report,
+    enrich_profile_report_with_note_metrics,
+    load_profile_report_payload,
+)
 
 
 LOGIN_STATE_IDLE_PAYLOAD = {
@@ -41,6 +45,7 @@ LOGIN_STATE_IDLE_PAYLOAD = {
 
 LOGIN_WAIT_TIMEOUT_SECONDS = 180
 LOGIN_WAIT_POLL_SECONDS = 5
+LOGIN_STATE_SAMPLE_WORK_LIMIT = 3
 
 
 def iso_now() -> str:
@@ -204,6 +209,24 @@ def run_login_state_self_check(*, env_file: str, sample_url: str = "") -> Dict[s
     try:
         payload = load_profile_report_payload(settings=settings, profile_url=sample_url)
         report = build_profile_report(initial_state=payload["initial_state"], profile_url=payload["final_url"])
+        if report.get("works"):
+            sample_report = {
+                "captured_at": report.get("captured_at"),
+                "profile": dict(report.get("profile") or {}),
+                "works": [dict(item) for item in (report.get("works") or [])[:LOGIN_STATE_SAMPLE_WORK_LIMIT]],
+            }
+            enrich_profile_report_with_note_metrics(report=sample_report, settings=settings)
+            sample_works = sample_report.get("works") or []
+            if sample_works:
+                work_index = {str(item.get("note_id") or ""): item for item in sample_works if str(item.get("note_id") or "").strip()}
+                merged_works = []
+                for work in report.get("works") or []:
+                    note_id = str(work.get("note_id") or "").strip()
+                    if note_id and note_id in work_index:
+                        merged_works.append({**work, **work_index[note_id]})
+                    else:
+                        merged_works.append(work)
+                report["works"] = merged_works
     except Exception as exc:
         if is_transient_self_check_failure(str(exc)):
             return build_login_state_payload(

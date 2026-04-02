@@ -1798,6 +1798,9 @@ class LocalStatsAppTest(unittest.TestCase):
                                 {"note_id": "n2", "comment_count": None},
                             ],
                         },
+                    ), patch(
+                        "xhs_feishu_monitor.local_stats_app.login_state.enrich_profile_report_with_note_metrics",
+                        side_effect=lambda report, settings: report,
                     ):
                         payload = run_login_state_self_check(
                             env_file="/tmp/test.env",
@@ -1808,6 +1811,40 @@ class LocalStatsAppTest(unittest.TestCase):
         self.assertEqual(payload["note_id_count"], 2)
         self.assertEqual(payload["comment_count_ready"], 0)
         self.assertIn("精确评论数仍不可用", payload["message"])
+
+    def test_run_login_state_self_check_accepts_sample_when_metrics_enriched(self) -> None:
+        settings = Settings(xhs_fetch_mode="requests", xhs_chrome_cookie_profile="/tmp/profile")
+
+        def _enrich(report, settings):
+            for index, item in enumerate(report.get("works") or []):
+                item["comment_count"] = index + 1
+            return report
+
+        with patch("xhs_feishu_monitor.local_stats_app.server.load_settings", return_value=settings):
+            with patch("xhs_feishu_monitor.local_stats_app.server.export_xiaohongshu_cookie_header", return_value="a=b"):
+                with patch(
+                    "xhs_feishu_monitor.local_stats_app.server.load_profile_report_payload",
+                    return_value={"initial_state": {}, "final_url": "https://www.xiaohongshu.com/user/profile/u1"},
+                ):
+                    with patch(
+                        "xhs_feishu_monitor.local_stats_app.server.build_profile_report",
+                        return_value={
+                            "profile": {"nickname": "账号A", "profile_user_id": "u1", "fans_count_text": "123"},
+                            "works": [
+                                {"note_id": "n1", "comment_count": None},
+                                {"note_id": "n2", "comment_count": None},
+                            ],
+                        },
+                    ), patch(
+                        "xhs_feishu_monitor.local_stats_app.login_state.enrich_profile_report_with_note_metrics",
+                        side_effect=_enrich,
+                    ):
+                        payload = run_login_state_self_check(
+                            env_file="/tmp/test.env",
+                            sample_url="https://www.xiaohongshu.com/user/profile/u1",
+                        )
+        self.assertEqual(payload["state"], "ok")
+        self.assertEqual(payload["comment_count_ready"], 2)
 
     def test_run_login_state_self_check_warns_when_sample_fetch_is_transient_failure(self) -> None:
         settings = Settings(xhs_fetch_mode="requests", xhs_chrome_cookie_profile="/tmp/profile")
@@ -1842,6 +1879,9 @@ class LocalStatsAppTest(unittest.TestCase):
                                 {"note_id": "n2", "comment_count": 2},
                             ],
                         },
+                    ), patch(
+                        "xhs_feishu_monitor.local_stats_app.login_state.enrich_profile_report_with_note_metrics",
+                        side_effect=lambda report, settings: report,
                     ):
                         payload = run_login_state_self_check(
                             env_file="/tmp/test.env",
