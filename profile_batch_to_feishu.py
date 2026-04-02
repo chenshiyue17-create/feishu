@@ -379,6 +379,7 @@ def load_reports_for_sync(
     project: str,
     report_json: Optional[str],
     scheduled: bool = False,
+    force_full: bool = False,
     progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
 ) -> List[Dict[str, Any]]:
     if report_json:
@@ -418,12 +419,16 @@ def load_reports_for_sync(
         urls_file=urls_file,
         scheduled=scheduled,
     )
-    resumed_reports = _load_batch_resume_reports(
-        path=resume_path,
-        date_text=date_text,
-        project=project,
-        scheduled=scheduled,
-        active_urls=urls,
+    resumed_reports = (
+        []
+        if force_full
+        else _load_batch_resume_reports(
+            path=resume_path,
+            date_text=date_text,
+            project=project,
+            scheduled=scheduled,
+            active_urls=urls,
+        )
     )
     resumed_url_keys = {_batch_resume_key(report) for report in resumed_reports if _batch_resume_key(report)}
     pending_entries = [item for item in url_entries if item["url"] not in resumed_url_keys]
@@ -459,13 +464,14 @@ def load_reports_for_sync(
         if len(next_reports) == len(merged_resumed_reports):
             return
         merged_resumed_reports = next_reports
-        _write_batch_resume_reports(
-            path=resume_path,
-            date_text=date_text,
-            project=project,
-            scheduled=scheduled,
-            reports=merged_resumed_reports,
-        )
+        if not force_full:
+            _write_batch_resume_reports(
+                path=resume_path,
+                date_text=date_text,
+                project=project,
+                scheduled=scheduled,
+                reports=merged_resumed_reports,
+            )
 
     items = []
     if pending_entries:
@@ -515,7 +521,7 @@ def load_reports_for_sync(
             continue
         reports.append(report)
     reports = _merge_batch_resume_reports(reports)
-    if reports:
+    if reports and not force_full:
         _write_batch_resume_reports(
             path=resume_path,
             date_text=date_text,

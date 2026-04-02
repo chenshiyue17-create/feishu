@@ -299,6 +299,18 @@ class XHSCollector:
         xsec_token: str = "",
         xsec_source: str = "pc_user",
     ) -> Optional[NoteSnapshot]:
+        fetch_mode = (self.settings.xhs_fetch_mode or "requests").strip().lower()
+        if fetch_mode in {"playwright", "local_browser"} and note_url:
+            try:
+                snapshot = self.collect(Target(name="work-detail", url=note_url))
+            except Exception:
+                snapshot = None
+            if snapshot is not None:
+                if note_id and not snapshot.note_id:
+                    snapshot.note_id = note_id
+                if note_url and not snapshot.note_url:
+                    snapshot.note_url = note_url
+                return snapshot
         note_card = self._get_signed_session().fetch_note_detail(
             note_id=note_id,
             note_url=note_url,

@@ -1801,7 +1801,20 @@ def build_sync_progress(
     if status and status != detail_text and normalized_status not in {"running", "success", "failed"}:
         detail_text += f" · {status}"
 
-    timing = build_progress_timing(started_at=started_at, overall_percent=overall_percent, now=now)
+    completed_units = 0
+    if phase == "collect":
+        completed_units = max(0, int(success_count or 0) + int(failed_count or 0))
+    elif phase == "sync":
+        completed_units = safe_current
+
+    timing = build_progress_timing(
+        started_at=started_at,
+        overall_percent=overall_percent,
+        completed_units=completed_units,
+        total_units=safe_total,
+        suppress_percent_eta=phase == "collect",
+        now=now,
+    )
 
     return {
         "phase": phase,
@@ -1823,7 +1836,15 @@ def build_sync_progress(
     }
 
 
-def build_progress_timing(*, started_at: str, overall_percent: int, now: Optional[datetime] = None) -> Dict[str, Any]:
+def build_progress_timing(
+    *,
+    started_at: str,
+    overall_percent: int,
+    completed_units: int = 0,
+    total_units: int = 0,
+    suppress_percent_eta: bool = False,
+    now: Optional[datetime] = None,
+) -> Dict[str, Any]:
     if not started_at:
         return {"elapsed_seconds": 0, "elapsed_text": "", "eta_seconds": 0, "eta_text": ""}
     current_time = now or datetime.now().astimezone()
@@ -1833,7 +1854,13 @@ def build_progress_timing(*, started_at: str, overall_percent: int, now: Optiona
         return {"elapsed_seconds": 0, "elapsed_text": "", "eta_seconds": 0, "eta_text": ""}
     elapsed_seconds = max(0, int((current_time - started).total_seconds()))
     eta_seconds = 0
-    if 0 < overall_percent < 100 and elapsed_seconds > 0:
+    safe_total_units = max(0, int(total_units or 0))
+    safe_completed_units = max(0, min(int(completed_units or 0), safe_total_units))
+    if safe_total_units > 1 and safe_completed_units >= 2 and elapsed_seconds > 0:
+        avg_unit_seconds = elapsed_seconds / safe_completed_units
+        remaining_units = max(0, safe_total_units - safe_completed_units)
+        eta_seconds = max(1, int(round(avg_unit_seconds * remaining_units)))
+    elif not suppress_percent_eta and 0 < overall_percent < 100 and elapsed_seconds > 0:
         remaining_ratio = (100 - overall_percent) / overall_percent
         eta_seconds = max(1, int(round(elapsed_seconds * remaining_ratio)))
     return {
@@ -2958,6 +2985,7 @@ class MonitoringSyncStore:
                     urls_file=None if current_urls else self.urls_file,
                     project=self._current_sync_project,
                     report_json=None,
+                    force_full=not self._current_sync_project and self._current_sync_mode == "manual",
                     progress_callback=self._handle_progress_update,
                 )
                 update_monitored_metadata(

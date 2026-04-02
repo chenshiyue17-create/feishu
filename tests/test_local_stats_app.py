@@ -2160,6 +2160,23 @@ class LocalStatsAppTest(unittest.TestCase):
         self.assertEqual(progress["phase_label"], "抓取账号数据")
         self.assertEqual(progress["detail_text"], "正在抓取第 1/10 个账号 · 项目A")
         self.assertEqual(progress["overall_percent"], 2)
+        self.assertEqual(progress["eta_seconds"], 0)
+
+    def test_build_sync_progress_uses_completed_account_count_for_collect_eta(self) -> None:
+        progress = build_sync_progress(
+            phase="collect",
+            current=3,
+            total=10,
+            account="项目A",
+            status="running",
+            success_count=1,
+            failed_count=1,
+            started_at="2026-03-31T15:40:00+08:00",
+            now=datetime.fromisoformat("2026-03-31T15:50:00+08:00"),
+        )
+        self.assertEqual(progress["overall_percent"], 12)
+        self.assertEqual(progress["elapsed_text"], "10分")
+        self.assertEqual(progress["eta_text"], "40分")
 
 
 if __name__ == "__main__":

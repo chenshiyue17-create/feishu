@@ -2776,17 +2776,26 @@ async function addMonitoredAccounts() {
 
 async function syncCurrentList() {
   const resultNode = document.getElementById("addResult");
-  resultNode.textContent = "正在同步全部项目...";
+  const monitoringEntries = getMonitoringEntries();
+  const activeEntries = monitoringEntries.filter((entry) => entry && entry.active);
+  const totalAccounts = activeEntries.length || Number(state.monitoring?.active_count || 0);
+  state.activeAccountId = "";
+  state.rankingScope = "all";
+  resultNode.textContent = totalAccounts
+    ? `正在同步全部项目，共 ${formatNumber(totalAccounts)} 个账号...`
+    : "正在同步全部项目...";
+  renderApp();
   const response = await fetch("/api/monitored-accounts/sync", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: "{}",
+    body: JSON.stringify({ scope: "all" }),
   });
   const payload = await response.json();
   if (!response.ok || !payload.ok) {
     throw new Error(payload.message || `同步失败: ${response.status}`);
   }
-  resultNode.textContent = payload.message || "已开始同步全部项目。";
+  resultNode.textContent =
+    payload.message || (totalAccounts ? `已开始同步全部项目，共 ${formatNumber(totalAccounts)} 个账号。` : "已开始同步全部项目。");
   await loadMonitoring();
 }
 

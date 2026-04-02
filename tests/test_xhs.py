@@ -5,7 +5,7 @@ import unittest
 from unittest.mock import patch
 
 from xhs_feishu_monitor.config import Settings, load_settings
-from xhs_feishu_monitor.models import Target
+from xhs_feishu_monitor.models import NoteSnapshot, Target
 from xhs_feishu_monitor.xhs import (
     PUBLIC_IP_STATUS,
     build_proxy_pool_status,
@@ -299,6 +299,31 @@ class NormalizeSnapshotTest(unittest.TestCase):
         self.assertEqual(snapshot.comment_count, 12)
         self.assertEqual(snapshot.like_count, 9)
         session_mock.assert_called_once()
+
+    def test_collect_note_detail_uses_browser_collection_for_playwright_mode(self) -> None:
+        collector = XHSCollector(Settings(xhs_fetch_mode="playwright"))
+
+        with patch.object(
+            collector,
+            "collect",
+            return_value=NoteSnapshot(
+                note_id="note_001",
+                note_url="https://www.xiaohongshu.com/explore/note_001",
+                comment_count=18,
+                like_count=9,
+            ),
+        ) as collect_mock, patch.object(collector, "_get_signed_session") as session_mock:
+            snapshot = collector.collect_note_detail(
+                note_id="note_001",
+                note_url="https://www.xiaohongshu.com/explore/note_001",
+                xsec_token="token_001",
+            )
+
+        self.assertIsNotNone(snapshot)
+        self.assertEqual(snapshot.note_id, "note_001")
+        self.assertEqual(snapshot.comment_count, 18)
+        collect_mock.assert_called_once()
+        session_mock.assert_not_called()
 
     def test_fetch_note_comments_preview_uses_signed_comment_api(self) -> None:
         collector = XHSCollector(Settings(xhs_cookie="a1=test_a1; web_session=demo"))
