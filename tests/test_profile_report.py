@@ -390,10 +390,10 @@ class ProfileReportTest(unittest.TestCase):
                 settings=SimpleNamespace(xhs_fetch_work_comment_counts=True, xhs_fetch_work_comment_preview=True),
             )
 
-        self.assertIsNone(enriched["works"][0]["comment_count"])
-        self.assertEqual(enriched["works"][0]["comment_count_text"], "")
-        self.assertFalse(enriched["works"][0]["comment_count_is_lower_bound"])
-        self.assertEqual(enriched["works"][0]["comment_count_basis"], "详情缺失")
+        self.assertEqual(enriched["works"][0]["comment_count"], 3)
+        self.assertEqual(enriched["works"][0]["comment_count_text"], "3+")
+        self.assertTrue(enriched["works"][0]["comment_count_is_lower_bound"])
+        self.assertEqual(enriched["works"][0]["comment_count_basis"], "评论预览下限")
 
     def test_load_profile_report_payload_retries_after_initial_state_failure(self) -> None:
         settings = SimpleNamespace(xhs_retry_attempts=2, xhs_retry_delay_seconds=0)
