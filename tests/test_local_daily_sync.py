@@ -145,7 +145,7 @@ class LocalDailySyncTest(unittest.TestCase):
                 "xhs_feishu_monitor.local_daily_sync._sleep_until"
             ) as sleep_mock, patch(
                 "xhs_feishu_monitor.local_daily_sync.wait_for_xiaohongshu_login",
-                return_value={"state": "ok", "message": "ok"},
+                return_value={"state": "ok", "message": "ok", "detail_ready": True, "comment_count_ready": 1},
             ) as wait_mock, patch(
                 "xhs_feishu_monitor.local_daily_sync.login_state_requires_interactive_login",
                 return_value=False,
@@ -211,7 +211,7 @@ class LocalDailySyncTest(unittest.TestCase):
                 "xhs_feishu_monitor.local_daily_sync._sleep_until"
             ), patch(
                 "xhs_feishu_monitor.local_daily_sync.wait_for_xiaohongshu_login",
-                return_value={"state": "ok", "message": "ok"},
+                return_value={"state": "ok", "message": "ok", "detail_ready": True, "comment_count_ready": 1},
             ), patch(
                 "xhs_feishu_monitor.local_daily_sync.login_state_requires_interactive_login",
                 return_value=False,
@@ -256,7 +256,7 @@ class LocalDailySyncTest(unittest.TestCase):
 
             def _wait_for_login(**kwargs):
                 kwargs["on_wait"]({"message": "等待你重新登录小红书"})
-                return {"state": "ok", "message": "已恢复"}
+                return {"state": "ok", "message": "已恢复", "detail_ready": True, "comment_count_ready": 1}
 
             def _capture_status(**kwargs):
                 written_payloads.append(dict(kwargs.get("payload") or {}))
@@ -331,7 +331,7 @@ class LocalDailySyncTest(unittest.TestCase):
                 "xhs_feishu_monitor.local_daily_sync._sleep_until"
             ), patch(
                 "xhs_feishu_monitor.local_daily_sync.wait_for_xiaohongshu_login",
-                return_value={"state": "ok", "message": "ok"},
+                return_value={"state": "ok", "message": "ok", "detail_ready": True, "comment_count_ready": 1},
             ), patch(
                 "xhs_feishu_monitor.local_daily_sync.login_state_requires_interactive_login",
                 return_value=False,

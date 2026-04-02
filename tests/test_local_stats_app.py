@@ -45,7 +45,6 @@ from xhs_feishu_monitor.local_stats_app.server import (
     get_server_view_auth_credentials,
     is_server_view_auth_enabled,
     is_server_view_auth_exempt_path,
-    login_state_requires_interactive_login,
     load_monitored_urls,
     merge_monitored_entries,
     merge_monitored_urls,
@@ -63,7 +62,12 @@ from xhs_feishu_monitor.local_stats_app.server import (
     save_system_config,
     validate_server_view_auth_header,
 )
-from xhs_feishu_monitor.local_stats_app.login_state import is_transient_self_check_failure
+from xhs_feishu_monitor.local_stats_app.login_state import (
+    explain_collection_start_block,
+    is_transient_self_check_failure,
+    login_state_allows_collection_start,
+    login_state_requires_interactive_login,
+)
 from xhs_feishu_monitor.local_daily_sync_status import write_local_daily_sync_status
 from xhs_feishu_monitor.project_sync_status import update_project_sync_status
 
@@ -846,6 +850,32 @@ class LocalStatsAppTest(unittest.TestCase):
             )
         )
 
+    def test_login_state_allows_collection_start(self) -> None:
+        self.assertFalse(
+            login_state_allows_collection_start(
+                {"state": "error", "message": "样本账号返回了空结果，登录态可能已过期"}
+            )
+        )
+        self.assertFalse(
+            login_state_allows_collection_start(
+                {"state": "warning", "detail_ready": False, "comment_count_ready": 0}
+            )
+        )
+        self.assertFalse(
+            login_state_allows_collection_start(
+                {"state": "warning", "detail_ready": True, "comment_count_ready": 0, "work_count": 2}
+            )
+        )
+        self.assertTrue(
+            login_state_allows_collection_start(
+                {"state": "ok", "detail_ready": True, "comment_count_ready": 2, "work_count": 2}
+            )
+        )
+        self.assertIn(
+            "精确评论数仍不可用",
+            explain_collection_start_block({"state": "warning", "detail_ready": True, "comment_count_ready": 0, "work_count": 2}),
+        )
+
     def test_is_transient_self_check_failure(self) -> None:
         self.assertTrue(is_transient_self_check_failure("HTML 中未找到可解析的 __INITIAL_STATE__ 数据"))
         self.assertTrue(is_transient_self_check_failure("Page.goto: net::ERR_CONNECTION_CLOSED"))
@@ -1009,6 +1039,7 @@ class LocalStatsAppTest(unittest.TestCase):
                 env_file=f"{temp_dir}/.env",
                 urls_file=str(path),
                 dashboard_store=DashboardStore(env_file=f"{temp_dir}/.env"),
+                login_state_store=LoginStateStore(env_file=f"{temp_dir}/.env", urls_file=str(path), cache_seconds=0),
             )
             captured = {}
 
@@ -1019,13 +1050,41 @@ class LocalStatsAppTest(unittest.TestCase):
                 captured["mode"] = mode
                 return True
 
-            with patch.object(store, "_request_sync_locked", side_effect=fake_request_sync_locked):
+            with patch.object(store, "_request_sync_locked", side_effect=fake_request_sync_locked), patch.object(
+                store.login_state_store,
+                "get_payload",
+                return_value={"state": "ok", "detail_ready": True, "comment_count_ready": 1},
+            ):
                 result = store.request_sync(project="项目A")
             self.assertTrue(result["ok"])
             self.assertEqual(captured["urls"], ["https://www.xiaohongshu.com/user/profile/u1"])
             self.assertEqual(captured["project"], "项目A")
             self.assertEqual(captured["mode"], "manual")
             self.assertIn("项目「项目A」", captured["reason"])
+
+    def test_request_sync_blocks_when_exact_comment_counts_unavailable(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = write_monitored_entries(
+                f"{temp_dir}/urls.txt",
+                [{"url": "https://www.xiaohongshu.com/user/profile/u1", "active": True, "project": "项目A"}],
+            )
+            login_state_store = LoginStateStore(env_file=f"{temp_dir}/.env", urls_file=str(path), cache_seconds=0)
+            store = MonitoringSyncStore(
+                env_file=f"{temp_dir}/.env",
+                urls_file=str(path),
+                dashboard_store=DashboardStore(env_file=f"{temp_dir}/.env"),
+                login_state_store=login_state_store,
+            )
+            with patch.object(
+                login_state_store,
+                "get_payload",
+                return_value={"state": "warning", "detail_ready": True, "comment_count_ready": 0, "work_count": 5},
+            ), patch.object(store, "_request_sync_locked") as request_mock:
+                result = store.request_sync(project="项目A")
+        self.assertFalse(result["ok"])
+        self.assertFalse(result["sync_started"])
+        self.assertIn("精确评论数仍不可用", result["message"])
+        request_mock.assert_not_called()
 
     def test_retry_account_triggers_single_account_sync(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1722,6 +1781,34 @@ class LocalStatsAppTest(unittest.TestCase):
         self.assertIn("暂时受限", payload["message"])
         self.assertFalse(login_state_requires_interactive_login(payload))
 
+    def test_run_login_state_self_check_warns_when_comment_counts_missing(self) -> None:
+        settings = Settings(xhs_fetch_mode="requests", xhs_chrome_cookie_profile="/tmp/profile")
+        with patch("xhs_feishu_monitor.local_stats_app.server.load_settings", return_value=settings):
+            with patch("xhs_feishu_monitor.local_stats_app.server.export_xiaohongshu_cookie_header", return_value="a=b"):
+                with patch(
+                    "xhs_feishu_monitor.local_stats_app.server.load_profile_report_payload",
+                    return_value={"initial_state": {}, "final_url": "https://www.xiaohongshu.com/user/profile/u1"},
+                ):
+                    with patch(
+                        "xhs_feishu_monitor.local_stats_app.server.build_profile_report",
+                        return_value={
+                            "profile": {"nickname": "账号A", "profile_user_id": "u1", "fans_count_text": "123"},
+                            "works": [
+                                {"note_id": "n1", "comment_count": None},
+                                {"note_id": "n2", "comment_count": None},
+                            ],
+                        },
+                    ):
+                        payload = run_login_state_self_check(
+                            env_file="/tmp/test.env",
+                            sample_url="https://www.xiaohongshu.com/user/profile/u1",
+                        )
+        self.assertEqual(payload["state"], "warning")
+        self.assertTrue(payload["detail_ready"])
+        self.assertEqual(payload["note_id_count"], 2)
+        self.assertEqual(payload["comment_count_ready"], 0)
+        self.assertIn("精确评论数仍不可用", payload["message"])
+
     def test_run_login_state_self_check_warns_when_sample_fetch_is_transient_failure(self) -> None:
         settings = Settings(xhs_fetch_mode="requests", xhs_chrome_cookie_profile="/tmp/profile")
         with patch("xhs_feishu_monitor.local_stats_app.server.load_settings", return_value=settings):
@@ -1750,7 +1837,10 @@ class LocalStatsAppTest(unittest.TestCase):
                         "xhs_feishu_monitor.local_stats_app.server.build_profile_report",
                         return_value={
                             "profile": {"nickname": "账号A", "profile_user_id": "u1", "fans_count_text": "123"},
-                            "works": [{"note_id": "n1"}, {"note_id": "n2"}],
+                            "works": [
+                                {"note_id": "n1", "comment_count": 1},
+                                {"note_id": "n2", "comment_count": 2},
+                            ],
                         },
                     ):
                         payload = run_login_state_self_check(
@@ -1760,6 +1850,7 @@ class LocalStatsAppTest(unittest.TestCase):
         self.assertEqual(payload["state"], "ok")
         self.assertTrue(payload["detail_ready"])
         self.assertEqual(payload["note_id_count"], 2)
+        self.assertEqual(payload["comment_count_ready"], 2)
 
     def test_wait_for_xiaohongshu_login_opens_window_and_returns_after_success(self) -> None:
         settings = Settings(xhs_fetch_mode="requests", xhs_chrome_cookie_profile="/tmp/profile")
@@ -1767,7 +1858,12 @@ class LocalStatsAppTest(unittest.TestCase):
         check_results = [
             build_login_state_payload(state="error", message="样本账号返回了空结果，登录态可能已过期"),
             build_login_state_payload(state="error", message="样本账号返回了空结果，登录态可能已过期"),
-            build_login_state_payload(state="ok", message="登录态正常，样本账号已拿到作品明细能力。"),
+            build_login_state_payload(
+                state="ok",
+                message="登录态正常，样本账号已拿到作品明细能力。",
+                detail_ready=True,
+                comment_count_ready=1,
+            ),
         ]
         with patch(
             "xhs_feishu_monitor.local_stats_app.server.run_login_state_self_check",
@@ -1797,7 +1893,12 @@ class LocalStatsAppTest(unittest.TestCase):
         check_results = [
             build_login_state_payload(state="error", message="样本账号返回了空结果，登录态可能已过期"),
             build_login_state_payload(state="error", message="样本账号返回了空结果，登录态可能已过期"),
-            build_login_state_payload(state="ok", message="登录态正常，样本账号已拿到作品明细能力。"),
+            build_login_state_payload(
+                state="ok",
+                message="登录态正常，样本账号已拿到作品明细能力。",
+                detail_ready=True,
+                comment_count_ready=1,
+            ),
         ]
         with patch(
             "xhs_feishu_monitor.local_stats_app.server.run_login_state_self_check",
@@ -1850,7 +1951,13 @@ class LocalStatsAppTest(unittest.TestCase):
             with patch.object(
                 login_state_store,
                 "get_payload",
-                return_value={"state": "ok", "message": "登录态正常", "checking": False},
+                return_value={
+                    "state": "ok",
+                    "message": "登录态正常",
+                    "checking": False,
+                    "detail_ready": True,
+                    "comment_count_ready": 1,
+                },
             ):
                 payload = store.get_payload()
         self.assertEqual(payload["login_state"]["state"], "ok")
@@ -1904,7 +2011,12 @@ class LocalStatsAppTest(unittest.TestCase):
             )
             settings = Settings(xhs_fetch_mode="requests", xhs_chrome_cookie_profile="/tmp/profile")
             with patch("xhs_feishu_monitor.local_stats_app.server.wait_for_xiaohongshu_login") as wait_mock:
-                wait_mock.return_value = build_login_state_payload(state="ok", message="登录态正常")
+                wait_mock.return_value = build_login_state_payload(
+                    state="ok",
+                    message="登录态正常",
+                    detail_ready=True,
+                    comment_count_ready=1,
+                )
                 store._ensure_login_ready_for_sync(
                     settings=settings,
                     sample_url="https://www.xiaohongshu.com/user/profile/u1",

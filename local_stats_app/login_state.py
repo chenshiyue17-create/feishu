@@ -85,6 +85,30 @@ def login_state_requires_interactive_login(payload: Dict[str, Any]) -> bool:
     )
 
 
+def login_state_allows_collection_start(payload: Dict[str, Any]) -> bool:
+    if login_state_requires_interactive_login(payload):
+        return False
+    if not bool(payload.get("detail_ready")):
+        return False
+    return int(payload.get("comment_count_ready") or 0) > 0
+
+
+def explain_collection_start_block(payload: Dict[str, Any]) -> str:
+    if login_state_requires_interactive_login(payload):
+        if payload.get("login_window_opened"):
+            return "检测到小红书未登录，已弹出网页登录窗口；完成登录前不会开始采集，避免空跑。"
+        return "检测到小红书登录态异常，当前不会开始采集；请先完成登录后再试。"
+    if not bool(payload.get("detail_ready")):
+        return "样本账号还拿不到作品详情，当前不会开始采集，避免空跑。"
+    comment_count_ready = int(payload.get("comment_count_ready") or 0)
+    work_count = int(payload.get("work_count") or 0)
+    if comment_count_ready <= 0:
+        if work_count > 0:
+            return f"样本作品精确评论数仍不可用（0/{work_count}），当前不会开始采集，避免空跑覆盖。"
+        return "样本作品精确评论数仍不可用，当前不会开始采集，避免空跑覆盖。"
+    return ""
+
+
 def is_transient_self_check_failure(error_text: str) -> bool:
     text = str(error_text or "").strip().lower()
     return any(
@@ -246,6 +270,15 @@ def run_login_state_self_check(*, env_file: str, sample_url: str = "") -> Dict[s
             [
                 "当前账号摘要仍可用，只是详情和评论抓取能力暂时不足。",
                 "可先继续采集；若后续多次都拿不到 note_id，再重新登录后复检。",
+            ]
+        )
+    elif comment_count_ready <= 0:
+        state = "warning"
+        message = "样本账号已拿到作品详情，但精确评论数仍不可用，当前不允许开始正式采集。"
+        hints.extend(
+            [
+                "当前不是没登录，而是评论详情链路还没恢复；现在开始正式采集会空跑。",
+                "建议先重新登录并再做一次自检，确认样本作品能拿到精确评论数后再开始。",
             ]
         )
     elif cookie_source == "none":

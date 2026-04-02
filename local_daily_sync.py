@@ -20,6 +20,8 @@ from .launchd import (
 from .local_stats_app.monitored_accounts import parse_monitored_entries
 from .local_stats_app.server import (
     build_auto_project_schedule,
+    explain_collection_start_block,
+    login_state_allows_collection_start,
     login_state_requires_interactive_login,
     push_current_cache_to_server,
     wait_for_xiaohongshu_login,
@@ -307,6 +309,33 @@ def run_local_daily_sync(*, env_file: str, urls_file: str) -> Dict[str, Any]:
                     "failed_projects": len(failures),
                     "last_error": login_payload.get("message") or "登录态未恢复",
                     "waiting_for_login": True,
+                },
+            )
+            continue
+        if not login_state_allows_collection_start(login_payload):
+            block_reason = explain_collection_start_block(login_payload)
+            failures.append(
+                {
+                    "project": project_name,
+                    "error": block_reason,
+                }
+            )
+            write_local_daily_sync_status(
+                env_file=env_file,
+                state_file_path=state_file_path,
+                payload={
+                    **runtime_status,
+                    "state": "partial",
+                    "phase": "waiting_login",
+                    "message": f"项目「{project_name}」未满足完整采集条件，已跳过本项目",
+                    "current_project": project_name,
+                    "current_project_index": project_position,
+                    "current_project_total": total_projects,
+                    "current_project_scheduled_at": scheduled_at.isoformat(timespec="seconds"),
+                    "successful_projects": len(project_results),
+                    "failed_projects": len(failures),
+                    "last_error": block_reason,
+                    "waiting_for_login": False,
                 },
             )
             continue
