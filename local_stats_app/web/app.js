@@ -17,6 +17,7 @@ const state = {
   monitorPage: 1,
   monitorPageSize: 30,
   pollTimer: null,
+  loginAutoRefreshTriggered: false,
 };
 
 const rankingConfigs = [
@@ -604,11 +605,27 @@ async function loadMonitoring() {
     throw new Error(`监测账号加载失败: ${response.status}`);
   }
   state.monitoring = await response.json();
+  const loginState = state.monitoring?.login_state || {};
+  if (loginState.state === "ok") {
+    state.loginAutoRefreshTriggered = false;
+  }
   ensureProjectSelection();
   ensureActiveAccount();
   renderMonitoring();
   renderApp();
   schedulePolling();
+  if (
+    !state.loginAutoRefreshTriggered
+    && !loginState.checking
+    && loginState.state === "warning"
+    && loginState.detail_ready
+    && Number(loginState.comment_count_ready || 0) <= 0
+  ) {
+    state.loginAutoRefreshTriggered = true;
+    checkLoginState({ silent: true }).catch((error) => {
+      document.getElementById("addResult").textContent = error.message;
+    });
+  }
 }
 
 function schedulePolling() {
@@ -2940,9 +2957,11 @@ async function retryMonitoredAccount(url) {
   await Promise.all([loadMonitoring(), loadDashboard(true)]);
 }
 
-async function checkLoginState() {
+async function checkLoginState({ silent = false } = {}) {
   const resultNode = document.getElementById("addResult");
-  resultNode.textContent = "正在执行登录态自检...";
+  if (!silent) {
+    resultNode.textContent = "正在执行登录态自检...";
+  }
   const response = await fetch("/api/login-state/check", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -2952,7 +2971,9 @@ async function checkLoginState() {
   if (!response.ok || !payload.ok) {
     throw new Error(payload.message || `登录态自检失败: ${response.status}`);
   }
-  resultNode.textContent = payload.message || "已开始登录态自检。";
+  if (!silent) {
+    resultNode.textContent = payload.message || "已开始登录态自检。";
+  }
   await loadMonitoring();
 }
 
