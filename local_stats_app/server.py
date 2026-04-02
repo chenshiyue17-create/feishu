@@ -54,6 +54,7 @@ from ..project_cache import (
 from ..profile_report import build_profile_report, load_profile_report_payload
 from ..profile_to_feishu import PROFILE_TABLE_NAME
 from ..profile_works_to_feishu import WORKS_TABLE_NAME
+from ..profile_works_to_feishu import build_work_calendar_history_index
 from ..xhs import build_proxy_pool_status
 from .data_service import build_dashboard_payload_from_tables
 from . import login_state as login_state_module
@@ -1204,10 +1205,25 @@ def export_project_rankings(
     return project_summary
 
 
-def build_local_ranking_updates(reports: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
+def _load_cached_ranking_history_index(settings) -> Dict[str, List[Any]]:
+    cache_dir = resolve_project_cache_dir(settings)
+    history_rows: List[Dict[str, Any]] = []
+    for project_dir in sorted(path for path in cache_dir.iterdir() if path.is_dir()):
+        if project_dir.name == "账号榜单导出":
+            continue
+        history_rows.extend(_load_rows_json_if_exists(str(project_dir / "tracked_work_history.json")))
+    return build_work_calendar_history_index(history_rows)
+
+
+def build_local_ranking_updates(
+    reports: List[Dict[str, Any]],
+    *,
+    settings=None,
+) -> Dict[str, List[Dict[str, Any]]]:
     updates: Dict[str, List[Dict[str, Any]]] = {}
-    ranking_groups = build_single_work_rankings(reports=reports, history_index={})
-    for rank_type in ("单条点赞排行", "单条评论排行"):
+    history_index = _load_cached_ranking_history_index(settings) if settings is not None else {}
+    ranking_groups = build_single_work_rankings(reports=reports, history_index=history_index)
+    for rank_type in ("单条点赞排行", "单条评论排行", "单条第二天增长排行"):
         rows: List[Dict[str, Any]] = []
         for rank, item in enumerate(ranking_groups.get(rank_type, []), start=1):
             rows.append(build_ranking_item_from_fields(build_single_work_ranking_fields(item=item, rank_type=rank_type, rank=rank)))
@@ -1266,6 +1282,7 @@ def merge_rankings(
     base_rankings: Dict[str, List[Dict[str, Any]]],
     *,
     reports: List[Dict[str, Any]],
+    settings=None,
 ) -> Dict[str, List[Dict[str, Any]]]:
     merged: Dict[str, List[Dict[str, Any]]] = {
         rank_type: [dict(item) for item in rows]
@@ -1280,7 +1297,7 @@ def merge_rankings(
         account_id
         for account_id in report_by_account_id
     }
-    ranking_updates = build_local_ranking_updates(reports)
+    ranking_updates = build_local_ranking_updates(reports, settings=settings)
     for rank_type, new_rows in ranking_updates.items():
         existing_rank_rows = [dict(item) for item in merged.get(rank_type, [])]
         preserved_existing_rows: List[Dict[str, Any]] = []
@@ -1339,6 +1356,7 @@ def build_dashboard_payload_with_reports(
     *,
     base_payload: Optional[Dict[str, Any]],
     reports: List[Dict[str, Any]],
+    settings=None,
 ) -> Dict[str, Any]:
     payload = copy.deepcopy(base_payload or {})
     account_series = merge_account_series_points(payload.get("account_series") or {}, reports)
@@ -1363,7 +1381,7 @@ def build_dashboard_payload_with_reports(
         reverse=True,
     )
 
-    rankings = merge_rankings(payload.get("rankings") or {}, reports=reports)
+    rankings = merge_rankings(payload.get("rankings") or {}, reports=reports, settings=settings)
     latest_report_date = max((extract_snapshot_date(str(report.get("captured_at") or "")) for report in reports), default="")
     latest_report_time = max((str(report.get("captured_at") or "").strip() for report in reports), default="")
     latest_date = max(str(payload.get("latest_date") or "").strip(), latest_report_date)

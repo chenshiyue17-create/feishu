@@ -36,6 +36,102 @@ class FakeCollector:
 
 
 class ProjectCacheTest(unittest.TestCase):
+    def test_rebuild_dashboard_cache_from_project_dirs_regenerates_growth_from_tracked_history(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            settings = SimpleNamespace(project_cache_dir=tmpdir, feishu_review_upload_days=14)
+            project_dir = Path(tmpdir) / "默认项目"
+            project_dir.mkdir(parents=True, exist_ok=True)
+            (project_dir / "calendar_rows.json").write_text(
+                json.dumps(
+                    [
+                        {
+                            "日历键": "2026-04-02|u1",
+                            "日期文本": "2026-04-02",
+                            "账号ID": "u1",
+                            "账号": "账号A",
+                            "粉丝数": 100,
+                            "获赞收藏数": 200,
+                            "账号总作品数": 30,
+                            "作品数展示": "30+",
+                            "首页总点赞": 20,
+                            "首页总评论": 5,
+                            "主页链接": {"link": "https://example.com/u1"},
+                        }
+                    ],
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+            (project_dir / "ranking_rows.json").write_text("[]", encoding="utf-8")
+            (project_dir / "dashboard.json").write_text(
+                json.dumps({"rankings": {}, "alerts": []}, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            (project_dir / "tracked_works.json").write_text(
+                json.dumps(
+                    {
+                        "project": "默认项目",
+                        "updated_at": "2026-04-02T14:00:00+08:00",
+                        "tracking_window_days": 14,
+                        "items": [
+                            {
+                                "tracked_key": "note:note-a",
+                                "fingerprint": "note:note-a",
+                                "raw_fingerprint": "u1-a",
+                                "note_id": "note-a",
+                                "note_url": "https://www.xiaohongshu.com/explore/note-a",
+                                "xsec_token": "token",
+                                "account_id": "u1",
+                                "account": "账号A",
+                                "profile_url": "https://example.com/u1",
+                                "title_copy": "作品A",
+                                "note_type": "video",
+                                "cover_url": "https://img.example.com/a.jpg",
+                                "like_count": 15,
+                                "like_count_text": "15",
+                                "comment_count": 7,
+                                "comment_count_text": "7",
+                                "comment_count_basis": "精确值",
+                                "comment_count_is_lower_bound": False,
+                                "captured_at": "2026-04-02T14:00:00+08:00",
+                                "snapshot_date": "2026-04-02",
+                                "first_seen_at": "2026-04-01T14:00:00+08:00",
+                                "last_seen_at": "2026-04-02T14:00:00+08:00",
+                                "last_refreshed_at": "2026-04-02T14:00:00+08:00",
+                                "source": "tracked",
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+            (project_dir / "tracked_work_history.json").write_text(
+                json.dumps(
+                    [
+                        {"fields": {"作品指纹": "note:note-a", "日期文本": "2026-04-01", "点赞数": 10, "评论数": 5}},
+                        {"fields": {"作品指纹": "u1-a", "日期文本": "2026-04-01", "点赞数": 10, "评论数": 5}},
+                        {"fields": {"作品指纹": "note:note-a", "日期文本": "2026-04-02", "点赞数": 15, "评论数": 7}},
+                    ],
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+
+            payload = rebuild_dashboard_cache_from_project_dirs(settings)
+
+            growth_rows = [
+                row
+                for row in json.loads((project_dir / "ranking_rows.json").read_text(encoding="utf-8"))
+                if str(row.get("榜单类型") or "") == "单条第二天增长排行"
+            ]
+            self.assertEqual(len(growth_rows), 1)
+            self.assertEqual(growth_rows[0]["互动次日增量"], 7)
+            self.assertEqual(len((payload.get("rankings") or {}).get("单条第二天增长排行") or []), 1)
+
     def test_write_project_cache_bundle_saves_cover_assets_locally(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             settings = SimpleNamespace(

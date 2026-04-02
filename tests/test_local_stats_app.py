@@ -1690,6 +1690,73 @@ class LocalStatsAppTest(unittest.TestCase):
         self.assertEqual(payload["rankings"]["单条点赞排行"][0]["note_url"], "https://note-u1")
         self.assertEqual(payload["rankings"]["单条评论排行"][0]["account_id"], "u1")
 
+    def test_build_dashboard_payload_with_reports_rebuilds_growth_from_cached_history(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_dir = Path(temp_dir) / "默认项目"
+            project_dir.mkdir(parents=True, exist_ok=True)
+            (project_dir / "tracked_work_history.json").write_text(
+                json.dumps(
+                    [
+                        {"fields": {"作品指纹": "note:note-a", "日期文本": "2026-03-17", "点赞数": 10, "评论数": 5}},
+                        {"fields": {"作品指纹": "u1-fp", "日期文本": "2026-03-17", "点赞数": 10, "评论数": 5}},
+                    ],
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+            base_payload = {
+                "generated_at": "2026-03-17T14:00:00+08:00",
+                "latest_date": "2026-03-17",
+                "updated_at": "2026-03-17T14:00:00+08:00",
+                "series_meta": {"mode": "daily", "update_time": "14:00"},
+                "portal": {"accounts": 0},
+                "series": [],
+                "account_series": {},
+                "accounts": [],
+                "rankings": {
+                    "单条点赞排行": [],
+                    "单条评论排行": [],
+                    "单条第二天增长排行": [],
+                },
+                "alerts": [],
+            }
+            reports = [
+                {
+                    "project": "默认项目",
+                    "captured_at": "2026-03-18T14:00:00+08:00",
+                    "profile": {
+                        "profile_user_id": "u1",
+                        "nickname": "账号A",
+                        "profile_url": "https://profile-u1",
+                        "fans_count_text": "100",
+                        "interaction_count_text": "200",
+                    },
+                    "works": [
+                        {
+                            "title_copy": "作品A",
+                            "note_type": "image",
+                            "note_id": "note-a",
+                            "note_url": "https://note-u1",
+                            "cover_url": "https://img-u1",
+                            "like_count": 20,
+                            "comment_count": 8,
+                        }
+                    ],
+                }
+            ]
+
+            payload = build_dashboard_payload_with_reports(
+                base_payload=base_payload,
+                reports=reports,
+                settings=SimpleNamespace(project_cache_dir=temp_dir),
+            )
+
+        growth_rows = payload["rankings"]["单条第二天增长排行"]
+        self.assertEqual(len(growth_rows), 1)
+        self.assertEqual(growth_rows[0]["account_id"], "u1")
+        self.assertEqual(growth_rows[0]["metric"], 13)
+
     def test_monitoring_payload_falls_back_when_profile_lookup_fails(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             path = write_monitored_entries(

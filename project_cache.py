@@ -55,10 +55,29 @@ def rebuild_dashboard_cache_from_project_dirs(settings) -> Dict[str, Any]:
     combined_alert_rows: List[Dict[str, Any]] = []
 
     for project_dir in sorted(path for path in cache_dir.iterdir() if path.is_dir() and path.name != DEFAULT_EXPORT_CACHE_DIR):
-        combined_calendar_rows_source.extend(_read_json(project_dir / "calendar_rows.json", []))
-        combined_project_ranking_rows.extend(_read_json(project_dir / "ranking_rows.json", []))
+        project_calendar_rows = _read_json(project_dir / "calendar_rows.json", [])
+        combined_calendar_rows_source.extend(project_calendar_rows)
+        project_ranking_rows = _rebuild_project_ranking_rows_from_tracked_cache(
+            project_dir=project_dir,
+            settings=settings,
+        ) or _read_json(project_dir / "ranking_rows.json", [])
+        if project_ranking_rows:
+            _write_json(project_dir / "ranking_rows.json", project_ranking_rows)
+            _write_csv(project_dir / "单条排行榜.csv", project_ranking_rows)
+        combined_project_ranking_rows.extend(project_ranking_rows)
         project_dashboard = _read_json(project_dir / "dashboard.json", {})
-        combined_alert_rows.extend((project_dashboard or {}).get("alerts") or [])
+        project_alert_rows = (project_dashboard or {}).get("alerts") or []
+        combined_alert_rows.extend(project_alert_rows)
+        if project_calendar_rows or project_ranking_rows or project_alert_rows:
+            refreshed_project_payload = build_dashboard_payload_from_tables(
+                portal_rows=[build_dashboard_portal_fields(_build_stub_reports_from_calendar_rows(project_calendar_rows))]
+                if project_calendar_rows
+                else [],
+                calendar_rows=project_calendar_rows,
+                ranking_rows=project_ranking_rows,
+                alert_rows=project_alert_rows,
+            )
+            _write_json(project_dir / "dashboard.json", refreshed_project_payload)
 
     if not combined_calendar_rows_source and not combined_project_ranking_rows and not combined_alert_rows:
         return {}
@@ -77,6 +96,39 @@ def rebuild_dashboard_cache_from_project_dirs(settings) -> Dict[str, Any]:
     _write_csv(cache_dir / "全部项目-账号日历留底.csv", combined_calendar_rows)
     _write_csv(cache_dir / "全部项目-单条排行榜.csv", combined_ranking_rows)
     return combined_payload
+
+
+def _rebuild_project_ranking_rows_from_tracked_cache(*, project_dir: Path, settings) -> List[Dict[str, Any]]:
+    tracked_payload = _read_json(project_dir / TRACKED_WORKS_CACHE_FILE, {})
+    tracked_items = tracked_payload.get("items") if isinstance(tracked_payload, dict) else []
+    history_payload = _read_json(project_dir / TRACKED_WORK_HISTORY_CACHE_FILE, [])
+    if not isinstance(tracked_items, list) or not tracked_items:
+        return []
+    tracking_window_days = max(
+        1,
+        int(
+            (tracked_payload.get("tracking_window_days") if isinstance(tracked_payload, dict) else 0)
+            or getattr(settings, "feishu_review_upload_days", 14)
+            or 14
+        ),
+    )
+    active_cutoff = datetime.now().astimezone().date() - timedelta(days=tracking_window_days - 1)
+    latest_snapshot_date = max(
+        (str((item or {}).get("snapshot_date") or "").strip() for item in tracked_items if isinstance(item, dict)),
+        default="",
+    )
+    ranking_items = _build_tracked_ranking_items(
+        tracked_items=[dict(item) for item in tracked_items if isinstance(item, dict)],
+        snapshot_date=latest_snapshot_date,
+        active_cutoff=active_cutoff,
+    )
+    if not ranking_items:
+        return []
+    history_index = build_work_calendar_history_index(history_payload if isinstance(history_payload, list) else [])
+    return _build_ranking_rows_from_items(
+        ranking_items,
+        history_index=history_index,
+    )
 
 
 def repair_dashboard_cache_from_exports(*, settings, monitored_metadata: Dict[str, Any]) -> Dict[str, Any]:
