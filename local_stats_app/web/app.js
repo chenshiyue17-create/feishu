@@ -607,6 +607,14 @@ async function loadDashboard(force = false) {
   renderApp();
 }
 
+async function refreshLocalBoard() {
+  await Promise.all([
+    loadMonitoring(),
+    loadDashboard(true),
+    loadSystemConfig(),
+  ]);
+}
+
 async function loadMonitoring() {
   const response = await fetch("/api/monitored-accounts");
   if (!response.ok) {
@@ -3024,7 +3032,11 @@ async function retryFeishuUpload({ scope = "full", useSelectedProject = true } =
   throw new Error("旧的外部协作上传入口已移除。");
 }
 
-document.getElementById("refreshButton").addEventListener("click", () => loadDashboard(true));
+document.getElementById("refreshButton").addEventListener("click", () => {
+  refreshLocalBoard().catch((error) => {
+    document.getElementById("addResult").textContent = error.message;
+  });
+});
 document.getElementById("manualUpdateButton").addEventListener("click", () => {
   syncCurrentList().catch((error) => {
     document.getElementById("addResult").textContent = error.message;
