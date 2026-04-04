@@ -2217,7 +2217,9 @@ class MonitoringSyncStore:
                 {
                     "state": "running",
                     "message": (
-                        "自动采集已完成，正在上传到服务器"
+                        f"自动采集已完成，正在上传 {len(normalized_account_ids)} 个成功账号到服务器"
+                        if auto and normalized_account_ids
+                        else "自动采集已完成，正在上传到服务器"
                         if auto
                         else f"正在上传 {len(normalized_account_ids)} 个账号到服务器"
                         if normalized_account_ids
@@ -2245,7 +2247,9 @@ class MonitoringSyncStore:
                     {
                         "state": "success",
                         "message": (
-                            "服务器缓存自动上传完成"
+                            f"服务器缓存自动上传完成，成功上传 {len(normalized_account_ids)} 个账号"
+                            if auto and normalized_account_ids
+                            else "服务器缓存自动上传完成"
                             if auto
                             else f"已把 {len(normalized_account_ids)} 个账号增量上传到服务器"
                             if normalized_account_ids
@@ -2995,7 +2999,8 @@ class MonitoringSyncStore:
     def _sync_loop(self) -> None:
         while True:
             finished_at = iso_now()
-            should_auto_push = False
+            auto_push_account_ids: List[str] = []
+            auto_push_failed_accounts = 0
             try:
                 settings = load_settings(self.env_file)
                 current_urls = list(self._current_sync_urls)
@@ -3068,6 +3073,12 @@ class MonitoringSyncStore:
                     "failed_accounts": failed_accounts,
                     "total_works": sum(len(report.get("works") or []) for report in reports),
                 }
+                auto_push_account_ids = [
+                    str((report.get("profile") or {}).get("profile_user_id") or "").strip()
+                    for report in reports
+                    if str((report.get("profile") or {}).get("profile_user_id") or "").strip()
+                ]
+                auto_push_failed_accounts = failed_accounts
                 finished_progress = build_progress_timing(
                     started_at=self._status.get("started_at", ""),
                     overall_percent=100,
@@ -3163,17 +3174,50 @@ class MonitoringSyncStore:
                 self._current_sync_mode = ""
                 self._pending_sync_urls = []
                 self._status = result
+                if current_mode != "auto":
+                    summary = result.get("summary") or {}
+                    failed_accounts = int(summary.get("failed_accounts") or 0)
+                    successful_accounts = int(summary.get("successful_accounts") or 0)
+                    self._server_push_status.update(
+                        {
+                            "state": (
+                                "waiting_sync"
+                                if successful_accounts > 0
+                                else "idle"
+                            ),
+                            "message": (
+                                f"本轮成功 {successful_accounts} 个账号，正在自动上传；失败 {failed_accounts} 个账号不上传，可补采后再手动上传"
+                                if successful_accounts > 0 and failed_accounts > 0
+                                else f"本轮成功 {successful_accounts} 个账号，正在自动上传服务器"
+                                if successful_accounts > 0
+                                else f"本轮成功 {successful_accounts} 个账号、失败 {failed_accounts} 个；失败账号不会上传，可补采后再手动上传"
+                                if failed_accounts > 0
+                                else f"本轮成功 {successful_accounts} 个账号，可按需手动上传服务器"
+                                if successful_accounts > 0
+                                else "当前没有可上传的新缓存结果"
+                            ),
+                            "mode": "manual",
+                            "last_error": "",
+                        }
+                    )
+                    self._update_server_push_schedule_locked()
                 if current_mode == "auto" and current_project:
                     today_text = datetime.now().astimezone().date().isoformat()
                     if result.get("state") == "success":
                         self._auto_project_success_dates[current_project] = today_text
-                        active_projects = sorted(self._build_project_url_map(parse_monitored_entries(self.urls_file)))
-                        all_collected = bool(active_projects) and all(
-                            self._auto_project_success_dates.get(project_name, "") == today_text
-                            for project_name in active_projects
-                        )
-                        if all_collected and self._last_auto_server_push_success_date != today_text:
-                            should_auto_push = True
+                        if auto_push_account_ids:
+                            self._server_push_status.update(
+                                {
+                                    "state": "waiting_sync",
+                                    "message": (
+                                            f"项目「{current_project}」采集完成，成功 {len(auto_push_account_ids)} 个账号；正在准备自动上传"
+                                        if int((result.get("summary") or {}).get("failed_accounts") or 0) <= 0
+                                        else f"项目「{current_project}」部分成功，成功 {len(auto_push_account_ids)} 个账号；失败账号不上传"
+                                    ),
+                                    "mode": "auto",
+                                    "last_error": "",
+                                }
+                            )
                     self._update_server_push_schedule_locked()
                 if current_project:
                     if result.get("state") == "success":
@@ -3196,11 +3240,25 @@ class MonitoringSyncStore:
                             finished_at=result.get("finished_at", ""),
                             last_error=result.get("last_error", ""),
                         )
-            if should_auto_push:
+            if auto_push_account_ids:
                 try:
-                    self.push_server_cache(auto=True)
+                    self.push_server_cache(auto=current_mode == "auto", account_ids=auto_push_account_ids)
                 except Exception:
-                    pass
+                    if current_mode != "auto":
+                        with self._lock:
+                            successful_accounts = len(auto_push_account_ids)
+                            self._server_push_status.update(
+                                {
+                                    "state": "error",
+                                    "message": (
+                                        f"已成功采集 {successful_accounts} 个账号，但自动上传失败；失败账号 {auto_push_failed_accounts} 个仍未上传"
+                                        if auto_push_failed_accounts > 0
+                                        else f"已成功采集 {successful_accounts} 个账号，但自动上传失败"
+                                    ),
+                                    "mode": "manual",
+                                }
+                            )
+                            self._update_server_push_schedule_locked()
             break
 
     def _handle_progress_update(self, payload: Dict[str, Any]) -> None:

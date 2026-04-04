@@ -1914,6 +1914,7 @@ function renderSyncProgress(syncStatus) {
   const root = document.getElementById("syncProgressCard");
   if (!root) return;
   const progress = syncStatus?.progress || {};
+  const serverPushStatus = syncStatus?.server_cache_push_status || {};
   const percent = Math.max(0, Math.min(100, Number(progress.overall_percent || 0)));
   const phasePercent = Math.max(0, Math.min(100, Number(progress.phase_percent || 0)));
   const detailText = progress.detail_text || syncStatus?.message || "当前未开始同步";
@@ -1922,6 +1923,12 @@ function renderSyncProgress(syncStatus) {
   const syncLastSuccessAt = syncStatus?.last_success_at ? formatDateTime(syncStatus.last_success_at) : "";
   const syncLastFinishedAt = syncStatus?.finished_at ? formatDateTime(syncStatus.finished_at) : "";
   const syncLastError = String(syncStatus?.last_error || "").trim();
+  const pushLastSuccessAt = serverPushStatus?.last_success_at ? formatDateTime(serverPushStatus.last_success_at) : "";
+  const pushState = String(serverPushStatus?.state || "").trim();
+  const pushMessage = String(serverPushStatus?.message || "").trim();
+  const pushDetailText = pushMessage
+    ? `上传状态：${pushMessage}`
+    : "";
   const schedulePlan = syncStatus?.schedule_plan || {};
   const scheduleSummary = buildSchedulePlanSummary(schedulePlan);
   const scheduleProjectChips = (schedulePlan.projects || [])
@@ -1937,12 +1944,16 @@ function renderSyncProgress(syncStatus) {
         <section class="sync-progress-idle-block">
           <div class="sync-progress-title">看板同步</div>
           <div class="sync-progress-subtitle">当前无活动同步任务</div>
+          ${pushDetailText ? `<div class="sync-progress-subtitle">${pushDetailText}</div>` : ""}
           <div class="sync-progress-meta">
             <span class="sync-progress-chip">状态 待命</span>
             ${scheduleSummary ? `<span class="sync-progress-chip">${scheduleSummary}</span>` : ""}
             ${syncLastSuccessAt ? `<span class="sync-progress-chip is-success">最近成功 ${syncLastSuccessAt}</span>` : ""}
             ${syncLastFinishedAt && !syncLastSuccessAt ? `<span class="sync-progress-chip">最近结束 ${syncLastFinishedAt}</span>` : ""}
             ${syncLastError ? `<span class="sync-progress-chip is-error">${truncateMiddle(syncLastError, 72)}</span>` : ""}
+            ${pushState === "success" && pushLastSuccessAt ? `<span class="sync-progress-chip is-success">上传 ${pushLastSuccessAt}</span>` : ""}
+            ${pushState === "running" ? `<span class="sync-progress-chip">上传中</span>` : ""}
+            ${pushState === "error" && pushMessage ? `<span class="sync-progress-chip is-error">${truncateMiddle(pushMessage, 72)}</span>` : ""}
             ${scheduleProjectChips.map((text) => `<span class="sync-progress-chip">${text}</span>`).join("")}
           </div>
         </section>
@@ -1958,6 +1969,9 @@ function renderSyncProgress(syncStatus) {
     { text: `失败 ${formatNumber(progress.failed_count || 0)}`, tone: progress.failed_count ? "error" : "" },
     { text: progress.account ? truncateMiddle(progress.account, 26) : "", tone: "" },
     { text: progress.works ? `${formatNumber(progress.works)} 条作品` : "", tone: "" },
+    { text: pushState === "running" ? "上传中" : "", tone: "" },
+    { text: pushState === "success" && pushLastSuccessAt ? `已上传 ${pushLastSuccessAt}` : "", tone: "success" },
+    { text: pushState === "error" && pushMessage ? truncateMiddle(pushMessage, 48) : "", tone: "error" },
   ].filter((item) => item.text);
 
   root.innerHTML = `
@@ -1965,6 +1979,7 @@ function renderSyncProgress(syncStatus) {
       <div>
         <div class="sync-progress-title">看板同步</div>
         <div class="sync-progress-subtitle">${detailText}</div>
+        ${pushDetailText ? `<div class="sync-progress-subtitle">${pushDetailText}</div>` : ""}
       </div>
       <div class="sync-progress-percent">${formatNumber(percent)}%</div>
     </div>
