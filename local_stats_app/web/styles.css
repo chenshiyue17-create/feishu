@@ -1752,6 +1752,35 @@ body {
   line-height: 1.45;
 }
 
+.alert-summary-inline {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  align-items: center;
+  padding: 12px 14px;
+  border-radius: 16px;
+  background: rgba(255, 107, 61, 0.06);
+  border: 1px solid rgba(255, 107, 61, 0.12);
+}
+
+.alert-summary-inline-label {
+  color: #ffb79d;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.alert-summary-inline-text {
+  color: #fff2eb;
+  font-size: 14px;
+  font-weight: 700;
+  min-width: 0;
+}
+
+.alert-summary-inline-meta {
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .ranking-column {
   min-width: 0;
   padding: 14px;
@@ -1799,6 +1828,21 @@ body {
 .account-grid {
   display: grid;
   gap: 10px;
+}
+
+.alert-item-header {
+  margin-bottom: 8px;
+}
+
+.alert-item-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: rgba(255, 107, 61, 0.1);
+  color: #ffb79d;
+  font-size: 12px;
+  font-weight: 700;
 }
 
 .ranking-hero,

@@ -2724,18 +2724,15 @@ function renderAlerts() {
   summaryNode.textContent = active
     ? `当前账号命中 ${formatNumber(alerts.length)} 条互动预警，累计最高增量 ${formatNumber(totalDelta)}，规则为点赞或评论增加至少 10。`
     : `当前项目「${projectName}」命中 ${formatNumber(alerts.length)} 条互动预警，累计最高增量 ${formatNumber(totalDelta)}，规则为点赞或评论增加至少 10。`;
-
-  const summaryItems = alerts.slice(0, 3).map(
-    (item, index) => `
-      <div class="alert-summary-chip">
-        <div class="alert-summary-chip-label">高危 ${index + 1}</div>
-        <div class="alert-summary-chip-title">${item.note_url ? `<a class="note-link" href="${item.note_url}" target="_blank" rel="noreferrer">${item.title}</a>` : item.title}</div>
-        <div class="alert-summary-chip-meta">${item.account} · ${item.alert_type} · 点赞 +${formatNumber(item.like_delta)} · 评论 +${formatNumber(item.comment_delta)}</div>
+  const topAlert = alerts[0];
+  summaryBarNode.innerHTML = topAlert
+    ? `
+      <div class="alert-summary-inline">
+        <span class="alert-summary-inline-label">重点关注</span>
+        <span class="alert-summary-inline-text">${topAlert.note_url ? `<a class="note-link" href="${topAlert.note_url}" target="_blank" rel="noreferrer">${topAlert.title}</a>` : topAlert.title}</span>
+        <span class="alert-summary-inline-meta">${topAlert.account} · ${topAlert.alert_type} · 点赞 +${formatNumber(topAlert.like_delta)} · 评论 +${formatNumber(topAlert.comment_delta)}</span>
       </div>
-    `,
-  );
-  summaryBarNode.innerHTML = summaryItems.length
-    ? summaryItems.join("")
+    `
     : `<div class="empty-state">${active ? "当前账号没有互动预警。" : projectName === "all" ? "暂无互动预警。" : "当前项目下暂无互动预警。"}</div>`;
   if (!alerts.length) {
     root.innerHTML = `<div class="empty-state">${active ? "当前账号没有互动预警。" : projectName === "all" ? "暂无互动预警。" : "当前项目下暂无互动预警。"}</div>`;
@@ -2743,8 +2740,11 @@ function renderAlerts() {
   }
   root.innerHTML = alerts
     .map(
-      (item) => `
+      (item, index) => `
         <article class="alert-item">
+          <div class="alert-item-header">
+            <span class="alert-item-badge">重点关注 ${index + 1}</span>
+          </div>
           <p class="title">${item.note_url ? `<a class="note-link" href="${item.note_url}" target="_blank" rel="noreferrer">${item.title}</a>` : item.title}</p>
           <div class="subtle">${item.profile_url ? `<a class="note-link subtle-link" href="${item.profile_url}" target="_blank" rel="noreferrer">${item.account}</a>` : item.account} · ${item.date} · ${item.status || "未发送"} · ${item.alert_type}</div>
           <div class="subtle">点赞 ${formatNumber(item.previous_likes)} → ${formatNumber(item.current_likes)}，+${formatNumber(item.like_delta)}；评论 ${formatNumber(item.previous_comments)} → ${formatNumber(item.current_comments)}，+${formatNumber(item.comment_delta)}</div>
