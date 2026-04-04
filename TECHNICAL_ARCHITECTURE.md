@@ -1,606 +1,314 @@
-# 小红书监控与飞书看板技术架构设计文档
+# 小红书本地采集与服务器查看技术架构
 
-## 1. 文档目标
+## 1. 文档范围
 
-本文档用于说明当前项目的技术架构、模块职责、主数据流、运行方式、稳定性策略和扩展边界，作为后续维护、重构和功能扩展的依据。
+这份文档只描述**当前实际运行**的架构。
 
-本文档聚焦当前已经落地的本地单机架构，不讨论云原生改造或分布式部署。
+当前主线不是“本地采集后写飞书”，而是：
+
+- 本地登录小红书并采集
+- 本地生成缓存和看板
+- 本机把缓存推送到服务器
+- 服务器只负责展示
+- 手机端只读取服务器缓存
+
+历史飞书模块仍在仓库里，但不再是当前日常主路径。
 
 ## 2. 总体架构
 
-系统采用“本地采集 + 本地编排 + 飞书存储 + 本地看板展示”的单机架构。
+### 2.1 当前架构
 
-核心思路：
+系统采用：
 
-- 小红书采集在本机完成
-- 飞书多维表格作为业务数据展示层与轻量持久化层
-- 本地前端作为运营查看与管理入口
-- `launchd` 负责定时调度
-- 所有状态控制、降级策略、清单管理在本地代码内完成
+- 本地采集
+- 本地缓存
+- 本地前端
+- `launchd` 自动任务
+- 服务器缓存接收
+- 服务器网页查看
+- 手机端查看
 
-### 2.1 架构分层
+### 2.2 核心原则
 
-#### 接入层
+- 采集在本机完成，不在服务器抓小红书
+- 已拿到的完整数据优先保留
+- 不完整新结果不应覆盖完整旧结果
+- 服务器不做实时计算，只读缓存
+- 手机端只看服务器缓存，不触发采集
 
-- 小红书网页
-- 小红书签名接口
-- 本机 Chrome Cookie / 默认浏览器会话
-- 飞书开放平台 API
+## 3. 当前模块分层
 
-#### 采集层
-
-- 主页抓取
-- 作品详情抓取
-- 评论摘要抓取
-- 浏览器回退抓取
-- 代理池
-
-#### 业务编排层
-
-- 账号报告组装
-- 作品报告组装
-- 评论预警计算
-- 周对比与日历留底
-- 飞书数据同步
-
-#### 展示层
-
-- 飞书多维表格
-- 飞书仪表盘数据层
-- 本地统计前端
-
-#### 调度与运维层
-
-- `launchd`
-- 手动同步
-- 登录态健康检查
-- 进度条与限频
-- 本地缓存与回退
-
-## 3. 代码模块划分
-
-### 3.1 配置与基础模型
-
-- [config.py](/Users/cc/Documents/New%20project/xhs_feishu_monitor/config.py)
-  - 统一环境变量读取
-  - 小红书采集、代理池、飞书同步、评论预警等全局配置
-- [models.py](/Users/cc/Documents/New%20project/xhs_feishu_monitor/models.py)
-  - `Target`
-  - `NoteSnapshot`
-
-### 3.2 小红书采集层
+### 3.1 采集层
 
 - [xhs.py](/Users/cc/Documents/New%20project/xhs_feishu_monitor/xhs.py)
-  - 通用采集核心
-  - 支持 `requests / playwright / local_browser / auto`
-  - 支持代理池轮换
-  - 支持 HTML / JSON / 浏览器态解析
+  - 采集控制器
+  - 调度 `requests / playwright / local_browser`
 - [xhs_signed.py](/Users/cc/Documents/New%20project/xhs_feishu_monitor/xhs_signed.py)
-  - 签名接口请求封装
-  - 主页分页签名采集
-  - 作品详情签名采集
-  - 评论摘要签名采集
-- [chrome_cookies.py](/Users/cc/Documents/New%20project/xhs_feishu_monitor/chrome_cookies.py)
-  - 从本机默认 Chrome 读取并解密 Cookie
-
-### 3.3 账号与作品报告层
-
+  - 小红书签名接口封装
+  - 实际依赖 [`xhshow`](https://github.com/Cloxl/xhshow)
 - [profile_report.py](/Users/cc/Documents/New%20project/xhs_feishu_monitor/profile_report.py)
-  - 账号主页报告生成
-  - 前 30 条作品抽取
-  - 精确总作品数补全
+  - 单账号主页与作品列表报告
 - [profile_metrics.py](/Users/cc/Documents/New%20project/xhs_feishu_monitor/profile_metrics.py)
-  - 作品详情补全
-  - 作品评论数与最新评论摘要补全
+  - 作品详情补抓
+  - 评论数与评论摘要补抓
 - [profile_batch_report.py](/Users/cc/Documents/New%20project/xhs_feishu_monitor/profile_batch_report.py)
   - 多账号批量采集
-  - 并发调度
-  - 批量任务入口
 
-### 3.4 飞书同步层
+### 3.2 缓存与榜单层
 
-- [feishu.py](/Users/cc/Documents/New%20project/xhs_feishu_monitor/feishu.py)
-  - 飞书 API 封装
-  - 表、字段、记录、upsert、对比更新
-- [profile_to_feishu.py](/Users/cc/Documents/New%20project/xhs_feishu_monitor/profile_to_feishu.py)
-  - 账号总览表同步
-- [profile_works_to_feishu.py](/Users/cc/Documents/New%20project/xhs_feishu_monitor/profile_works_to_feishu.py)
-  - 作品明细表
-  - 作品日历留底
+- [project_cache.py](/Users/cc/Documents/New%20project/xhs_feishu_monitor/project_cache.py)
+  - 项目缓存写盘
+  - `tracked_works.json`
+  - `tracked_work_history.json`
+  - `ranking_rows.json`
+  - `dashboard.json`
 - [profile_dashboard_to_feishu.py](/Users/cc/Documents/New%20project/xhs_feishu_monitor/profile_dashboard_to_feishu.py)
-  - 看板总览
-  - 榜单
-  - 趋势
-  - 日历留底
-  - 单条排行
-- [profile_batch_to_feishu.py](/Users/cc/Documents/New%20project/xhs_feishu_monitor/profile_batch_to_feishu.py)
-  - 多账号一体化同步主入口
-  - 采集报告合并
-  - 保留旧详情
-  - 飞书批量写入
+  - 复用榜单、日历、趋势和字段构建逻辑
+- [local_stats_app/data_service.py](/Users/cc/Documents/New%20project/xhs_feishu_monitor/local_stats_app/data_service.py)
+  - 把缓存行转换成前端 payload
 
-### 3.5 预警层
-
-- [comment_alerts.py](/Users/cc/Documents/New%20project/xhs_feishu_monitor/comment_alerts.py)
-  - 评论增长率计算
-  - 评论预警表同步
-  - 飞书群机器人通知
-
-### 3.6 本地前端层
+### 3.3 本地前端层
 
 - [local_stats_app/server.py](/Users/cc/Documents/New%20project/xhs_feishu_monitor/local_stats_app/server.py)
   - 本地 HTTP 服务
-  - 同步状态机
-  - 手动同步控制
-  - HTTP 路由与响应
-  - 本地覆盖缓存
-- [local_stats_app/monitored_accounts.py](/Users/cc/Documents/New%20project/xhs_feishu_monitor/local_stats_app/monitored_accounts.py)
-  - 监测清单读写
-  - 项目归属与暂停状态管理
-  - 本地元数据缓存
-  - 账号展示补全
-- [local_stats_app/login_state.py](/Users/cc/Documents/New%20project/xhs_feishu_monitor/local_stats_app/login_state.py)
-  - 登录态自检
-  - 浏览器登录唤起
-  - 登录等待与恢复采集
-- [local_stats_app/data_service.py](/Users/cc/Documents/New%20project/xhs_feishu_monitor/local_stats_app/data_service.py)
-  - 从飞书数据表构建前端 payload
+  - 手动更新入口
+  - 登录态检查
+  - 本地面板数据构建
 - [local_stats_app/web/index.html](/Users/cc/Documents/New%20project/xhs_feishu_monitor/local_stats_app/web/index.html)
 - [local_stats_app/web/app.js](/Users/cc/Documents/New%20project/xhs_feishu_monitor/local_stats_app/web/app.js)
 - [local_stats_app/web/styles.css](/Users/cc/Documents/New%20project/xhs_feishu_monitor/local_stats_app/web/styles.css)
 
-### 3.7 调度与启动层
+### 3.4 自动任务层
 
-- [launchd.py](/Users/cc/Documents/New%20project/xhs_feishu_monitor/launchd.py)
-  - `launchd` plist 生成与安装
-- [profile_live_sync.py](/Users/cc/Documents/New%20project/xhs_feishu_monitor/profile_live_sync.py)
-  - 单账号实时同步入口
-- [open_local_stats_app.command](/Users/cc/Documents/New%20project/xhs_feishu_monitor/open_local_stats_app.command)
-  - 本地前端启动脚本
+- [local_daily_sync.py](/Users/cc/Documents/New%20project/xhs_feishu_monitor/local_daily_sync.py)
+  - `launchd` 自动采集
+  - 自动上传服务器
+- [local_daily_sync_status.py](/Users/cc/Documents/New%20project/xhs_feishu_monitor/local_daily_sync_status.py)
+  - 自动任务状态持久化
 
-## 4. 主数据流
+### 3.5 服务器展示层
 
-### 4.1 日常自动同步链路
+- [profile_cache_push.py](/Users/cc/Documents/New%20project/xhs_feishu_monitor/profile_cache_push.py)
+  - 本机把缓存推送到服务器
+- [local_stats_app/server.py](/Users/cc/Documents/New%20project/xhs_feishu_monitor/local_stats_app/server.py)
+  - 服务器也复用同一套服务
+  - 但服务器模式只接收缓存和展示
 
-每天 `14:00`，`launchd` 触发批量同步任务。
+## 4. 采集主链路
 
-主流程如下：
+### 4.1 主通道
 
-1. 读取监控清单
-2. 过滤暂停账号
-3. 执行多账号采集
-4. 为每个账号生成主页报告
-5. 对前 30 条作品补详情、评论数、最新评论摘要
-6. 合并历史详情，避免退化覆盖
-7. 计算评论增长与预警
-8. 生成账号表、作品表、榜单表、趋势表、日历留底表数据
-9. 飞书写入前做字段级对比，无变化则跳过
-10. 同步完成后，本地前端从飞书和本地覆盖缓存读取最新结果
+当前主通道是：
 
-### 4.2 手动同步链路
+- `requests + xhshow`
 
-手动同步入口来自本地前端。
+职责：
 
-流程如下：
+- 主页分页
+- 作品详情
+- 评论预览
 
-1. 用户点击“立即更新”
-2. 系统检查冷却时间
-3. 系统执行登录态前置自检
-4. 若登录态不可用，则提示先登录
-5. 若可用，则发起采集
-6. 先把结果更新到本地前端覆盖缓存
-7. 再异步写入飞书
+### 4.2 备用通道
 
-这个设计保证：
+备用通道是：
 
-- 前端优先看到新数据
-- 飞书写慢时不阻塞本地查看
-
-### 4.3 单账号重试链路
-
-当某个账号异常时，监控卡片可单独触发重试。
-
-流程如下：
-
-1. 从清单中取当前账号
-2. 执行单账号采集
-3. 更新识别状态
-4. 刷新本地缓存
-5. 按需同步飞书
-
-### 4.4 登录态健康检查链路
-
-登录态检查由本地前端服务触发。
-
-流程如下：
-
-1. 读取当前采集模式和 Cookie 来源
-2. 选择样本账号
-3. 尝试抓取账号页和作品详情
-4. 检查是否命中登录页
-5. 检查是否拿到 `note_id` 和评论数
-6. 输出 `正常 / 关注 / 异常`
-
-## 5. 小红书采集架构
-
-### 5.1 采集模式设计
-
-当前支持四种模式：
-
-- `requests`
 - `playwright`
 - `local_browser`
-- `auto`
 
-推荐运行方式：
+职责：
 
-- 长期批量监控使用 `requests + 默认 Chrome Cookie + 签名接口`
-- `playwright` 用于回退补救
-- `local_browser` 用于人工交互登录与调试
+- `requests` 不稳定时补救
+- 本机交互登录
+- 浏览器上下文采集
 
-### 5.2 采集能力分层
+### 4.3 当前推荐模式
 
-#### 第一层：公开页与基础 HTML 提取
+长期默认：
 
-适合：
+- `XHS_FETCH_MODE=requests`
 
-- 主页首屏
-- 未登录情况下的降级场景
+当详情采集不稳时：
 
-特点：
+- 切到 `playwright`
 
-- 实现简单
-- 成本低
-- 不稳定
-- 详情字段容易缺失
+当需要直接利用本机 Chrome 登录态时：
 
-#### 第二层：签名接口采集
+- 切到 `local_browser`
 
-当前已接入：
+## 5. 本地缓存结构
 
-- `user_posted`
-- `feed`
-- `comment/page`
+默认缓存目录：
+
+- [/Users/cc/Downloads/飞书缓存](/Users/cc/Downloads/%E9%A3%9E%E4%B9%A6%E7%BC%93%E5%AD%98)
+
+每个项目目录里当前核心文件：
+
+- `dashboard.json`
+- `calendar_rows.json`
+- `ranking_rows.json`
+- `tracked_works.json`
+- `tracked_work_history.json`
+- `covers/`
+
+### 5.1 tracked_works
 
 作用：
 
-- 主页翻页
-- 精确总作品数
-- 作品详情补全
-- 评论摘要补全
+- 保存当前作品级快照
+- 保留 note 级指标
+- 避免下一轮把完整旧值冲掉
 
-#### 第三层：浏览器回退
+### 5.2 tracked_work_history
 
-用于：
+作用：
 
-- 登录态失效时人工补救
-- 签名链路异常时的兜底
+- 保存跨天作品级历史
+- 给“次日增长榜”提供昨天基线
 
-### 5.3 签名层设计
+### 5.3 ranking_rows
 
-签名方案基于 `xhshow`。
+作用：
 
-当前接入方式：
+- 保存项目级榜单行
+- 当前包含：
+  - 点赞榜
+  - 评论榜
+  - 次日增长榜
 
-- 在 [requirements.txt](/Users/cc/Documents/New%20project/xhs_feishu_monitor/requirements.txt) 固定依赖
-- 由 [xhs.py](/Users/cc/Documents/New%20project/xhs_feishu_monitor/xhs.py) 内部按需加载
-- 按 `a1` 或账号维度维护 `SessionManager`
+当前重建逻辑已改成：
 
-设计原因：
+- 优先从 `tracked_works + tracked_work_history` 现场重算
+- 不再单纯相信旧 `ranking_rows.json`
 
-- 直接嵌到现有项目中
-- 不引入额外爬虫框架层
-- 可复用当前的 Cookie、代理池、降级保护
+## 6. 看板数据口径
 
-### 5.4 代理池设计
+### 6.1 项目主卡
 
-代理池能力集成在采集层内部。
+项目主卡显示的是：
 
-包括：
+- 项目粉丝总量
+- 项目获赞收藏
+- 项目评论总量
 
-- 轮换选择
-- 失败冷却
-- 最近错误记录
-- 最近成功记录
-- 本地前端状态面板展示
+它们是**账号级汇总值**。
 
-### 5.5 降级原则
+### 6.2 榜单条数
 
-当前采集层必须遵守：
+本地缓存状态里的：
 
-- 降级可以发生
-- 降级结果必须可识别
-- 降级结果不能覆盖已有完整详情
+- 点赞榜 `N 条`
+- 评论榜 `N 条`
+- 增长榜 `N 条`
 
-典型场景：
+是**榜单作品条数**，不是总量。
 
-- 主页拿到 `30+` 但精确总作品数失败
-- 签名详情失败，只保留已有 `note_id`
-- 评论摘要抓不到，不覆盖已有摘要
+### 6.3 增长榜
 
-## 6. 飞书同步架构
+增长榜成立条件：
 
-### 6.1 飞书定位
+- 同一作品前一天有历史记录
+- 当前这天也抓到了这条作品
 
-飞书在当前架构中的角色不是“唯一真源数据库”，而是：
+如果昨天历史不存在，就不会生成增长榜。
 
-- 展示层
-- 轻量持久化层
-- 团队共享查看层
+## 7. 完整性与回退策略
 
-真实实时运行状态仍掌握在本地任务和本地前端中。
+当前核心策略：
 
-### 6.2 表设计原则
+- 没登录，不开跑
+- 样本账号详情不可用，不开跑
+- 已拿到的精确数据优先保留
+- 不完整新结果不能冲掉旧的完整结果
 
-- 账号视图与作品视图分离
-- 趋势与榜单分离
-- 日历留底与当前快照分离
-- 预警独立建表
-- 每张表只服务一个清晰用途
+评论数当前口径：
 
-### 6.3 更新策略
+- `精确值`
+- `详情缺失`
 
-当前同步策略为：
+当前主线不再把：
 
-- 优先 `upsert`
-- 同步前做字段对比
-- 忽略单纯时间字段变化
-- 无变化数据不更新
+- 旧缓存值
+- 评论下限值
 
-收益：
+伪装成当前精确值。
 
-- 节省飞书 API 调用
-- 降低同步时间
-- 降低频繁写入失败风险
+## 8. 本地更新与自动任务
 
-### 6.4 数据保留策略
+### 8.1 手动更新
 
-- 账号总览保留当前状态
-- 日历留底保留日快照
-- 作品日历留底保留按作品的历史点
-- 榜单保留当前排名结果
-- 预警保留告警事件
+本地前端当前有 3 个入口：
 
-## 7. 本地前端架构
+- 更新全部项目
+- 更新当前项目
+- 更新当前账号
 
-### 7.1 设计目标
+行为约束：
 
-本地前端承担两个角色：
+- `更新全部项目` 必须跑全部激活账号
+- 自动任务运行中时，禁用手动“更新全部项目”
+- 避免手动和自动任务互相覆盖
 
-- 运营查看入口
-- 本地控制台
+### 8.2 自动任务
 
-因此它不仅展示数据，也负责：
+当前自动任务基于 Mac `launchd`。
 
-- 账号管理
-- 项目管理
-- 手动同步
-- 登录态检查
-- 代理池状态查看
+核心要求：
 
-### 7.2 数据来源策略
+- 到点自动采集
+- 未登录时不空跑
+- 自动采集成功后再上传服务器
 
-本地前端的数据来源有两层：
+运行时状态文件：
 
-#### 第一层：飞书表数据
+- [/Users/cc/Documents/New project/xhs_feishu_monitor/.local_daily_sync_status.json](/Users/cc/Documents/New%20project/xhs_feishu_monitor/.local_daily_sync_status.json)
 
-适合：
+这个文件不属于业务数据，不应提交到 Git。
 
-- 稳定展示
-- 历史趋势
-- 榜单
-- 预警
+## 9. 服务器展示架构
 
-#### 第二层：本地覆盖缓存
+### 9.1 当前服务器职责
 
-适合：
+服务器不采集小红书，只负责：
 
-- 手动更新后的即时结果
-- 飞书尚未写完时的前端刷新
-- 飞书暂时失败时的短期兜底
+- 接收缓存上传
+- 展示网页
+- 展示手机页
 
-### 7.3 项目制设计
+### 9.2 当前公网入口
 
-项目制是为 30 到 300 个账号规模准备的结构层。
+推荐入口：
 
-特点：
+- [http://47.87.68.74](http://47.87.68.74)
 
-- 项目是一级视角
-- 项目内再看账号
-- 同步支持按项目触发
-- 榜单与趋势按项目过滤
+手机页：
 
-### 7.4 前端展示口径
+- [http://47.87.68.74/mobile/index.html?project=默认项目](http://47.87.68.74/mobile/index.html?project=%E9%BB%98%E8%AE%A4%E9%A1%B9%E7%9B%AE)
 
-当前关键展示口径：
+当前公网访问通过 `nginx` 代理到本地服务，不再建议直接暴露 `:8787` 给公网。
 
-- 顶部业务卡按当前账号展示
-- 监测账号数单独作为范围信息
-- 趋势图按日更数据展示
-- 榜单可切当前账号或所有账号
-- 榜单只显示前十
+## 10. 历史飞书模块的定位
 
-## 8. 调度与运行架构
+仓库里仍然保留：
 
-### 8.1 定时任务
+- [feishu.py](/Users/cc/Documents/New%20project/xhs_feishu_monitor/feishu.py)
+- [profile_to_feishu.py](/Users/cc/Documents/New%20project/xhs_feishu_monitor/profile_to_feishu.py)
+- [profile_dashboard_to_feishu.py](/Users/cc/Documents/New%20project/xhs_feishu_monitor/profile_dashboard_to_feishu.py)
 
-当前调度基于 Mac `launchd`。
+原因：
 
-默认策略：
+- 历史兼容
+- 复用榜单/日历/字段构建逻辑
+- 某些导入桥接脚本仍会用到
 
-- 每天 `14:00` 触发
-- 读取本地监控清单
-- 跑完整采集与飞书同步
+但这些模块不再代表当前日常主线。
 
-### 8.2 启动入口
+## 11. 当前主线一句话总结
 
-主要入口：
+当前项目的真实主线是：
 
-- [cli.py](/Users/cc/Documents/New%20project/xhs_feishu_monitor/cli.py)
-- [profile_batch_report.py](/Users/cc/Documents/New%20project/xhs_feishu_monitor/profile_batch_report.py)
-- [profile_batch_to_feishu.py](/Users/cc/Documents/New%20project/xhs_feishu_monitor/profile_batch_to_feishu.py)
-- [profile_live_sync.py](/Users/cc/Documents/New%20project/xhs_feishu_monitor/profile_live_sync.py)
-- [local_stats_app/server.py](/Users/cc/Documents/New%20project/xhs_feishu_monitor/local_stats_app/server.py)
+- 本机登录采集
+- 本机缓存与看板
+- 本机推送服务器
+- 服务器网页和手机页查看
 
-### 8.3 运行状态可视化
-
-当前系统已具备以下本地可观测能力：
-
-- 进度条
-- 成功/失败计数
-- 预计剩余时间
-- 登录态健康
-- 代理池状态
-- 单账号识别状态
-
-## 9. 稳健性设计
-
-### 9.1 不覆盖完整数据
-
-这是当前最核心的稳健性规则。
-
-当本次抓取退化为：
-
-- 无 `note_id`
-- 无作品链接
-- 无评论数
-- 无最新评论摘要
-
-系统必须优先保留已有完整数据。
-
-### 9.2 本地优先显示
-
-手动同步时：
-
-- 先更新本地前端
-- 后更新飞书
-
-这样即使飞书慢或失败，用户也能先看到最新结果。
-
-### 9.3 登录态问题隔离
-
-登录态异常不应表现为“数据突然变成 0”。
-
-系统当前的处理方式：
-
-- 通过健康检查暴露异常
-- 在监测列表显示失败原因
-- 必要时弹登录窗口
-- 保留旧详情，避免误清空
-
-### 9.4 文件写入安全
-
-监测清单采用原子写入，避免中途异常造成清单损坏。
-
-### 9.5 飞书写入节流
-
-通过“写前对比”减少无意义更新，降低：
-
-- 同步时间
-- API 调用量
-- 写入失败率
-
-## 10. 扩展点设计
-
-### 10.1 采集扩展点
-
-当前最明显的扩展点在 [xhs.py](/Users/cc/Documents/New%20project/xhs_feishu_monitor/xhs.py)：
-
-- 新增签名接口
-- 替换签名库
-- 加深评论分页
-- 补充二级评论
-
-### 10.2 数据扩展点
-
-当前可继续扩展：
-
-- 评论内容情绪标签
-- 热词抽取
-- 评论关键词预警
-- 项目级阈值
-- 作品内容分类
-
-### 10.3 展示扩展点
-
-本地前端可继续扩展：
-
-- 项目首页独立大屏
-- 评论详情页
-- 失败原因统计页
-- 账号对比视图
-
-## 11. 当前技术债
-
-### 11.1 单机本地耦合较强
-
-当前系统默认：
-
-- 本机 Chrome
-- 本机 `launchd`
-- 本机文件清单
-- 本机前端服务
-
-这保证了快速可用，但也意味着：
-
-- 不利于多人协作部署
-- 不利于跨电脑迁移
-
-### 11.2 采集与业务编排仍部分耦合
-
-`profile_report.py` 当前承担了：
-
-- 主页报告生成
-- 作品详情补全
-- 评论摘要补全
-
-后续如果评论能力继续加深，建议拆出专门的“作品详情 enrich 层”。
-
-### 11.3 飞书既做展示又做部分持久化
-
-这在当前阶段可接受，但当：
-
-- 历史数据量快速增长
-- 需要更复杂查询
-- 需要更稳定恢复
-
-时，飞书可能不够。
-
-## 12. 后续重构建议
-
-### 12.1 短期
-
-- 把评论摘要加入预警通知
-- 把评论采集封装成独立模块
-- 增加采集失败原因统计页
-
-### 12.2 中期
-
-- 把“账号采集 / 作品补全 / 评论补全 / 飞书同步”拆成更清晰的流水线模块
-- 增加本地 SQLite 缓存层，减少对飞书历史回读依赖
-- 为项目级配置增加单独配置文件
-
-### 12.3 长期
-
-- 支持云端运行
-- 支持远程任务执行
-- 支持统一任务中心
-- 支持跨平台多源内容监控
-
-## 13. 结论
-
-当前架构适合的目标非常明确：
-
-- 本地单机长期运行
-- 30 到 300 个账号规模
-- 以飞书为团队查看入口
-- 以本地前端为操控与即时查看入口
-
-当前最关键的技术路径也已经明确：
-
-- 采集层以 `requests + Chrome Cookie + 签名接口` 为主
-- 浏览器层作为回退与登录补救
-- 飞书层以对比更新和多表拆分控制复杂度
-- 本地前端承担管理、查看、限频、自检与兜底展示
-
-在这个边界内，当前架构是合理且可持续维护的。
+这也是后续维护和优化应优先围绕的方向。
