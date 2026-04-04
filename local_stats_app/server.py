@@ -2931,6 +2931,13 @@ class MonitoringSyncStore:
             if message:
                 self._status["message"] = message
 
+    def _current_sync_scope_label(self) -> str:
+        if self._current_sync_project:
+            return f"项目「{self._current_sync_project}」"
+        if len(self._current_sync_urls) == 1:
+            return "当前账号"
+        return "全部项目"
+
     def _publish_login_state(self, payload: Dict[str, Any], *, running: bool, sample_url: str) -> None:
         if not self.login_state_store:
             return
@@ -3047,19 +3054,32 @@ class MonitoringSyncStore:
                     pass
                 if not self.dashboard_store.commit_local_override():
                     self.dashboard_store.invalidate()
+                progress_snapshot = dict(self._status.get("progress") or {})
+                successful_accounts = max(int(progress_snapshot.get("success_count") or 0), len(reports))
+                total_accounts = max(len(current_urls), successful_accounts, len(reports))
+                failed_accounts = max(
+                    0,
+                    int(progress_snapshot.get("failed_count") or 0),
+                    total_accounts - successful_accounts,
+                )
                 local_summary = {
-                    "total_accounts": len(reports),
-                    "successful_accounts": len(reports),
-                    "failed_accounts": 0,
+                    "total_accounts": total_accounts,
+                    "successful_accounts": successful_accounts,
+                    "failed_accounts": failed_accounts,
                     "total_works": sum(len(report.get("works") or []) for report in reports),
                 }
                 finished_progress = build_progress_timing(
                     started_at=self._status.get("started_at", ""),
                     overall_percent=100,
                 )
+                summary_message = (
+                    f"本地缓存已更新，成功 {local_summary.get('successful_accounts', 0)} 个账号，失败 {local_summary.get('failed_accounts', 0)} 个，作品 {local_summary.get('total_works', 0)} 条"
+                    if local_summary.get("failed_accounts", 0)
+                    else f"本地缓存已更新，账号 {local_summary.get('total_accounts', 0)} 个，作品 {local_summary.get('total_works', 0)} 条"
+                )
                 result = {
                     "state": "success",
-                    "message": f"本地缓存已更新，账号 {local_summary.get('total_accounts', 0)} 个，作品 {local_summary.get('total_works', 0)} 条",
+                    "message": summary_message,
                     "started_at": "",
                     "finished_at": finished_at,
                     "last_success_at": finished_at,
@@ -3076,8 +3096,12 @@ class MonitoringSyncStore:
                         "works": local_summary.get("total_works", 0),
                         "status": "success",
                         "success_count": local_summary.get("successful_accounts", 0),
-                        "failed_count": 0,
-                        "detail_text": f"已完成 {local_summary.get('total_accounts', 0)} 个账号看板更新",
+                        "failed_count": local_summary.get("failed_accounts", 0),
+                        "detail_text": (
+                            f"已完成 {local_summary.get('successful_accounts', 0)} 个账号，失败 {local_summary.get('failed_accounts', 0)} 个"
+                            if local_summary.get("failed_accounts", 0)
+                            else f"已完成 {local_summary.get('total_accounts', 0)} 个账号看板更新"
+                        ),
                         "elapsed_seconds": finished_progress["elapsed_seconds"],
                         "elapsed_text": finished_progress["elapsed_text"],
                         "eta_seconds": 0,
@@ -3185,6 +3209,7 @@ class MonitoringSyncStore:
             return
         if phase == "collect":
             status = str(payload.get("status") or "").strip()
+            sync_scope = self._current_sync_scope_label()
             if status == "success":
                 update_monitored_metadata(
                     self.urls_file,
@@ -3200,12 +3225,17 @@ class MonitoringSyncStore:
                             "fetch_state": "ok",
                             "fetch_message": "已获取账号快照",
                             "fetch_checked_at": iso_now(),
+                            "last_sync_state": "success",
+                            "last_sync_message": f"本轮成功，作品 {int(payload.get('works') or 0)} 条",
+                            "last_sync_at": iso_now(),
+                            "last_sync_scope": sync_scope,
                         }
                     ],
                 )
             elif status == "failed":
+                error_text = str(payload.get("error") or "").strip()
                 fetch_state, fetch_message = classify_monitored_fetch_state(
-                    error_text=payload.get("error") or "",
+                    error_text=error_text,
                     has_snapshot=False,
                 )
                 update_monitored_metadata(
@@ -3217,6 +3247,24 @@ class MonitoringSyncStore:
                             "fetch_state": fetch_state,
                             "fetch_message": fetch_message,
                             "fetch_checked_at": iso_now(),
+                            "last_sync_state": "error",
+                            "last_sync_message": error_text or fetch_message,
+                            "last_sync_at": iso_now(),
+                            "last_sync_scope": sync_scope,
+                        }
+                    ],
+                )
+            elif status == "running":
+                update_monitored_metadata(
+                    self.urls_file,
+                    [
+                        {
+                            "url": payload.get("url") or "",
+                            "account_id": payload.get("account_id") or extract_profile_user_id(str(payload.get("url") or "")),
+                            "last_sync_state": "running",
+                            "last_sync_message": "本轮采集中",
+                            "last_sync_at": iso_now(),
+                            "last_sync_scope": sync_scope,
                         }
                     ],
                 )

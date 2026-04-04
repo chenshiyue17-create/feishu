@@ -196,6 +196,10 @@ def enrich_monitored_entries(
                 "fetch_state": fetch_state,
                 "fetch_message": fetch_message or "等待首次同步",
                 "fetch_checked_at": str(cached_meta.get("fetch_checked_at") or "").strip(),
+                "last_sync_state": str(cached_meta.get("last_sync_state") or "").strip(),
+                "last_sync_message": str(cached_meta.get("last_sync_message") or "").strip(),
+                "last_sync_at": str(cached_meta.get("last_sync_at") or "").strip(),
+                "last_sync_scope": str(cached_meta.get("last_sync_scope") or "").strip(),
             }
         )
     return enriched
@@ -236,6 +240,10 @@ def load_monitored_metadata(urls_file: str) -> Dict[str, Dict[str, str]]:
             "fetch_state": str(raw_meta.get("fetch_state") or "").strip(),
             "fetch_message": str(raw_meta.get("fetch_message") or "").strip(),
             "fetch_checked_at": str(raw_meta.get("fetch_checked_at") or "").strip(),
+            "last_sync_state": str(raw_meta.get("last_sync_state") or "").strip(),
+            "last_sync_message": str(raw_meta.get("last_sync_message") or "").strip(),
+            "last_sync_at": str(raw_meta.get("last_sync_at") or "").strip(),
+            "last_sync_scope": str(raw_meta.get("last_sync_scope") or "").strip(),
         }
     return normalized
 
@@ -278,6 +286,26 @@ def update_monitored_metadata(urls_file: str, items: List[Dict[str, Any]]) -> Pa
             if "fetch_checked_at" in item
             else current.get("fetch_checked_at", "")
         )
+        last_sync_state_value = (
+            str(item.get("last_sync_state") or "").strip()
+            if "last_sync_state" in item
+            else current.get("last_sync_state", "")
+        )
+        last_sync_message_value = (
+            str(item.get("last_sync_message") or "").strip()
+            if "last_sync_message" in item
+            else current.get("last_sync_message", "")
+        )
+        last_sync_at_value = (
+            str(item.get("last_sync_at") or "").strip()
+            if "last_sync_at" in item
+            else current.get("last_sync_at", "")
+        )
+        last_sync_scope_value = (
+            str(item.get("last_sync_scope") or "").strip()
+            if "last_sync_scope" in item
+            else current.get("last_sync_scope", "")
+        )
         metadata[url] = {
             "account": account_value,
             "account_id": account_id_value,
@@ -288,6 +316,10 @@ def update_monitored_metadata(urls_file: str, items: List[Dict[str, Any]]) -> Pa
             "fetch_state": fetch_state_value,
             "fetch_message": fetch_message_value,
             "fetch_checked_at": fetch_checked_at_value,
+            "last_sync_state": last_sync_state_value,
+            "last_sync_message": last_sync_message_value,
+            "last_sync_at": last_sync_at_value,
+            "last_sync_scope": last_sync_scope_value,
         }
     payload = json.dumps(metadata, ensure_ascii=False, indent=2)
     with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=str(path.parent), delete=False) as handle:
@@ -315,6 +347,10 @@ def write_monitored_metadata(urls_file: str, metadata: Dict[str, Dict[str, Any]]
             "fetch_state": str(raw_meta.get("fetch_state") or "").strip(),
             "fetch_message": str(raw_meta.get("fetch_message") or "").strip(),
             "fetch_checked_at": str(raw_meta.get("fetch_checked_at") or "").strip(),
+            "last_sync_state": str(raw_meta.get("last_sync_state") or "").strip(),
+            "last_sync_message": str(raw_meta.get("last_sync_message") or "").strip(),
+            "last_sync_at": str(raw_meta.get("last_sync_at") or "").strip(),
+            "last_sync_scope": str(raw_meta.get("last_sync_scope") or "").strip(),
         }
     payload = json.dumps(normalized, ensure_ascii=False, indent=2)
     with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=str(path.parent), delete=False) as handle:

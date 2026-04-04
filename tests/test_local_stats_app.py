@@ -759,6 +759,30 @@ class LocalStatsAppTest(unittest.TestCase):
         self.assertEqual(enriched[0]["summary_text"], "粉丝 88 · 获赞 666 · 作品 9")
         self.assertEqual(enriched[0]["fetch_state"], "ok")
 
+    def test_enrich_monitored_entries_exposes_last_sync_result(self) -> None:
+        enriched = enrich_monitored_entries(
+            [{"url": "https://www.xiaohongshu.com/user/profile/u1", "active": True, "project": "项目A"}],
+            [],
+            {
+                "https://www.xiaohongshu.com/user/profile/u1": {
+                    "account": "缓存账号",
+                    "profile_url": "https://www.xiaohongshu.com/user/profile/u1?from=cache",
+                    "fans_text": "88",
+                    "interaction_text": "666",
+                    "works_text": "9",
+                    "fetch_state": "ok",
+                    "fetch_message": "已获取账号快照",
+                    "last_sync_state": "error",
+                    "last_sync_message": "请求超时，稍后重试",
+                    "last_sync_at": "2026-04-04T22:12:00+08:00",
+                    "last_sync_scope": "全部项目",
+                }
+            },
+        )
+        self.assertEqual(enriched[0]["last_sync_state"], "error")
+        self.assertEqual(enriched[0]["last_sync_message"], "请求超时，稍后重试")
+        self.assertEqual(enriched[0]["last_sync_scope"], "全部项目")
+
     def test_enrich_monitored_entries_uses_dashboard_fallback(self) -> None:
         enriched = enrich_monitored_entries(
             [{"url": "https://www.xiaohongshu.com/user/profile/u1", "active": True, "project": "项目A"}],
@@ -822,6 +846,30 @@ class LocalStatsAppTest(unittest.TestCase):
             metadata = load_monitored_metadata(urls_file)
         self.assertEqual(metadata["https://www.xiaohongshu.com/user/profile/u1"]["account"], "账号A")
         self.assertEqual(metadata["https://www.xiaohongshu.com/user/profile/u1"]["fetch_state"], "error")
+
+    def test_update_monitored_metadata_persists_last_sync_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            urls_file = f"{temp_dir}/urls.txt"
+            write_monitored_entries(
+                urls_file,
+                [{"url": "https://www.xiaohongshu.com/user/profile/u1", "active": True, "project": "项目A"}],
+            )
+            update_monitored_metadata(
+                urls_file,
+                [
+                    {
+                        "url": "https://www.xiaohongshu.com/user/profile/u1",
+                        "last_sync_state": "error",
+                        "last_sync_message": "账号页返回空结果",
+                        "last_sync_at": "2026-04-04T22:00:00+08:00",
+                        "last_sync_scope": "全部项目",
+                    }
+                ],
+            )
+            metadata = load_monitored_metadata(urls_file)
+        self.assertEqual(metadata["https://www.xiaohongshu.com/user/profile/u1"]["last_sync_state"], "error")
+        self.assertEqual(metadata["https://www.xiaohongshu.com/user/profile/u1"]["last_sync_message"], "账号页返回空结果")
+        self.assertEqual(metadata["https://www.xiaohongshu.com/user/profile/u1"]["last_sync_scope"], "全部项目")
 
     def test_classify_monitored_fetch_state_login_redirect(self) -> None:
         state, message = classify_monitored_fetch_state(error_text="账号页返回空结果或登录跳转: /login", has_snapshot=False)
@@ -1427,6 +1475,63 @@ class LocalStatsAppTest(unittest.TestCase):
         self.assertEqual(store._status["state"], "success")
         self.assertIn("本地缓存已更新", store._status["message"])
         self.assertEqual(load_reports.call_args.kwargs["project"], "项目A")
+
+    def test_sync_loop_keeps_failed_account_counts_in_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = write_monitored_entries(
+                f"{temp_dir}/urls.txt",
+                [
+                    {"url": "https://www.xiaohongshu.com/user/profile/u1", "active": True, "project": "项目A"},
+                    {"url": "https://www.xiaohongshu.com/user/profile/u2", "active": True, "project": "项目A"},
+                ],
+            )
+            dashboard_store = DashboardStore(env_file=f"{temp_dir}/.env")
+            store = MonitoringSyncStore(
+                env_file=f"{temp_dir}/.env",
+                urls_file=str(path),
+                dashboard_store=dashboard_store,
+            )
+            store._running = True
+            store._current_sync_urls = [
+                "https://www.xiaohongshu.com/user/profile/u1",
+                "https://www.xiaohongshu.com/user/profile/u2",
+            ]
+            store._current_sync_project = "项目A"
+            store._status = {
+                "state": "running",
+                "message": "开始同步",
+                "started_at": "2026-03-23T18:00:00+08:00",
+                "finished_at": "",
+                "last_success_at": "",
+                "last_error": "",
+                "pending": False,
+                "progress": {"success_count": 1, "failed_count": 1},
+                "summary": {},
+            }
+            reports = [
+                {
+                    "captured_at": "2026-03-23T18:05:00+08:00",
+                    "source_url": "https://www.xiaohongshu.com/user/profile/u1",
+                    "profile": {
+                        "profile_user_id": "u1",
+                        "nickname": "账号A",
+                        "profile_url": "https://www.xiaohongshu.com/user/profile/u1",
+                        "fans_count_text": "100",
+                        "interaction_count_text": "200",
+                    },
+                    "works": [{"title_copy": "作品A"}],
+                }
+            ]
+            settings = SimpleNamespace(validate_for_sync=lambda: None)
+            with (
+                patch("xhs_feishu_monitor.local_stats_app.server.load_settings", return_value=settings),
+                patch.object(store, "_ensure_login_ready_for_sync", return_value=None),
+                patch("xhs_feishu_monitor.local_stats_app.server.load_reports_for_sync", return_value=reports),
+            ):
+                store._sync_loop()
+        self.assertEqual(store._status["summary"]["successful_accounts"], 1)
+        self.assertEqual(store._status["summary"]["failed_accounts"], 1)
+        self.assertIn("失败 1 个", store._status["message"])
 
     def test_upload_progress_does_not_override_dashboard_success_state(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

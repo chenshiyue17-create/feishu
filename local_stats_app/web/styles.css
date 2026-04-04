@@ -1415,6 +1415,11 @@ body {
   color: #7fdcc2;
 }
 
+.monitor-summary-chip.is-running {
+  background: rgba(255, 209, 102, 0.15);
+  color: var(--accent-alt);
+}
+
 .monitor-summary-chip.is-time {
   background: rgba(144, 190, 255, 0.12);
   color: #c7dcff;
@@ -1435,6 +1440,10 @@ body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.monitor-error-text {
+  color: #ffb79d;
 }
 
 .monitor-meta {

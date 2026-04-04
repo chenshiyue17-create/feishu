@@ -415,6 +415,14 @@ function getFetchStateText(status) {
   return "识别中";
 }
 
+function getLastSyncStateText(status) {
+  const normalized = String(status || "").trim();
+  if (normalized === "success") return "本轮成功";
+  if (normalized === "error") return "本轮失败";
+  if (normalized === "running") return "本轮采集中";
+  return "";
+}
+
 function buildActionLink(url, label) {
   if (!url) return "";
   return `<a class="action-link" href="${url}" target="_blank" rel="noreferrer">${label}</a>`;
@@ -1842,6 +1850,26 @@ function renderMonitoring() {
               <span class="monitor-summary-chip is-time" title="${entry.fetch_checked_at || ""}">采集 ${formatDateTime(entry.fetch_checked_at)}</span>
               <span class="monitor-summary-chip ${entry.fetch_state === "error" ? "is-error" : entry.fetch_state === "ok" ? "is-success" : ""}">${entry.fetch_message || "等待首次同步"}</span>
             </div>
+            ${
+              entry.last_sync_state
+                ? `<div class="monitor-summary-row">
+                    <span class="monitor-summary-chip is-time" title="${entry.last_sync_at || ""}">本轮 ${formatDateTime(entry.last_sync_at)}</span>
+                    <span class="monitor-summary-chip ${
+                      entry.last_sync_state === "error"
+                        ? "is-error"
+                        : entry.last_sync_state === "success"
+                        ? "is-success"
+                        : "is-running"
+                    }">${getLastSyncStateText(entry.last_sync_state)}</span>
+                    ${entry.last_sync_scope ? `<span class="monitor-summary-chip">${entry.last_sync_scope}</span>` : ""}
+                  </div>`
+                : ""
+            }
+            ${
+              entry.last_sync_state === "error" && entry.last_sync_message
+                ? `<div class="monitor-link-text monitor-error-text" title="${entry.last_sync_message}">失败原因 ${truncateMiddle(entry.last_sync_message, 120)}</div>`
+                : ""
+            }
             <div class="monitor-link-text" title="${entry.url}">主页 ${truncateMiddle(entry.url, 72)}</div>
           </div>
           <div class="monitor-item-actions">
