@@ -28,6 +28,43 @@
 - 服务器网页查看
 - 手机端查看
 
+### 2.3 当前链路图
+
+```mermaid
+flowchart TD
+    login["本机浏览器登录小红书"]
+    manual["手动更新\n全部项目 / 当前项目 / 当前账号"]
+    auto["launchd 自动任务\nlocal_daily_sync.py"]
+    gate["登录态与详情可用性检查"]
+    collect["采集控制器\nxhs.py"]
+    signed["签名接口采集\nxhs_signed.py + xhshow"]
+    fallback["浏览器补救通道\nplaywright / local_browser"]
+    metrics["详情与评论补抓\nprofile_metrics.py"]
+    batch["批量汇总\nprofile_batch_report.py"]
+    cache["项目缓存写盘\nproject_cache.py"]
+    local["本地网页看板\nlocal_stats_app/server.py"]
+    upload["缓存推送\nprofile_cache_push.py"]
+    nginx["nginx"]
+    server["服务器展示服务\nlocal_stats_app/server.py"]
+    mobile["手机页 / mobile"]
+
+    login --> gate
+    manual --> gate
+    auto --> gate
+    gate --> collect
+    collect --> signed
+    collect --> fallback
+    signed --> metrics
+    fallback --> metrics
+    metrics --> batch
+    batch --> cache
+    cache --> local
+    cache --> upload
+    upload --> nginx
+    nginx --> server
+    server --> mobile
+```
+
 ### 2.2 核心原则
 
 - 采集在本机完成，不在服务器抓小红书
@@ -37,6 +74,58 @@
 - 手机端只看服务器缓存，不触发采集
 
 ## 3. 当前模块分层
+
+### 3.0 模块结构图
+
+```mermaid
+flowchart LR
+    subgraph collect["采集层"]
+        xhs["xhs.py"]
+        signed["xhs_signed.py"]
+        report["profile_report.py"]
+        metrics["profile_metrics.py"]
+        batch["profile_batch_report.py"]
+    end
+
+    subgraph cache["缓存与榜单层"]
+        pcache["project_cache.py"]
+        dashboard["profile_dashboard_to_feishu.py"]
+        ds["local_stats_app/data_service.py"]
+    end
+
+    subgraph localui["本地前端层"]
+        server["local_stats_app/server.py"]
+        html["web/index.html"]
+        js["web/app.js"]
+        css["web/styles.css"]
+    end
+
+    subgraph schedule["自动任务层"]
+        daily["local_daily_sync.py"]
+        status["local_daily_sync_status.py"]
+    end
+
+    subgraph remote["服务器展示层"]
+        push["profile_cache_push.py"]
+        remoteServer["local_stats_app/server.py\nserver mode"]
+    end
+
+    xhs --> signed
+    xhs --> report
+    report --> metrics
+    metrics --> batch
+    batch --> pcache
+    pcache --> dashboard
+    dashboard --> ds
+    ds --> server
+    server --> html
+    server --> js
+    server --> css
+    daily --> xhs
+    daily --> pcache
+    daily --> push
+    push --> remoteServer
+```
 
 ### 3.1 采集层
 

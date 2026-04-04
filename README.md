@@ -46,6 +46,42 @@
 - 本地自动任务：
   - [local_daily_sync.py](/Users/cc/Documents/New%20project/xhs_feishu_monitor/local_daily_sync.py)
 
+## 链路图
+
+```mermaid
+flowchart LR
+    user["本机用户（已登录小红书）"]
+    app["XHS Local Stats App.app"]
+    localweb["本地看板 / http://127.0.0.1:8787"]
+    collect["采集控制层 / xhs.py"]
+    signed["签名接口层 / xhs_signed.py + xhshow"]
+    browser["浏览器补救通道 / playwright or local_browser"]
+    report["单账号 / 批量报告\nprofile_report.py\nprofile_batch_report.py"]
+    cache["项目缓存\nproject_cache.py"]
+    launchd["自动任务 / local_daily_sync.py"]
+    push["缓存推送 / profile_cache_push.py"]
+    server["服务器展示服务 / local_stats_app/server.py"]
+    mobile["手机页 / mobile"]
+
+    user --> app
+    app --> localweb
+    app --> collect
+    launchd --> collect
+    collect --> signed
+    collect --> browser
+    signed --> report
+    browser --> report
+    report --> cache
+    cache --> localweb
+    cache --> push
+    push --> server
+    server --> mobile
+```
+
+更完整的模块结构见：
+
+- [TECHNICAL_ARCHITECTURE.md](/Users/cc/Documents/New%20project/xhs_feishu_monitor/TECHNICAL_ARCHITECTURE.md)
+
 ## 采集链路
 
 当前主采集链路是：
