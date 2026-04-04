@@ -18,6 +18,7 @@ from .profile_dashboard_to_feishu import (
     build_dashboard_portal_fields,
     build_single_work_ranking_fields,
     build_single_work_rankings,
+    select_previous_day_work_baseline,
 )
 from .profile_works_to_feishu import (
     build_work_calendar_history_index,
@@ -61,12 +62,14 @@ def rebuild_dashboard_cache_from_project_dirs(settings) -> Dict[str, Any]:
             project_dir=project_dir,
             settings=settings,
         ) or _read_json(project_dir / "ranking_rows.json", [])
+        project_alert_rows = _rebuild_project_alert_rows_from_tracked_cache(
+            project_dir=project_dir,
+            settings=settings,
+        ) or (_read_json(project_dir / "dashboard.json", {}) or {}).get("alerts") or []
         if project_ranking_rows:
             _write_json(project_dir / "ranking_rows.json", project_ranking_rows)
             _write_csv(project_dir / "单条排行榜.csv", project_ranking_rows)
         combined_project_ranking_rows.extend(project_ranking_rows)
-        project_dashboard = _read_json(project_dir / "dashboard.json", {})
-        project_alert_rows = (project_dashboard or {}).get("alerts") or []
         combined_alert_rows.extend(project_alert_rows)
         if project_calendar_rows or project_ranking_rows or project_alert_rows:
             refreshed_project_payload = build_dashboard_payload_from_tables(
@@ -128,6 +131,47 @@ def _rebuild_project_ranking_rows_from_tracked_cache(*, project_dir: Path, setti
     return _build_ranking_rows_from_items(
         ranking_items,
         history_index=history_index,
+    )
+
+
+def _rebuild_project_alert_rows_from_tracked_cache(*, project_dir: Path, settings) -> List[Dict[str, Any]]:
+    tracked_payload = _read_json(project_dir / TRACKED_WORKS_CACHE_FILE, {})
+    tracked_items = tracked_payload.get("items") if isinstance(tracked_payload, dict) else []
+    history_payload = _read_json(project_dir / TRACKED_WORK_HISTORY_CACHE_FILE, [])
+    if not isinstance(tracked_items, list) or not tracked_items:
+        return []
+    tracking_window_days = max(
+        1,
+        int(
+            (tracked_payload.get("tracking_window_days") if isinstance(tracked_payload, dict) else 0)
+            or getattr(settings, "feishu_review_upload_days", 14)
+            or 14
+        ),
+    )
+    active_cutoff = datetime.now().astimezone().date() - timedelta(days=tracking_window_days - 1)
+    normalized_items = [
+        dict(item)
+        for item in tracked_items
+        if isinstance(item, dict) and _tracked_work_is_active(entry=dict(item), active_cutoff=active_cutoff)
+    ]
+    if not normalized_items:
+        return []
+    latest_captured_at = max(
+        (str((item or {}).get("captured_at") or "").strip() for item in normalized_items),
+        default="",
+    )
+    history_index = build_work_calendar_history_index(history_payload if isinstance(history_payload, list) else [])
+    current_items = {
+        str(item.get("tracked_key") or _resolve_tracked_work_key(item) or ""): item
+        for item in normalized_items
+        if str(item.get("tracked_key") or _resolve_tracked_work_key(item) or "")
+    }
+    return _build_alert_rows_from_tracked_items(
+        current_items=current_items,
+        previous_items={},
+        history_index=history_index,
+        captured_at=latest_captured_at,
+        settings=settings,
     )
 
 
@@ -709,6 +753,7 @@ def _build_project_tracked_work_state(
     alert_rows = _build_alert_rows_from_tracked_items(
         current_items=tracked_items,
         previous_items=previous_items_by_key,
+        history_index=history_index,
         captured_at=latest_captured_at,
         settings=settings,
     )
@@ -809,6 +854,7 @@ def _build_alert_rows_from_tracked_items(
     *,
     current_items: Dict[str, Dict[str, Any]],
     previous_items: Dict[str, Dict[str, Any]],
+    history_index: Dict[str, List[tuple[Any, Dict[str, Any]]]],
     captured_at: str,
     settings,
 ) -> List[Dict[str, Any]]:
@@ -816,9 +862,50 @@ def _build_alert_rows_from_tracked_items(
     threshold = max(1, int(getattr(settings, "interaction_alert_delta_threshold", 10) or 10))
     min_previous = max(0, int(getattr(settings, "comment_alert_min_previous_count", 0) or 0))
     alert_date = _extract_snapshot_date(captured_at)
+    previous_lookup: Dict[str, Dict[str, Any]] = {}
+
+    for tracked_key, previous in previous_items.items():
+        candidates = [
+            str(tracked_key or "").strip(),
+            str(previous.get("fingerprint") or "").strip(),
+            str(previous.get("raw_fingerprint") or "").strip(),
+            str(previous.get("note_id") or "").strip(),
+        ]
+        for candidate in candidates:
+            if candidate and candidate not in previous_lookup:
+                previous_lookup[candidate] = previous
 
     for tracked_key, current in current_items.items():
         previous = dict(previous_items.get(tracked_key) or {})
+        if not previous:
+            for candidate in [
+                str(current.get("fingerprint") or "").strip(),
+                str(current.get("raw_fingerprint") or "").strip(),
+            ]:
+                if not candidate:
+                    continue
+                baseline = select_previous_day_work_baseline(
+                    history_index=history_index,
+                    fingerprint=candidate,
+                    snapshot_date=str(current.get("snapshot_date") or ""),
+                )
+                if baseline:
+                    previous = {
+                        "like_count": baseline.get("点赞数"),
+                        "comment_count": baseline.get("评论数"),
+                    }
+                    break
+        if not previous:
+            candidates = [
+                str(tracked_key or "").strip(),
+                str(current.get("fingerprint") or "").strip(),
+                str(current.get("raw_fingerprint") or "").strip(),
+                str(current.get("note_id") or "").strip(),
+            ]
+            for candidate in candidates:
+                if candidate and previous_lookup.get(candidate):
+                    previous = dict(previous_lookup[candidate])
+                    break
         if not previous:
             continue
         current_like = _to_optional_int(current.get("like_count"))

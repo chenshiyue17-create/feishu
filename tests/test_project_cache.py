@@ -585,6 +585,100 @@ class ProjectCacheTest(unittest.TestCase):
             self.assertEqual(growth_rows[0]["账号ID"], "u1")
             self.assertEqual(growth_rows[0]["互动次日增量"], 30)
 
+    def test_write_project_cache_bundle_generates_alert_when_tracked_key_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            settings = SimpleNamespace(
+                project_cache_dir=tmpdir,
+                feishu_review_upload_days=14,
+                xhs_fetch_work_comment_preview=False,
+                xhs_work_comment_preview_limit=0,
+                interaction_alert_delta_threshold=10,
+                comment_alert_min_previous_count=0,
+            )
+            cache_dir = Path(tmpdir)
+            project_dir = cache_dir / "默认项目"
+            project_dir.mkdir(parents=True, exist_ok=True)
+            (project_dir / "tracked_works.json").write_text(
+                json.dumps(
+                    {
+                        "project": "默认项目",
+                        "updated_at": "2026-04-03T14:00:00+08:00",
+                        "tracking_window_days": 14,
+                        "items": [
+                            {
+                                "tracked_key": "fp:raw-1",
+                                "fingerprint": "fp:raw-1",
+                                "raw_fingerprint": "raw-1",
+                                "note_id": "",
+                                "note_url": "",
+                                "xsec_token": "old-token",
+                                "account_id": "u1",
+                                "account": "账号A",
+                                "profile_url": "https://www.xiaohongshu.com/user/profile/u1",
+                                "title_copy": "老作品",
+                                "note_type": "video",
+                                "cover_url": "https://img.example.com/old.jpg",
+                                "like_count": 19,
+                                "like_count_text": "19",
+                                "comment_count": 48,
+                                "comment_count_text": "48",
+                                "comment_count_is_lower_bound": False,
+                                "recent_comments_summary": "",
+                                "captured_at": "2026-04-03T14:00:00+08:00",
+                                "snapshot_date": "2026-04-03",
+                                "first_seen_at": "2026-04-01T14:00:00+08:00",
+                                "last_seen_at": "2026-04-03T14:00:00+08:00",
+                                "last_refreshed_at": "2026-04-03T14:00:00+08:00",
+                                "source": "tracked",
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+            report = {
+                "captured_at": "2026-04-04T14:00:00+08:00",
+                "project": "默认项目",
+                "profile": {
+                    "profile_user_id": "u1",
+                    "nickname": "账号A",
+                    "profile_url": "https://www.xiaohongshu.com/user/profile/u1",
+                    "fans_count_text": "100",
+                    "interaction_count_text": "200",
+                    "work_count_display_text": "30+",
+                    "visible_work_count": 30,
+                },
+                "works": [
+                    {
+                        "title_copy": "老作品",
+                        "note_type": "video",
+                        "like_count": 19,
+                        "like_count_text": "19",
+                        "comment_count": 59,
+                        "comment_count_text": "59",
+                        "cover_url": "https://img.example.com/old.jpg",
+                        "note_url": "https://www.xiaohongshu.com/explore/new-note?xsec_token=new-token&xsec_source=pc_user",
+                        "xsec_token": "new-token",
+                        "note_id": "new-note",
+                        "fingerprint": "note:new-note",
+                        "raw_fingerprint": "raw-1",
+                        "index": 0,
+                    }
+                ],
+            }
+
+            write_project_cache_bundle(reports=[report], settings=settings)
+
+            project_payload = json.loads((project_dir / "dashboard.json").read_text(encoding="utf-8"))
+            alerts = project_payload.get("alerts") or []
+            self.assertEqual(len(alerts), 1)
+            self.assertEqual(alerts[0]["account_id"], "u1")
+            self.assertEqual(alerts[0]["like_delta"], 0)
+            self.assertEqual(alerts[0]["comment_delta"], 11)
+            self.assertEqual(alerts[0]["alert_type"], "评论预警")
+
     def test_write_project_cache_bundle_keeps_tracked_work_after_top30_changes(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             settings = SimpleNamespace(
