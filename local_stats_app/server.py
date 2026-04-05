@@ -1243,6 +1243,98 @@ def _load_cached_ranking_history_index(settings) -> Dict[str, List[Any]]:
     return build_work_calendar_history_index(history_rows)
 
 
+def _build_project_history_rankings_from_cache(
+    *,
+    settings,
+    project_name: str,
+    account_ids: set[str],
+) -> Dict[str, Dict[str, Any]]:
+    normalized_project = normalize_project_name(project_name)
+    if settings is None or not normalized_project:
+        return {}
+    cache_dir = resolve_project_cache_dir(settings)
+    project_dir = cache_dir / normalized_project
+    tracked_payload = _load_json_if_exists(project_dir / "tracked_works.json")
+    history_rows = _load_rows_json_if_exists(str(project_dir / "tracked_work_history.json"))
+    tracked_items = tracked_payload.get("items") or []
+    if not history_rows or not isinstance(tracked_items, list):
+        return {}
+
+    metadata_by_fingerprint: Dict[str, Dict[str, Any]] = {}
+    for item in tracked_items:
+        if not isinstance(item, dict):
+            continue
+        account_id = str(item.get("account_id") or "").strip()
+        if account_ids and account_id not in account_ids:
+            continue
+        for fingerprint_key in (
+            str(item.get("fingerprint") or "").strip(),
+            str(item.get("raw_fingerprint") or "").strip(),
+            str(item.get("tracked_key") or "").removeprefix("fp:").strip(),
+        ):
+            if fingerprint_key:
+                metadata_by_fingerprint[fingerprint_key] = dict(item)
+    if not metadata_by_fingerprint:
+        return {}
+
+    history_index = build_work_calendar_history_index(history_rows)
+    items_by_date: Dict[str, List[Dict[str, Any]]] = {}
+    for row in history_rows:
+        fields = row.get("fields") or {}
+        fingerprint = str(fields.get("作品指纹") or "").strip()
+        snapshot_date = str(fields.get("日期文本") or "").strip()
+        if not fingerprint or not snapshot_date:
+            continue
+        metadata = metadata_by_fingerprint.get(fingerprint)
+        if not metadata:
+            continue
+        comment_count = fields.get("评论数")
+        items_by_date.setdefault(snapshot_date, []).append(
+            {
+                "snapshot_date": snapshot_date,
+                "captured_at": f"{snapshot_date}T23:59:59+08:00",
+                "account_id": str(metadata.get("account_id") or "").strip(),
+                "account": str(metadata.get("account") or "").strip(),
+                "profile_url": str(metadata.get("profile_url") or "").strip(),
+                "fingerprint": fingerprint,
+                "title_copy": str(metadata.get("title_copy") or "").strip(),
+                "note_type": str(metadata.get("note_type") or "").strip(),
+                "cover_url": str(metadata.get("cover_url") or "").strip(),
+                "note_url": str(metadata.get("note_url") or "").strip(),
+                "like_count": int(fields.get("点赞数") or 0),
+                "comment_count": int(comment_count) if isinstance(comment_count, (int, float)) else None,
+                "comment_count_is_lower_bound": False,
+                "comment_count_basis": "精确值" if isinstance(comment_count, (int, float)) else "",
+                "tracking_status": str(metadata.get("tracking_status") or metadata.get("source") or "").strip(),
+                "first_seen_date": str(metadata.get("first_seen_at") or "").split("T", 1)[0].strip(),
+            }
+        )
+
+    history_payload: Dict[str, Dict[str, Any]] = {}
+    for snapshot_date in sorted(items_by_date.keys()):
+        date_items = items_by_date.get(snapshot_date) or []
+        if not date_items:
+            continue
+        ranking_groups = build_single_work_rankings(reports=[], items=date_items, history_index=history_index)
+
+        def build_rows(rank_type: str) -> List[Dict[str, Any]]:
+            rows: List[Dict[str, Any]] = []
+            for rank, item in enumerate(ranking_groups.get(rank_type, []), start=1):
+                rows.append(build_ranking_item_from_fields(build_single_work_ranking_fields(item=item, rank_type=rank_type, rank=rank)))
+            return rows
+
+        history_payload[snapshot_date] = {
+            "date": snapshot_date,
+            "snapshot_time": f"{snapshot_date} 23:59:59",
+            "snapshot_slug": snapshot_date,
+            "account_count": len({str(item.get('account_id') or '').strip() for item in date_items if str(item.get('account_id') or '').strip()}),
+            "likes": build_rows("单条点赞排行"),
+            "comments": build_rows("单条评论排行"),
+            "growth": build_rows("单条第二天增长排行"),
+        }
+    return history_payload
+
+
 def build_local_ranking_updates(
     reports: List[Dict[str, Any]],
     *,
@@ -1444,6 +1536,7 @@ def build_mobile_rankings_payload(
     dashboard_payload: Dict[str, Any],
     monitored_entries: List[Dict[str, Any]],
     project: str = "",
+    settings=None,
 ) -> Dict[str, Any]:
     normalized_projects = sorted(
         {
@@ -1547,6 +1640,12 @@ def build_mobile_rankings_payload(
                 for date_text, item in raw_project_history.items()
                 if isinstance(item, dict)
             }
+        if not project_history_rankings:
+            project_history_rankings = _build_project_history_rankings_from_cache(
+                settings=settings,
+                project_name=normalized_project,
+                account_ids=project_account_ids,
+            )
     latest_date = str(dashboard_payload.get("latest_date") or "").strip()
     if latest_date and latest_date not in project_history_rankings:
         project_history_rankings[latest_date] = {
@@ -3916,6 +4015,7 @@ def build_handler(
                     dashboard_payload=_load_dashboard_payload_local_only(monitoring_store.env_file),
                     monitored_entries=monitoring_store.get_payload().get("entries") or [],
                     project=project,
+                    settings=load_settings(monitoring_store.env_file),
                 )
                 self.send_json_response(HTTPStatus.OK, payload)
                 return

@@ -599,6 +599,67 @@ class LocalStatsAppTest(unittest.TestCase):
         self.assertIn("2026-03-31", payload["history_rankings"])
         self.assertEqual(payload["history_rankings"]["2026-03-31"]["likes"][0]["metric"], 158)
 
+    def test_build_mobile_rankings_payload_rebuilds_history_from_local_cache_when_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cache_dir = Path(tmpdir)
+            project_dir = cache_dir / "默认项目"
+            project_dir.mkdir(parents=True, exist_ok=True)
+            (project_dir / "tracked_works.json").write_text(
+                json.dumps(
+                    {
+                        "items": [
+                            {
+                                "fingerprint": "fp-1",
+                                "raw_fingerprint": "fp-1",
+                                "account_id": "u1",
+                                "account": "账号A",
+                                "profile_url": "https://example.com/u1",
+                                "title_copy": "作品A",
+                                "note_type": "normal",
+                                "cover_url": "https://example.com/a.jpg",
+                                "note_url": "https://example.com/note/a",
+                                "source": "tracked",
+                                "first_seen_at": "2026-03-30T10:00:00+08:00",
+                            }
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            (project_dir / "tracked_work_history.json").write_text(
+                json.dumps(
+                    [
+                        {"fields": {"作品指纹": "fp-1", "日期文本": "2026-03-30", "点赞数": 30, "评论数": 8}},
+                        {"fields": {"作品指纹": "fp-1", "日期文本": "2026-03-31", "点赞数": 41, "评论数": 12}},
+                    ],
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            payload = build_mobile_rankings_payload(
+                dashboard_payload={
+                    "latest_date": "2026-03-31",
+                    "updated_at": "2026-03-31T18:01:18+08:00",
+                    "rankings": {},
+                    "account_series": {
+                        "u1": [
+                            {"date": "2026-03-30", "fans": 10, "interaction": 20, "likes": 30, "comments": 8, "works": 1},
+                            {"date": "2026-03-31", "fans": 10, "interaction": 20, "likes": 41, "comments": 12, "works": 1},
+                        ],
+                    },
+                    "history_rankings": {},
+                },
+                monitored_entries=[{"account_id": "u1", "project": "默认项目"}],
+                project="默认项目",
+                settings=SimpleNamespace(project_cache_dir=str(cache_dir)),
+            )
+        self.assertIn("2026-03-30", payload["history_rankings"])
+        self.assertIn("2026-03-31", payload["history_rankings"])
+        self.assertEqual(payload["history_rankings"]["2026-03-30"]["likes"][0]["metric"], 30)
+        self.assertEqual(payload["history_rankings"]["2026-03-31"]["comments"][0]["metric"], 12)
+        self.assertEqual(payload["history_rankings"]["2026-03-31"]["growth"][0]["metric"], 15)
+
     def test_build_mobile_rankings_payload_falls_back_to_first_project(self) -> None:
         payload = build_mobile_rankings_payload(
             dashboard_payload={"rankings": {}, "account_series": {}},
