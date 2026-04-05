@@ -461,14 +461,20 @@ def build_dashboard_account_card(report: Dict[str, Any], existing_card: Optional
     if works_value in ("", None):
         works_value = metrics["visible_work_count"]
     works_display = str(profile.get("work_count_display_text") or works_value or "").strip()
+    fans_value = parse_exact_number(profile.get("fans_count_text")) or 0
+    interaction_value = parse_exact_number(profile.get("interaction_count_text")) or 0
+    if fans_value <= 0:
+        fans_value = int((existing_card or {}).get("fans") or 0)
+    if interaction_value <= 0:
+        interaction_value = int((existing_card or {}).get("interaction") or 0)
     card = dict(existing_card or {})
     card.update(
         {
             "account_id": str(profile.get("profile_user_id") or "").strip(),
             "account": str(profile.get("nickname") or "").strip(),
             "date": extract_snapshot_date(str(report.get("captured_at") or "")),
-            "fans": parse_exact_number(profile.get("fans_count_text")) or 0,
-            "interaction": parse_exact_number(profile.get("interaction_count_text")) or 0,
+            "fans": fans_value,
+            "interaction": interaction_value,
             "works": int(works_value or 0),
             "works_display": works_display,
             "works_exact": bool(profile.get("work_count_exact", not works_display.endswith("+"))),
@@ -524,6 +530,10 @@ def report_has_detail_links(report: Dict[str, Any]) -> bool:
 
 def build_dashboard_account_point_with_fallback(report: Dict[str, Any], *, fallback_point: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     point = build_dashboard_account_point(report)
+    if int(point.get("fans") or 0) <= 0:
+        point["fans"] = int((fallback_point or {}).get("fans") or 0)
+    if int(point.get("interaction") or 0) <= 0:
+        point["interaction"] = int((fallback_point or {}).get("interaction") or 0)
     if not report_has_comment_data(report):
         point["comments"] = int((fallback_point or {}).get("comments") or 0)
     return point
@@ -3354,14 +3364,44 @@ def _payload_account_ids(payload: Dict[str, Any]) -> set[str]:
 
 def _normalize_dashboard_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     normalized = copy.deepcopy(payload or {})
+    account_series = {
+        str(account_id or "").strip(): [dict(point or {}) for point in (points or [])]
+        for account_id, points in (normalized.get("account_series") or {}).items()
+        if str(account_id or "").strip()
+    }
+    for points in account_series.values():
+        last_fans = 0
+        last_interaction = 0
+        for point in points:
+            fans_value = int(point.get("fans") or 0)
+            interaction_value = int(point.get("interaction") or 0)
+            if fans_value > 0:
+                last_fans = fans_value
+            elif last_fans > 0:
+                point["fans"] = last_fans
+            if interaction_value > 0:
+                last_interaction = interaction_value
+            elif last_interaction > 0:
+                point["interaction"] = last_interaction
+    normalized["account_series"] = account_series
     accounts = []
     for item in normalized.get("accounts") or []:
         row = dict(item or {})
         account_name = str(row.get("account_name") or row.get("account") or row.get("display_name") or "").strip()
         account_id = str(row.get("account_id") or "").strip()
+        series_points = account_series.get(account_id) or []
+        latest_exact_fans = next((int(point.get("fans") or 0) for point in reversed(series_points) if int(point.get("fans") or 0) > 0), 0)
+        latest_exact_interaction = next(
+            (int(point.get("interaction") or 0) for point in reversed(series_points) if int(point.get("interaction") or 0) > 0),
+            0,
+        )
         row["account"] = account_name or account_id
         row["account_name"] = account_name or account_id
         row["display_name"] = str(row.get("display_name") or account_name or account_id).strip() or account_id
+        if int(row.get("fans") or 0) <= 0 and latest_exact_fans > 0:
+            row["fans"] = latest_exact_fans
+        if int(row.get("interaction") or 0) <= 0 and latest_exact_interaction > 0:
+            row["interaction"] = latest_exact_interaction
         accounts.append(row)
     normalized["accounts"] = accounts
     return normalized

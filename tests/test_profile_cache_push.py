@@ -2,10 +2,32 @@ from __future__ import annotations
 
 import unittest
 
-from xhs_feishu_monitor.profile_cache_push import _filter_dashboard_payload_by_monitored_entries
+from xhs_feishu_monitor.profile_cache_push import (
+    _filter_dashboard_payload_by_monitored_entries,
+    _normalize_upload_dashboard_payload,
+)
 
 
 class ProfileCachePushTest(unittest.TestCase):
+    def test_normalize_upload_dashboard_payload_restores_missing_exact_profile_metrics_from_series(self) -> None:
+        payload = _normalize_upload_dashboard_payload(
+            {
+                "accounts": [
+                    {"account_id": "u1", "account": "账号A", "fans": 0, "interaction": 0, "works": 30},
+                ],
+                "account_series": {
+                    "u1": [
+                        {"date": "2026-04-04", "fans": 174, "interaction": 893, "likes": 10, "comments": 1, "works": 30},
+                        {"date": "2026-04-05", "fans": 0, "interaction": 0, "likes": 12, "comments": 0, "works": 30},
+                    ]
+                },
+            }
+        )
+        self.assertEqual(payload["accounts"][0]["fans"], 174)
+        self.assertEqual(payload["accounts"][0]["interaction"], 893)
+        self.assertEqual(payload["account_series"]["u1"][-1]["fans"], 174)
+        self.assertEqual(payload["account_series"]["u1"][-1]["interaction"], 893)
+
     def test_filter_dashboard_payload_by_monitored_entries_removes_stale_accounts(self) -> None:
         payload = {
             "accounts": [

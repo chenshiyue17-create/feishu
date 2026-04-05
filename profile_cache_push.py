@@ -34,6 +34,47 @@ def _to_int(value: object) -> int:
         return 0
 
 
+def _normalize_upload_dashboard_payload(payload: dict) -> dict:
+    normalized = json.loads(json.dumps(payload or {}, ensure_ascii=False))
+    account_series = {
+        str(account_id or "").strip(): [dict(point or {}) for point in (points or [])]
+        for account_id, points in (normalized.get("account_series") or {}).items()
+        if str(account_id or "").strip()
+    }
+    for points in account_series.values():
+        last_fans = 0
+        last_interaction = 0
+        for point in points:
+            fans_value = _to_int(point.get("fans"))
+            interaction_value = _to_int(point.get("interaction"))
+            if fans_value > 0:
+                last_fans = fans_value
+            elif last_fans > 0:
+                point["fans"] = last_fans
+            if interaction_value > 0:
+                last_interaction = interaction_value
+            elif last_interaction > 0:
+                point["interaction"] = last_interaction
+    normalized["account_series"] = account_series
+    accounts = []
+    for item in normalized.get("accounts") or []:
+        row = dict(item or {})
+        account_id = str(row.get("account_id") or "").strip()
+        series_points = account_series.get(account_id) or []
+        latest_exact_fans = next((_to_int(point.get("fans")) for point in reversed(series_points) if _to_int(point.get("fans")) > 0), 0)
+        latest_exact_interaction = next(
+            (_to_int(point.get("interaction")) for point in reversed(series_points) if _to_int(point.get("interaction")) > 0),
+            0,
+        )
+        if _to_int(row.get("fans")) <= 0 and latest_exact_fans > 0:
+            row["fans"] = latest_exact_fans
+        if _to_int(row.get("interaction")) <= 0 and latest_exact_interaction > 0:
+            row["interaction"] = latest_exact_interaction
+        accounts.append(row)
+    normalized["accounts"] = accounts
+    return normalized
+
+
 def _build_snapshot_rank_rows(rows: list[dict], *, metric_label: str) -> list[dict]:
     normalized: list[dict] = []
     for item in rows:
@@ -149,13 +190,13 @@ def _load_dashboard_payload(env_file: str, urls_file: str) -> dict:
     settings = load_settings(env_file)
     payload = load_cached_dashboard_payload(settings)
     if payload:
-        return payload
+        return _normalize_upload_dashboard_payload(payload)
     rebuilt = rebuild_dashboard_cache_from_project_dirs(settings)
     if rebuilt:
-        return rebuilt
+        return _normalize_upload_dashboard_payload(rebuilt)
     repaired = repair_dashboard_cache_from_exports(settings=settings, monitored_metadata=load_monitored_metadata(urls_file))
     if repaired:
-        return repaired
+        return _normalize_upload_dashboard_payload(repaired)
     raise ValueError("本地暂无可上传的缓存，请先完成一次采集")
 
 

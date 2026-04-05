@@ -27,6 +27,7 @@ from xhs_feishu_monitor.local_stats_app.server import (
     LoginStateStore,
     MonitoringSyncStore,
     _filter_dashboard_payload_by_monitored_entries,
+    _normalize_dashboard_payload,
     build_auto_project_schedule,
     build_empty_dashboard_payload,
     build_mobile_rankings_payload,
@@ -138,6 +139,25 @@ class LocalStatsAppTest(unittest.TestCase):
             [item["account_id"] for item in result["history_rankings"]["默认项目"]["2026-03-31"]["likes"]],
             ["u2"],
         )
+
+    def test_normalize_dashboard_payload_restores_missing_exact_profile_metrics_from_series(self) -> None:
+        payload = _normalize_dashboard_payload(
+            {
+                "accounts": [
+                    {"account_id": "u1", "account": "账号A", "fans": 0, "interaction": 0, "works": 30},
+                ],
+                "account_series": {
+                    "u1": [
+                        {"date": "2026-04-04", "fans": 174, "interaction": 893, "likes": 10, "comments": 1, "works": 30},
+                        {"date": "2026-04-05", "fans": 0, "interaction": 0, "likes": 12, "comments": 0, "works": 30},
+                    ]
+                },
+            }
+        )
+        self.assertEqual(payload["accounts"][0]["fans"], 174)
+        self.assertEqual(payload["accounts"][0]["interaction"], 893)
+        self.assertEqual(payload["account_series"]["u1"][-1]["fans"], 174)
+        self.assertEqual(payload["account_series"]["u1"][-1]["interaction"], 893)
 
     def test_build_auto_project_schedule_runs_all_projects_immediately_when_spread_disabled(self) -> None:
         now = datetime.fromisoformat("2026-03-31T14:12:00+08:00")
@@ -1957,6 +1977,73 @@ class LocalStatsAppTest(unittest.TestCase):
         self.assertEqual(payload["accounts"][0]["top_url"], "https://note-u1")
         self.assertEqual(payload["rankings"]["单条点赞排行"][0]["note_url"], "https://note-u1")
         self.assertEqual(payload["rankings"]["单条评论排行"][0]["account_id"], "u1")
+
+    def test_build_dashboard_payload_with_reports_preserves_existing_exact_profile_metrics_when_report_is_fuzzy(self) -> None:
+        base_payload = {
+            "generated_at": "2026-04-04T14:00:00+08:00",
+            "latest_date": "2026-04-04",
+            "updated_at": "2026-04-04T14:00:00+08:00",
+            "series_meta": {"mode": "daily", "update_time": "14:00"},
+            "portal": {"accounts": 1, "fans": 174, "interaction": 893},
+            "series": [{"date": "2026-04-04", "fans": 174, "likes": 10, "comments": 12, "works": 30, "accounts": 1}],
+            "account_series": {
+                "u1": [{"date": "2026-04-04", "fans": 174, "interaction": 893, "likes": 10, "comments": 12, "works": 30}]
+            },
+            "accounts": [
+                {
+                    "account_id": "u1",
+                    "account": "旧账号",
+                    "date": "2026-04-04",
+                    "fans": 174,
+                    "interaction": 893,
+                    "works": 30,
+                    "works_display": "32+",
+                    "works_exact": False,
+                    "likes": 10,
+                    "comments": 12,
+                    "profile_url": "https://profile-u1",
+                    "top_title": "旧作品",
+                    "top_like": 10,
+                    "top_url": "https://note-u1",
+                }
+            ],
+            "rankings": {"单条点赞排行": [], "单条评论排行": [], "单条第二天增长排行": []},
+            "alerts": [],
+        }
+        reports = [
+            {
+                "captured_at": "2026-04-05T14:00:00+08:00",
+                "profile": {
+                    "profile_user_id": "u1",
+                    "nickname": "账号A",
+                    "profile_url": "https://profile-u1",
+                    "fans_count_text": "10+",
+                    "interaction_count_text": "10+",
+                    "total_work_count": 30,
+                    "work_count_display_text": "44+",
+                    "work_count_exact": False,
+                },
+                "works": [
+                    {
+                        "title_copy": "作品A",
+                        "note_type": "image",
+                        "like_count": 20,
+                        "comment_count": 5,
+                        "cover_url": "https://img-u1",
+                        "note_url": "https://note-u1",
+                    }
+                ],
+            }
+        ]
+
+        payload = build_dashboard_payload_with_reports(base_payload=base_payload, reports=reports)
+
+        self.assertEqual(payload["accounts"][0]["fans"], 174)
+        self.assertEqual(payload["accounts"][0]["interaction"], 893)
+        self.assertEqual(payload["account_series"]["u1"][-1]["fans"], 174)
+        self.assertEqual(payload["account_series"]["u1"][-1]["interaction"], 893)
+        self.assertEqual(payload["portal"]["fans"], 174)
+        self.assertEqual(payload["portal"]["interaction"], 893)
 
     def test_build_dashboard_payload_with_reports_rebuilds_growth_from_cached_history(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
