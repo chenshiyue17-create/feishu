@@ -452,6 +452,24 @@ def build_dashboard_account_point(report: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def profile_has_exact_primary_metrics(profile: Dict[str, Any]) -> bool:
+    if not isinstance(profile, dict):
+        return False
+    return (
+        parse_exact_number(profile.get("fans_count_text")) is not None
+        and parse_exact_number(profile.get("interaction_count_text")) is not None
+    )
+
+
+def build_profile_precision_message(profile: Dict[str, Any], *, works: Any = 0) -> str:
+    works_count = max(0, int(works or 0))
+    fans_text = str((profile or {}).get("fans_count_text") or "-").strip() or "-"
+    interaction_text = str((profile or {}).get("interaction_count_text") or "-").strip() or "-"
+    if profile_has_exact_primary_metrics(profile):
+        return f"本轮成功，作品 {works_count} 条"
+    return f"本轮待补精确值，作品 {works_count} 条；当前粉丝 {fans_text} / 获赞 {interaction_text}"
+
+
 def build_dashboard_account_card(report: Dict[str, Any], existing_card: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     profile = report.get("profile") or {}
     metrics = compute_dashboard_metrics(report)
@@ -3279,6 +3297,9 @@ class MonitoringSyncStore:
             status = str(payload.get("status") or "").strip()
             sync_scope = self._current_sync_scope_label()
             if status == "success":
+                raw_profile = ((payload.get("raw_item") or {}).get("profile") or {}) if isinstance(payload.get("raw_item"), dict) else {}
+                metrics_exact = profile_has_exact_primary_metrics(raw_profile)
+                sync_message = build_profile_precision_message(raw_profile, works=payload.get("works"))
                 update_monitored_metadata(
                     self.urls_file,
                     [
@@ -3290,11 +3311,11 @@ class MonitoringSyncStore:
                             "fans_text": payload.get("fans_text") or "",
                             "interaction_text": payload.get("interaction_text") or "",
                             "works_text": payload.get("works_text") or payload.get("works") or "",
-                            "fetch_state": "ok",
-                            "fetch_message": "已获取账号快照",
+                            "fetch_state": "ok" if metrics_exact else "warning",
+                            "fetch_message": "已获取精确账号快照" if metrics_exact else "已获取账号快照，主数据待补精确值",
                             "fetch_checked_at": iso_now(),
-                            "last_sync_state": "success",
-                            "last_sync_message": f"本轮成功，作品 {int(payload.get('works') or 0)} 条",
+                            "last_sync_state": "success" if metrics_exact else "warning",
+                            "last_sync_message": sync_message,
                             "last_sync_at": iso_now(),
                             "last_sync_scope": sync_scope,
                         }

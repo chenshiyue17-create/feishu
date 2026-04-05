@@ -1415,6 +1415,11 @@ body {
   color: #7fdcc2;
 }
 
+.monitor-summary-chip.is-warning {
+  background: rgba(255, 209, 102, 0.15);
+  color: var(--accent-alt);
+}
+
 .monitor-summary-chip.is-running {
   background: rgba(255, 209, 102, 0.15);
   color: var(--accent-alt);
@@ -1444,6 +1449,10 @@ body {
 
 .monitor-error-text {
   color: #ffb79d;
+}
+
+.monitor-warning-text {
+  color: var(--accent-alt);
 }
 
 .monitor-meta {

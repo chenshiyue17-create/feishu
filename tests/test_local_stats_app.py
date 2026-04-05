@@ -28,6 +28,7 @@ from xhs_feishu_monitor.local_stats_app.server import (
     MonitoringSyncStore,
     _filter_dashboard_payload_by_monitored_entries,
     _normalize_dashboard_payload,
+    build_profile_precision_message,
     build_auto_project_schedule,
     build_empty_dashboard_payload,
     build_mobile_rankings_payload,
@@ -158,6 +159,22 @@ class LocalStatsAppTest(unittest.TestCase):
         self.assertEqual(payload["accounts"][0]["interaction"], 893)
         self.assertEqual(payload["account_series"]["u1"][-1]["fans"], 174)
         self.assertEqual(payload["account_series"]["u1"][-1]["interaction"], 893)
+
+    def test_build_profile_precision_message_marks_fuzzy_profile_metrics(self) -> None:
+        message = build_profile_precision_message(
+            {"fans_count_text": "10+", "interaction_count_text": "1千+"},
+            works=30,
+        )
+        self.assertIn("待补精确值", message)
+        self.assertIn("10+", message)
+        self.assertIn("1千+", message)
+
+    def test_build_profile_precision_message_marks_exact_profile_metrics_as_success(self) -> None:
+        message = build_profile_precision_message(
+            {"fans_count_text": "182", "interaction_count_text": "728"},
+            works=30,
+        )
+        self.assertEqual(message, "本轮成功，作品 30 条")
 
     def test_build_auto_project_schedule_runs_all_projects_immediately_when_spread_disabled(self) -> None:
         now = datetime.fromisoformat("2026-03-31T14:12:00+08:00")

@@ -418,6 +418,7 @@ function getFetchStateText(status) {
 function getLastSyncStateText(status) {
   const normalized = String(status || "").trim();
   if (normalized === "success") return "本轮成功";
+  if (normalized === "warning") return "待补精确值";
   if (normalized === "error") return "本轮失败";
   if (normalized === "running") return "本轮采集中";
   return "";
@@ -1865,6 +1866,8 @@ function renderMonitoring() {
                     <span class="monitor-summary-chip ${
                       entry.last_sync_state === "error"
                         ? "is-error"
+                        : entry.last_sync_state === "warning"
+                        ? "is-warning"
                         : entry.last_sync_state === "success"
                         ? "is-success"
                         : "is-running"
@@ -1874,8 +1877,8 @@ function renderMonitoring() {
                 : ""
             }
             ${
-              entry.last_sync_state === "error" && entry.last_sync_message
-                ? `<div class="monitor-link-text monitor-error-text" title="${entry.last_sync_message}">失败原因 ${truncateMiddle(entry.last_sync_message, 120)}</div>`
+              (entry.last_sync_state === "error" || entry.last_sync_state === "warning") && entry.last_sync_message
+                ? `<div class="monitor-link-text ${entry.last_sync_state === "error" ? "monitor-error-text" : "monitor-warning-text"}" title="${entry.last_sync_message}">${entry.last_sync_state === "error" ? "失败原因" : "待补说明"} ${truncateMiddle(entry.last_sync_message, 120)}</div>`
                 : ""
             }
             <div class="monitor-link-text" title="${entry.url}">主页 ${truncateMiddle(entry.url, 72)}</div>
