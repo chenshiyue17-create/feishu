@@ -736,7 +736,7 @@ class LocalStatsAppTest(unittest.TestCase):
         self.assertEqual(enriched[0]["display_name"], "账号A")
         self.assertEqual(enriched[0]["project"], "项目A")
         self.assertEqual(enriched[0]["profile_url"], "https://www.xiaohongshu.com/user/profile/u1?from=feishu")
-        self.assertEqual(enriched[0]["summary_text"], "粉丝 123 · 获赞 456 · 作品 32+")
+        self.assertEqual(enriched[0]["summary_text"], "粉丝 123 · 获赞 456")
 
     def test_enrich_monitored_entries_uses_local_metadata_fallback(self) -> None:
         enriched = enrich_monitored_entries(
@@ -804,12 +804,46 @@ class LocalStatsAppTest(unittest.TestCase):
         self.assertEqual(enriched[0]["account"], "看板账号")
         self.assertEqual(enriched[0]["summary_text"], "粉丝 321 · 获赞 654 · 作品 12")
 
+    def test_enrich_monitored_entries_prefers_exact_dashboard_metrics_over_fuzzy_values(self) -> None:
+        enriched = enrich_monitored_entries(
+            [{"url": "https://www.xiaohongshu.com/user/profile/u1", "active": True, "project": "项目A"}],
+            [
+                {
+                    "账号ID": "u1",
+                    "账号": "账号A",
+                    "粉丝数": "10+",
+                    "获赞收藏文本": "10+",
+                    "作品数展示": "44+",
+                }
+            ],
+            {
+                "https://www.xiaohongshu.com/user/profile/u1": {
+                    "fans_text": "10+",
+                    "interaction_text": "10+",
+                    "works_text": "44+",
+                }
+            },
+            dashboard_account_index=build_dashboard_account_index(
+                [
+                    {
+                        "account_id": "u1",
+                        "account": "账号A",
+                        "profile_url": "https://www.xiaohongshu.com/user/profile/u1",
+                        "fans": 151,
+                        "interaction": 842,
+                        "works": 30,
+                    }
+                ]
+            ),
+        )
+        self.assertEqual(enriched[0]["summary_text"], "粉丝 151 · 获赞 842 · 作品 30")
+
     def test_enrich_monitored_entries_shows_pending_summary_when_missing(self) -> None:
         enriched = enrich_monitored_entries(
             [{"url": "https://www.xiaohongshu.com/user/profile/u1", "active": True, "project": "项目A"}],
             [],
         )
-        self.assertEqual(enriched[0]["summary_text"], "等待首次同步")
+        self.assertEqual(enriched[0]["summary_text"], "等待精确快照")
 
     def test_enrich_monitored_entries_ignores_login_redirect_profile_url(self) -> None:
         enriched = enrich_monitored_entries(

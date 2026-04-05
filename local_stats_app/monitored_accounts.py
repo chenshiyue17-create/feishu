@@ -46,6 +46,33 @@ def build_metric_text(*, fans: Any = "", interaction: Any = "", works: Any = "")
     return " · ".join(parts)
 
 
+def normalize_exact_metric_text(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if "+" in text:
+        return ""
+    return text
+
+
+def pick_exact_metric_text(*values: Any) -> str:
+    for value in values:
+        normalized = normalize_exact_metric_text(value)
+        if normalized:
+            return normalized
+    return ""
+
+
+def parse_metric_number(value: Any) -> int:
+    text = str(value or "").strip()
+    if not text:
+        return 0
+    try:
+        return int(float(text))
+    except Exception:
+        return 0
+
+
 def normalize_project_name(value: Any) -> str:
     text = str(value or "").strip()
     return text or DEFAULT_PROJECT_NAME
@@ -114,15 +141,16 @@ def build_dashboard_account_index(accounts: List[Dict[str, Any]]) -> Dict[str, D
         fans_value = item.get("fans")
         interaction_value = item.get("interaction")
         works_value = item.get("works")
-        works_display = str(item.get("works_display") or works_value or "").strip()
-        if works_display.isdigit() and int(works_display) >= 30 and not str(item.get("works_display") or "").strip():
-            works_display = "30+"
+        works_display = str(item.get("works") or item.get("works_display") or works_value or "").strip()
+        fans_text = "" if fans_value in ("", None) or parse_metric_number(fans_value) <= 0 else str(fans_value)
+        interaction_text = "" if interaction_value in ("", None) or parse_metric_number(interaction_value) <= 0 else str(interaction_value)
+        works_text = "" if works_value in ("", None) or parse_metric_number(works_display) <= 0 else works_display
         index[account_id] = {
             "account": str(item.get("account") or "").strip(),
             "profile_url": str(item.get("profile_url") or "").strip(),
-            "fans_text": "" if fans_value in ("", None) else str(fans_value),
-            "interaction_text": "" if interaction_value in ("", None) else str(interaction_value),
-            "works_text": works_display,
+            "fans_text": fans_text,
+            "interaction_text": interaction_text,
+            "works_text": works_text,
         }
     return index
 
@@ -150,14 +178,21 @@ def enrich_monitored_entries(
             or account_id
             or ""
         )
-        fans_text = profile_meta.get("fans_text") or cached_meta.get("fans_text") or dashboard_meta.get("fans_text") or ""
-        interaction_text = (
-            profile_meta.get("interaction_text")
-            or cached_meta.get("interaction_text")
-            or dashboard_meta.get("interaction_text")
-            or ""
+        fans_text = pick_exact_metric_text(
+            dashboard_meta.get("fans_text"),
+            profile_meta.get("fans_text"),
+            cached_meta.get("fans_text"),
         )
-        works_text = profile_meta.get("works_text") or cached_meta.get("works_text") or dashboard_meta.get("works_text") or ""
+        interaction_text = pick_exact_metric_text(
+            dashboard_meta.get("interaction_text"),
+            profile_meta.get("interaction_text"),
+            cached_meta.get("interaction_text"),
+        )
+        works_text = pick_exact_metric_text(
+            dashboard_meta.get("works_text"),
+            profile_meta.get("works_text"),
+            cached_meta.get("works_text"),
+        )
         fetch_state, fetch_message = classify_monitored_fetch_state(
             error_text=cached_meta.get("fetch_message") or "",
             has_snapshot=bool(account_name and (fans_text or interaction_text or works_text or dashboard_meta)),
@@ -174,7 +209,7 @@ def enrich_monitored_entries(
             works=works_text,
         )
         if not summary_text:
-            summary_text = "等待首次同步"
+            summary_text = "等待精确快照"
         enriched.append(
             {
                 "url": url,
