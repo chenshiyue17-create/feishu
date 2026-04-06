@@ -116,6 +116,35 @@ function buildRankingRowKey(item) {
   ].join("\u0001");
 }
 
+function dedupeSameRankingRows(rows) {
+  const winners = new Map();
+  for (const rawItem of rows || []) {
+    const item = { ...(rawItem || {}) };
+    const key = buildRankingRowKey(item);
+    if (!key.replace(/\u0001/g, "").trim()) continue;
+    const existing = winners.get(key);
+    if (!existing) {
+      winners.set(key, item);
+      continue;
+    }
+    const existingScore = [
+      Number(existing.metric || 0),
+      Number(existing.rank || 999999) > 0 ? -Number(existing.rank || 999999) : -999999,
+    ];
+    const candidateScore = [
+      Number(item.metric || 0),
+      Number(item.rank || 999999) > 0 ? -Number(item.rank || 999999) : -999999,
+    ];
+    if (
+      candidateScore[0] > existingScore[0] ||
+      (candidateScore[0] === existingScore[0] && candidateScore[1] > existingScore[1])
+    ) {
+      winners.set(key, item);
+    }
+  }
+  return Array.from(winners.values());
+}
+
 function buildMetricChip(label, metric, tone = "primary") {
   return {
     label,
@@ -245,9 +274,9 @@ function renderHistoryDetails(payload) {
   const scopeLabel = activeAccount
     ? (activeAccount.account || activeAccount.account_id || "账号")
     : (selectedProject || payload.project || "项目");
-  const likesRows = filterRowsByAccount(detail.likes || [], selectedAccountId);
-  const commentsRows = filterRowsByAccount(detail.comments || [], selectedAccountId);
-  const growthRows = filterRowsByAccount(detail.growth || [], selectedAccountId);
+  const likesRows = dedupeSameRankingRows(filterRowsByAccount(detail.likes || [], selectedAccountId));
+  const commentsRows = dedupeSameRankingRows(filterRowsByAccount(detail.comments || [], selectedAccountId));
+  const growthRows = dedupeSameRankingRows(filterRowsByAccount(detail.growth || [], selectedAccountId));
   const { likesDisplay, commentsDisplay, growthDisplay } = buildUniqueRankingDisplays(
     likesRows,
     commentsRows,

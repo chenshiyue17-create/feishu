@@ -3920,7 +3920,7 @@ def _merge_history_rankings(
                     item for item in existing_rows
                     if str(item.get("account_id") or "").strip() not in account_ids
                 ]
-                merged_snapshot[rank_key] = preserved + incoming_rows
+                merged_snapshot[rank_key] = _dedupe_mobile_ranking_rows(preserved + incoming_rows)
             for key, value in snapshot.items():
                 if key not in {"likes", "comments", "growth"}:
                     merged_snapshot[key] = copy.deepcopy(value)
