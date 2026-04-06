@@ -3579,6 +3579,24 @@ def _normalize_dashboard_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
             row["interaction"] = latest_exact_interaction
         accounts.append(row)
     normalized["accounts"] = accounts
+    normalized["rankings"] = {
+        str(rank_type): _dedupe_mobile_ranking_rows([dict(item) for item in (rows or []) if isinstance(item, dict)])
+        for rank_type, rows in (normalized.get("rankings") or {}).items()
+    }
+    normalized["history_rankings"] = {
+        str(project_name): {
+            str(date_text): {
+                **dict(snapshot or {}),
+                "likes": _dedupe_mobile_ranking_rows([dict(item) for item in ((snapshot or {}).get("likes") or []) if isinstance(item, dict)]),
+                "comments": _dedupe_mobile_ranking_rows([dict(item) for item in ((snapshot or {}).get("comments") or []) if isinstance(item, dict)]),
+                "growth": _dedupe_mobile_ranking_rows([dict(item) for item in ((snapshot or {}).get("growth") or []) if isinstance(item, dict)]),
+            }
+            for date_text, snapshot in (project_history or {}).items()
+            if isinstance(snapshot, dict)
+        }
+        for project_name, project_history in (normalized.get("history_rankings") or {}).items()
+        if isinstance(project_history, dict)
+    }
     return normalized
 
 

@@ -732,6 +732,66 @@ class LocalStatsAppTest(unittest.TestCase):
         self.assertEqual(len(payload["history_rankings"]["2026-04-04"]["likes"]), 1)
         self.assertEqual(payload["history_rankings"]["2026-04-04"]["likes"][0]["metric"], 30)
 
+    def test_normalize_dashboard_payload_dedupes_ranking_rows(self) -> None:
+        payload = _normalize_dashboard_payload(
+            {
+                "accounts": [{"account_id": "u1", "account": "账号A", "fans": 1, "interaction": 2}],
+                "account_series": {"u1": [{"date": "2026-04-05", "fans": 1, "interaction": 2, "likes": 3, "comments": 4, "works": 5}]},
+                "rankings": {
+                    "单条点赞排行": [
+                        {
+                            "rank": 2,
+                            "account_id": "u1",
+                            "account": "账号A",
+                            "title": "同一作品",
+                            "metric": 94,
+                            "cover_url": "https://example.com/a.jpg!old",
+                            "note_url": "",
+                        },
+                        {
+                            "rank": 1,
+                            "account_id": "u1",
+                            "account": "账号A",
+                            "title": "同一作品",
+                            "metric": 95,
+                            "cover_url": "https://example.com/a.jpg!new",
+                            "note_url": "https://example.com/note/1",
+                        },
+                    ]
+                },
+                "history_rankings": {
+                    "默认项目": {
+                        "2026-04-04": {
+                            "likes": [
+                                {
+                                    "rank": 2,
+                                    "account_id": "u1",
+                                    "account": "账号A",
+                                    "title": "同一作品",
+                                    "metric": 30,
+                                    "cover_url": "https://example.com/a.jpg!old",
+                                    "note_url": "",
+                                },
+                                {
+                                    "rank": 1,
+                                    "account_id": "u1",
+                                    "account": "账号A",
+                                    "title": "同一作品",
+                                    "metric": 32,
+                                    "cover_url": "https://example.com/a.jpg!new",
+                                    "note_url": "https://example.com/note/1",
+                                },
+                            ]
+                        }
+                    }
+                },
+            }
+        )
+        self.assertEqual(len(payload["rankings"]["单条点赞排行"]), 1)
+        self.assertEqual(payload["rankings"]["单条点赞排行"][0]["metric"], 95)
+        self.assertEqual(len(payload["history_rankings"]["默认项目"]["2026-04-04"]["likes"]), 1)
+        self.assertEqual(payload["history_rankings"]["默认项目"]["2026-04-04"]["likes"][0]["metric"], 32)
+
     def test_build_mobile_rankings_payload_falls_back_to_first_project(self) -> None:
         payload = build_mobile_rankings_payload(
             dashboard_payload={"rankings": {}, "account_series": {}},
