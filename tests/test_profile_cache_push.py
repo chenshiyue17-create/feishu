@@ -7,6 +7,7 @@ from pathlib import Path
 
 from xhs_feishu_monitor.profile_cache_push import (
     _build_upload_payload,
+    _dedupe_ranking_rows,
     _filter_dashboard_payload_by_monitored_entries,
     _normalize_upload_dashboard_payload,
 )
@@ -145,6 +146,33 @@ class ProfileCachePushTest(unittest.TestCase):
         self.assertIn("2026-04-05", project_history)
         self.assertEqual(project_history["2026-04-05"]["comments"][0]["metric"], 5)
         self.assertEqual(project_history["2026-04-05"]["growth"][0]["metric"], 4)
+
+    def test_dedupe_ranking_rows_prefers_linked_and_higher_metric_row(self) -> None:
+        rows = _dedupe_ranking_rows(
+            [
+                {
+                    "rank": 2,
+                    "account_id": "u1",
+                    "account": "账号A",
+                    "title": "同一作品",
+                    "metric": 94,
+                    "cover_url": "https://example.com/a.jpg!old",
+                    "note_url": "",
+                },
+                {
+                    "rank": 1,
+                    "account_id": "u1",
+                    "account": "账号A",
+                    "title": "同一作品",
+                    "metric": 95,
+                    "cover_url": "https://example.com/a.jpg!new",
+                    "note_url": "https://example.com/note/1",
+                },
+            ]
+        )
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["metric"], 95)
+        self.assertEqual(rows[0]["note_url"], "https://example.com/note/1")
 
 
 if __name__ == "__main__":

@@ -54,7 +54,7 @@ from ..project_cache import (
 from ..profile_report import build_profile_report, load_profile_report_payload
 from ..profile_to_feishu import PROFILE_TABLE_NAME
 from ..profile_works_to_feishu import WORKS_TABLE_NAME
-from ..profile_works_to_feishu import build_work_calendar_history_index
+from ..profile_works_to_feishu import build_work_calendar_history_index, normalize_cover_asset_key
 from ..xhs import build_proxy_pool_status
 from .data_service import build_dashboard_payload_from_tables
 from . import login_state as login_state_module
@@ -1243,6 +1243,54 @@ def _load_cached_ranking_history_index(settings) -> Dict[str, List[Any]]:
     return build_work_calendar_history_index(history_rows)
 
 
+def _mobile_ranking_dedupe_key(item: Dict[str, Any]) -> tuple[str, str, str]:
+    return (
+        str(item.get("account_id") or "").strip(),
+        str(item.get("title") or "").strip(),
+        normalize_cover_asset_key(str(item.get("cover_url") or "").strip()),
+    )
+
+
+def _dedupe_mobile_ranking_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    winners: Dict[tuple[str, str, str], Dict[str, Any]] = {}
+    for index, raw_item in enumerate(rows or []):
+        item = dict(raw_item or {})
+        key = _mobile_ranking_dedupe_key(item)
+        existing = winners.get(key)
+        if existing is None:
+            item["_source_index"] = index
+            winners[key] = item
+            continue
+        existing_score = (
+            1 if str(existing.get("note_url") or "").strip() else 0,
+            int(existing.get("metric") or 0),
+            -int(existing.get("rank") or 0),
+            -int(existing.get("_source_index") or 0),
+        )
+        candidate_score = (
+            1 if str(item.get("note_url") or "").strip() else 0,
+            int(item.get("metric") or 0),
+            -int(item.get("rank") or 0),
+            -index,
+        )
+        if candidate_score > existing_score:
+            item["_source_index"] = index
+            winners[key] = item
+    deduped = sorted(
+        winners.values(),
+        key=lambda item: (
+            -int(item.get("metric") or 0),
+            int(item.get("rank") or 0) if int(item.get("rank") or 0) > 0 else 999999,
+            str(item.get("title") or ""),
+            str(item.get("account") or ""),
+        ),
+    )
+    for rank, item in enumerate(deduped, start=1):
+        item["rank"] = rank
+        item.pop("_source_index", None)
+    return deduped
+
+
 def _build_project_history_rankings_from_cache(
     *,
     settings,
@@ -1601,8 +1649,10 @@ def build_mobile_rankings_payload(
     def filter_rows(rank_type: str) -> List[Dict[str, Any]]:
         rows = rankings.get(rank_type) or []
         if not normalized_project:
-            return list(rows)
-        return [dict(item) for item in rows if str(item.get("account_id") or "").strip() in project_account_ids]
+            return _dedupe_mobile_ranking_rows([dict(item) for item in rows if isinstance(item, dict)])
+        return _dedupe_mobile_ranking_rows(
+            [dict(item) for item in rows if isinstance(item, dict) and str(item.get("account_id") or "").strip() in project_account_ids]
+        )
 
     daily_history: List[Dict[str, Any]] = []
     account_series = dashboard_payload.get("account_series") or {}
@@ -1636,7 +1686,12 @@ def build_mobile_rankings_payload(
         raw_project_history = all_history_rankings.get(normalized_project) or {}
         if isinstance(raw_project_history, dict):
             project_history_rankings = {
-                str(date_text): dict(item)
+                str(date_text): {
+                    **dict(item),
+                    "likes": _dedupe_mobile_ranking_rows([dict(row) for row in (item.get("likes") or []) if isinstance(row, dict)]),
+                    "comments": _dedupe_mobile_ranking_rows([dict(row) for row in (item.get("comments") or []) if isinstance(row, dict)]),
+                    "growth": _dedupe_mobile_ranking_rows([dict(row) for row in (item.get("growth") or []) if isinstance(row, dict)]),
+                }
                 for date_text, item in raw_project_history.items()
                 if isinstance(item, dict)
             }

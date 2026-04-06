@@ -11,7 +11,7 @@ from typing import List, Optional
 from .config import load_settings
 from .local_stats_app.monitored_accounts import extract_profile_user_id, load_monitored_metadata, parse_monitored_entries
 from .profile_dashboard_to_feishu import build_single_work_ranking_fields, build_single_work_rankings
-from .profile_works_to_feishu import build_work_calendar_history_index
+from .profile_works_to_feishu import build_work_calendar_history_index, normalize_cover_asset_key
 from .project_cache import (
     load_cached_dashboard_payload,
     rebuild_dashboard_cache_from_project_dirs,
@@ -75,7 +75,75 @@ def _normalize_upload_dashboard_payload(payload: dict) -> dict:
             row["interaction"] = latest_exact_interaction
         accounts.append(row)
     normalized["accounts"] = accounts
+    normalized["rankings"] = {
+        str(rank_type): _dedupe_ranking_rows(rows or [])
+        for rank_type, rows in (normalized.get("rankings") or {}).items()
+    }
+    normalized["history_rankings"] = {
+        str(project_name): {
+            str(date_text): {
+                **dict(snapshot or {}),
+                "likes": _dedupe_ranking_rows((snapshot or {}).get("likes") or []),
+                "comments": _dedupe_ranking_rows((snapshot or {}).get("comments") or []),
+                "growth": _dedupe_ranking_rows((snapshot or {}).get("growth") or []),
+            }
+            for date_text, snapshot in (project_history or {}).items()
+            if isinstance(snapshot, dict)
+        }
+        for project_name, project_history in (normalized.get("history_rankings") or {}).items()
+        if isinstance(project_history, dict)
+    }
     return normalized
+
+
+def _ranking_dedupe_key(item: dict) -> tuple[str, str, str]:
+    return (
+        str(item.get("account_id") or "").strip(),
+        str(item.get("title") or "").strip(),
+        normalize_cover_asset_key(str(item.get("cover_url") or "").strip()),
+    )
+
+
+def _dedupe_ranking_rows(rows: list[dict]) -> list[dict]:
+    winners: dict[tuple[str, str, str], dict] = {}
+    for index, raw_item in enumerate(rows):
+        if not isinstance(raw_item, dict):
+            continue
+        item = dict(raw_item)
+        key = _ranking_dedupe_key(item)
+        existing = winners.get(key)
+        if existing is None:
+            item["_source_index"] = index
+            winners[key] = item
+            continue
+        existing_score = (
+            1 if str(existing.get("note_url") or "").strip() else 0,
+            _to_int(existing.get("metric")),
+            -_to_int(existing.get("rank")),
+            -_to_int(existing.get("_source_index")),
+        )
+        candidate_score = (
+            1 if str(item.get("note_url") or "").strip() else 0,
+            _to_int(item.get("metric")),
+            -_to_int(item.get("rank")),
+            -index,
+        )
+        if candidate_score > existing_score:
+            item["_source_index"] = index
+            winners[key] = item
+    deduped = sorted(
+        winners.values(),
+        key=lambda item: (
+            -_to_int(item.get("metric")),
+            _to_int(item.get("rank")) if _to_int(item.get("rank")) > 0 else 999999,
+            str(item.get("title") or ""),
+            str(item.get("account") or ""),
+        ),
+    )
+    for rank, item in enumerate(deduped, start=1):
+        item["rank"] = rank
+        item.pop("_source_index", None)
+    return deduped
 
 
 def _build_snapshot_rank_rows(rows: list[dict], *, metric_label: str) -> list[dict]:

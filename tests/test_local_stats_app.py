@@ -660,6 +660,78 @@ class LocalStatsAppTest(unittest.TestCase):
         self.assertEqual(payload["history_rankings"]["2026-03-31"]["comments"][0]["metric"], 12)
         self.assertEqual(payload["history_rankings"]["2026-03-31"]["growth"][0]["metric"], 15)
 
+    def test_build_mobile_rankings_payload_dedupes_same_note_variants(self) -> None:
+        payload = build_mobile_rankings_payload(
+            dashboard_payload={
+                "latest_date": "2026-04-05",
+                "updated_at": "2026-04-05T20:00:00+08:00",
+                "rankings": {
+                    "单条点赞排行": [
+                        {
+                            "rank": 1,
+                            "account_id": "u1",
+                            "account": "账号A",
+                            "title": "同一作品",
+                            "metric": 158,
+                            "cover_url": "https://example.com/a.jpg!nc",
+                            "note_url": "https://example.com/note/1",
+                        },
+                        {
+                            "rank": 2,
+                            "account_id": "u1",
+                            "account": "账号A",
+                            "title": "同一作品",
+                            "metric": 158,
+                            "cover_url": "https://example.com/a.jpg!old",
+                            "note_url": "",
+                        },
+                    ],
+                    "单条评论排行": [],
+                    "单条第二天增长排行": [],
+                },
+                "account_series": {
+                    "u1": [{"date": "2026-04-05", "fans": 10, "interaction": 20, "likes": 3, "comments": 1, "works": 5}],
+                },
+                "history_rankings": {
+                    "默认项目": {
+                        "2026-04-04": {
+                            "date": "2026-04-04",
+                            "snapshot_time": "2026-04-04 18:00:00",
+                            "account_count": 1,
+                            "likes": [
+                                {
+                                    "rank": 1,
+                                    "account_id": "u1",
+                                    "account": "账号A",
+                                    "title": "同一作品",
+                                    "metric": 30,
+                                    "cover_url": "https://example.com/a.jpg!nc",
+                                    "note_url": "https://example.com/note/1",
+                                },
+                                {
+                                    "rank": 2,
+                                    "account_id": "u1",
+                                    "account": "账号A",
+                                    "title": "同一作品",
+                                    "metric": 28,
+                                    "cover_url": "https://example.com/a.jpg!old",
+                                    "note_url": "",
+                                },
+                            ],
+                            "comments": [],
+                            "growth": [],
+                        }
+                    }
+                },
+            },
+            monitored_entries=[{"account_id": "u1", "project": "默认项目"}],
+            project="默认项目",
+        )
+        self.assertEqual(len(payload["rankings"]["likes"]), 1)
+        self.assertEqual(payload["rankings"]["likes"][0]["note_url"], "https://example.com/note/1")
+        self.assertEqual(len(payload["history_rankings"]["2026-04-04"]["likes"]), 1)
+        self.assertEqual(payload["history_rankings"]["2026-04-04"]["likes"][0]["metric"], 30)
+
     def test_build_mobile_rankings_payload_falls_back_to_first_project(self) -> None:
         payload = build_mobile_rankings_payload(
             dashboard_payload={"rankings": {}, "account_series": {}},
