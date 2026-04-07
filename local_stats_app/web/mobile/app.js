@@ -248,6 +248,8 @@ function renderAlerts(rows) {
     const alertType = String(item.alert_type || "互动预警").trim();
     const likeDelta = Number(item.like_delta || 0);
     const commentDelta = Number(item.comment_delta || 0);
+    const accountLabel = item.account || "未知账号";
+    const dateLabel = item.date || selectedHistoryDate || "";
     const links = [];
     if (item.profile_url) {
       links.push(`<a class="alert-link" href="${item.profile_url}" target="_blank" rel="noreferrer">账号主页</a>`);
@@ -260,11 +262,11 @@ function renderAlerts(rows) {
         <div class="alert-card-main">
           <p class="alert-title">${item.title || "未命名作品"}</p>
           <div class="alert-meta">
-            <span>${item.account || "未知账号"}</span>
-            <span>${item.date || selectedHistoryDate || ""}</span>
-            <span>${alertType}</span>
+            <span>${accountLabel}</span>
+            <span>${dateLabel}</span>
           </div>
           <div class="alert-deltas">
+            <span class="alert-chip is-muted">${alertType}</span>
             <span class="alert-chip">评论 +${formatNumber(commentDelta)}</span>
             <span class="alert-chip">点赞 +${formatNumber(likeDelta)}</span>
           </div>
