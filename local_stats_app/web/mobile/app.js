@@ -145,6 +145,52 @@ function dedupeSameRankingRows(rows) {
   return Array.from(winners.values());
 }
 
+function buildAlertKey(item) {
+  return [
+    String(item?.date || "").trim(),
+    String(item?.account_id || "").trim(),
+    String(item?.title || "").trim(),
+    String(item?.note_url || item?.profile_url || "").trim(),
+  ].join("\u0001");
+}
+
+function dedupeAlerts(rows) {
+  const winners = new Map();
+  for (const rawItem of rows || []) {
+    const item = { ...(rawItem || {}) };
+    const key = buildAlertKey(item);
+    if (!key.replace(/\u0001/g, "").trim()) continue;
+    const existing = winners.get(key);
+    if (!existing) {
+      winners.set(key, item);
+      continue;
+    }
+    const existingScore = [
+      Number(existing.delta || 0),
+      Number(existing.comment_delta || 0),
+      Number(existing.like_delta || 0),
+    ];
+    const candidateScore = [
+      Number(item.delta || 0),
+      Number(item.comment_delta || 0),
+      Number(item.like_delta || 0),
+    ];
+    if (
+      candidateScore[0] > existingScore[0] ||
+      (candidateScore[0] === existingScore[0] && candidateScore[1] > existingScore[1]) ||
+      (candidateScore[0] === existingScore[0] && candidateScore[1] === existingScore[1] && candidateScore[2] > existingScore[2])
+    ) {
+      winners.set(key, item);
+    }
+  }
+  return Array.from(winners.values()).sort((a, b) => (
+    Number(b.delta || 0) - Number(a.delta || 0) ||
+    Number(b.comment_delta || 0) - Number(a.comment_delta || 0) ||
+    Number(b.like_delta || 0) - Number(a.like_delta || 0) ||
+    String(a.title || "").localeCompare(String(b.title || ""), "zh-CN")
+  ));
+}
+
 function renderList(rootId, countId, rows, metricLabel, options = {}) {
   const root = document.getElementById(rootId);
   const count = document.getElementById(countId);
@@ -189,6 +235,46 @@ function filterRowsByAccount(rows, accountId) {
   return (rows || []).filter((item) => String(item.account_id || "").trim() === normalized);
 }
 
+function renderAlerts(rows) {
+  const root = document.getElementById("historyAlertsList");
+  const count = document.getElementById("historyAlertsCount");
+  const data = dedupeAlerts(rows).slice(0, 20);
+  count.textContent = String(data.length);
+  if (!data.length) {
+    root.innerHTML = '<div class="empty-state">当前没有重点关注数据</div>';
+    return;
+  }
+  root.innerHTML = data.map((item) => {
+    const alertType = String(item.alert_type || "互动预警").trim();
+    const likeDelta = Number(item.like_delta || 0);
+    const commentDelta = Number(item.comment_delta || 0);
+    const links = [];
+    if (item.profile_url) {
+      links.push(`<a class="alert-link" href="${item.profile_url}" target="_blank" rel="noreferrer">账号主页</a>`);
+    }
+    if (item.note_url) {
+      links.push(`<a class="alert-link" href="${item.note_url}" target="_blank" rel="noreferrer">作品详情</a>`);
+    }
+    return `
+      <div class="alert-card">
+        <div class="alert-card-main">
+          <p class="alert-title">${item.title || "未命名作品"}</p>
+          <div class="alert-meta">
+            <span>${item.account || "未知账号"}</span>
+            <span>${item.date || selectedHistoryDate || ""}</span>
+            <span>${alertType}</span>
+          </div>
+          <div class="alert-deltas">
+            <span class="alert-chip">评论 +${formatNumber(commentDelta)}</span>
+            <span class="alert-chip">点赞 +${formatNumber(likeDelta)}</span>
+          </div>
+        </div>
+        ${links.length ? `<div class="alert-links">${links.join("")}</div>` : ""}
+      </div>
+    `;
+  }).join("");
+}
+
 function renderCalendar(rows) {
   const select = document.getElementById("calendarDateSelect");
   const data = (rows || []).slice().reverse();
@@ -218,6 +304,13 @@ function renderHistoryDetails(payload) {
   const likesRows = dedupeSameRankingRows(filterRowsByAccount(detail.likes || [], selectedAccountId));
   const commentsRows = dedupeSameRankingRows(filterRowsByAccount(detail.comments || [], selectedAccountId));
   const growthRows = dedupeSameRankingRows(filterRowsByAccount(detail.growth || [], selectedAccountId));
+  const alertsRows = filterRowsByAccount(
+    (payload.alerts || []).filter((item) => {
+      const itemDate = String(item.date || "").trim();
+      return !selectedHistoryDate || itemDate === selectedHistoryDate;
+    }),
+    selectedAccountId,
+  );
   const scopeAccountCount = activeAccount ? (likesRows.length || commentsRows.length || growthRows.length ? 1 : 0) : Number(detail.account_count || 0);
   renderHeadline(payload, detail);
   document.getElementById("historyDetailTitle").textContent = selectedHistoryDate
@@ -229,6 +322,7 @@ function renderHistoryDetails(payload) {
   renderList("historyLikesList", "historyLikesCount", likesRows, "点赞", { reindexRank: Boolean(activeAccount) });
   renderList("historyCommentsList", "historyCommentsCount", commentsRows, "评论", { reindexRank: Boolean(activeAccount) });
   renderList("historyGrowthList", "historyGrowthCount", growthRows, "增长", { reindexRank: Boolean(activeAccount) });
+  renderAlerts(alertsRows);
 }
 
 function renderProjectOptions(projects) {
@@ -330,7 +424,7 @@ async function loadDashboard() {
     renderHistoryDetails(payload);
   } catch (error) {
     statusCard.textContent = `加载失败：${error.message}`;
-    ["historyLikesList", "historyCommentsList", "historyGrowthList"].forEach((id) => {
+    ["historyLikesList", "historyCommentsList", "historyGrowthList", "historyAlertsList"].forEach((id) => {
       document.getElementById(id).innerHTML = '<div class="empty-state">加载失败</div>';
     });
   }

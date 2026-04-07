@@ -565,6 +565,50 @@ class LocalStatsAppTest(unittest.TestCase):
         self.assertIn("2026-03-30", payload["history_rankings"])
         self.assertEqual(payload["history_rankings"]["2026-03-30"]["likes"][0]["metric"], 30)
 
+    def test_build_mobile_rankings_payload_includes_project_alerts(self) -> None:
+        payload = build_mobile_rankings_payload(
+            dashboard_payload={
+                "rankings": {},
+                "account_series": {
+                    "u1": [{"date": "2026-03-30", "fans": 10, "interaction": 20, "likes": 3, "comments": 1, "works": 5}],
+                    "u2": [{"date": "2026-03-30", "fans": 11, "interaction": 21, "likes": 4, "comments": 2, "works": 6}],
+                },
+                "alerts": [
+                    {
+                        "date": "2026-03-30",
+                        "account_id": "u1",
+                        "account": "账号A",
+                        "title": "作品A",
+                        "alert_type": "评论预警",
+                        "like_delta": 1,
+                        "comment_delta": 20,
+                        "delta": 20,
+                        "profile_url": "https://profile-a",
+                        "note_url": "https://note-a",
+                    },
+                    {
+                        "date": "2026-03-30",
+                        "account_id": "u2",
+                        "account": "账号B",
+                        "title": "作品B",
+                        "alert_type": "点赞预警",
+                        "like_delta": 12,
+                        "comment_delta": 3,
+                        "delta": 12,
+                        "profile_url": "https://profile-b",
+                    },
+                ],
+            },
+            monitored_entries=[
+                {"account_id": "u1", "project": "默认项目"},
+                {"account_id": "u2", "project": "东莞"},
+            ],
+            project="默认项目",
+        )
+        self.assertEqual(len(payload["alerts"]), 1)
+        self.assertEqual(payload["alerts"][0]["account_id"], "u1")
+        self.assertEqual(payload["alerts"][0]["delta"], 20)
+
     def test_build_mobile_rankings_payload_falls_back_to_latest_rankings_when_history_missing(self) -> None:
         payload = build_mobile_rankings_payload(
             dashboard_payload={

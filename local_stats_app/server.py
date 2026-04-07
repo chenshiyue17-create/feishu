@@ -1654,6 +1654,31 @@ def build_mobile_rankings_payload(
             [dict(item) for item in rows if isinstance(item, dict) and str(item.get("account_id") or "").strip() in project_account_ids]
         )
 
+    def filter_alerts() -> List[Dict[str, Any]]:
+        rows = dashboard_payload.get("alerts") or []
+        if not normalized_project:
+            return [dict(item) for item in rows if isinstance(item, dict)]
+        filtered: List[Dict[str, Any]] = []
+        seen: set[tuple[str, str, str, str]] = set()
+        for raw_item in rows:
+            if not isinstance(raw_item, dict):
+                continue
+            account_id = str(raw_item.get("account_id") or "").strip()
+            if account_id and account_id not in project_account_ids:
+                continue
+            item = dict(raw_item)
+            dedupe_key = (
+                str(item.get("date") or "").strip(),
+                account_id,
+                str(item.get("title") or "").strip(),
+                str(item.get("note_url") or item.get("profile_url") or "").strip(),
+            )
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+            filtered.append(item)
+        return filtered
+
     daily_history: List[Dict[str, Any]] = []
     account_series = dashboard_payload.get("account_series") or {}
     per_date: Dict[str, Dict[str, Any]] = {}
@@ -1731,6 +1756,7 @@ def build_mobile_rankings_payload(
             "comments": filter_rows("单条评论排行"),
             "growth": filter_rows("单条第二天增长排行"),
         },
+        "alerts": filter_alerts(),
         "calendar": daily_history,
         "history_rankings": project_history_rankings,
     }
