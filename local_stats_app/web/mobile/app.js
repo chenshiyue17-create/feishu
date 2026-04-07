@@ -145,55 +145,6 @@ function dedupeSameRankingRows(rows) {
   return Array.from(winners.values());
 }
 
-function buildMetricChip(label, metric, tone = "primary") {
-  return {
-    label,
-    metric: Number(metric || 0),
-    tone,
-  };
-}
-
-function buildUniqueRankingDisplays(likesRows, commentsRows, growthRows) {
-  const commentsByKey = new Map((commentsRows || []).map((item) => [buildRankingRowKey(item), item]));
-  const growthByKey = new Map((growthRows || []).map((item) => [buildRankingRowKey(item), item]));
-  const renderedKeys = new Set();
-
-  const likesDisplay = (likesRows || []).map((item) => {
-    const key = buildRankingRowKey(item);
-    renderedKeys.add(key);
-    const chips = [buildMetricChip("点赞", item.metric, "primary")];
-    const commentsItem = commentsByKey.get(key);
-    const growthItem = growthByKey.get(key);
-    if (commentsItem) chips.push(buildMetricChip("评论", commentsItem.metric, "secondary"));
-    if (growthItem) chips.push(buildMetricChip("增长", growthItem.metric, "secondary"));
-    return { ...item, metricChips: chips };
-  });
-
-  const commentsDisplay = [];
-  for (const item of commentsRows || []) {
-    const key = buildRankingRowKey(item);
-    if (renderedKeys.has(key)) continue;
-    renderedKeys.add(key);
-    const chips = [buildMetricChip("评论", item.metric, "primary")];
-    const growthItem = growthByKey.get(key);
-    if (growthItem) chips.push(buildMetricChip("增长", growthItem.metric, "secondary"));
-    commentsDisplay.push({ ...item, metricChips: chips });
-  }
-
-  const growthDisplay = [];
-  for (const item of growthRows || []) {
-    const key = buildRankingRowKey(item);
-    if (renderedKeys.has(key)) continue;
-    renderedKeys.add(key);
-    growthDisplay.push({
-      ...item,
-      metricChips: [buildMetricChip("增长", item.metric, "primary")],
-    });
-  }
-
-  return { likesDisplay, commentsDisplay, growthDisplay };
-}
-
 function renderList(rootId, countId, rows, metricLabel, options = {}) {
   const root = document.getElementById(rootId);
   const count = document.getElementById(countId);
@@ -216,9 +167,6 @@ function renderList(rootId, countId, rows, metricLabel, options = {}) {
         : String(item.comment_basis || "").trim() === "详情缺失"
           ? "详情缺失"
           : "";
-    const metricChips = Array.isArray(item.metricChips) && item.metricChips.length
-      ? item.metricChips
-      : [buildMetricChip(metricLabel, item.metric, "primary")];
     return `
       <a class="rank-card" href="${safeHref}" target="_blank" rel="noreferrer">
         <div class="rank-index">${item.rank || "-"}</div>
@@ -228,14 +176,7 @@ function renderList(rootId, countId, rows, metricLabel, options = {}) {
             <span>${item.account || "未知账号"}</span>
             <span>${basisLabel}</span>
           </div>
-          <div class="rank-metric-row">
-            ${metricChips.map((chip) => `
-              <span class="metric-chip${chip.tone === "secondary" ? " is-secondary" : ""}">
-                <span class="metric-chip-label">${chip.label}</span>
-                <span>${formatNumber(chip.metric)}</span>
-              </span>
-            `).join("")}
-          </div>
+          <div class="rank-metric">${metricLabel} ${formatNumber(item.metric)}</div>
         </div>
       </a>
     `;
@@ -277,11 +218,6 @@ function renderHistoryDetails(payload) {
   const likesRows = dedupeSameRankingRows(filterRowsByAccount(detail.likes || [], selectedAccountId));
   const commentsRows = dedupeSameRankingRows(filterRowsByAccount(detail.comments || [], selectedAccountId));
   const growthRows = dedupeSameRankingRows(filterRowsByAccount(detail.growth || [], selectedAccountId));
-  const { likesDisplay, commentsDisplay, growthDisplay } = buildUniqueRankingDisplays(
-    likesRows,
-    commentsRows,
-    growthRows,
-  );
   const scopeAccountCount = activeAccount ? (likesRows.length || commentsRows.length || growthRows.length ? 1 : 0) : Number(detail.account_count || 0);
   renderHeadline(payload, detail);
   document.getElementById("historyDetailTitle").textContent = selectedHistoryDate
@@ -290,9 +226,9 @@ function renderHistoryDetails(payload) {
   document.getElementById("historyDetailSummary").textContent = selectedHistoryDate
     ? `${detail.snapshot_time || selectedHistoryDate} · ${formatNumber(scopeAccountCount)} 个账号`
     : "点历史日历中的某一天，查看当天榜单";
-  renderList("historyLikesList", "historyLikesCount", likesDisplay, "点赞", { reindexRank: Boolean(activeAccount) });
-  renderList("historyCommentsList", "historyCommentsCount", commentsDisplay, "评论", { reindexRank: Boolean(activeAccount) });
-  renderList("historyGrowthList", "historyGrowthCount", growthDisplay, "增长", { reindexRank: Boolean(activeAccount) });
+  renderList("historyLikesList", "historyLikesCount", likesRows, "点赞", { reindexRank: Boolean(activeAccount) });
+  renderList("historyCommentsList", "historyCommentsCount", commentsRows, "评论", { reindexRank: Boolean(activeAccount) });
+  renderList("historyGrowthList", "historyGrowthCount", growthRows, "增长", { reindexRank: Boolean(activeAccount) });
 }
 
 function renderProjectOptions(projects) {
