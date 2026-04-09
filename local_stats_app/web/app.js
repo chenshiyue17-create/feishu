@@ -1948,6 +1948,23 @@ function renderSyncProgress(syncStatus) {
       (item) =>
         `${item.name} ${formatDateTime(item.next_run_at).slice(11, 16)} · ${formatNumber(item.active_count || item.per_run || 0)} 个账号`
     );
+  const stateText = syncStatus?.state === "success"
+    ? "同步完成"
+    : syncStatus?.state === "partial"
+    ? "部分完成"
+    : syncStatus?.state === "error"
+    ? "同步失败"
+    : "待命";
+  const finishedSummaryChips = [
+    { text: stateText, tone: syncStatus?.state === "success" ? "success" : syncStatus?.state === "error" ? "error" : "" },
+    { text: progress.total ? `${formatNumber(progress.current || 0)} / ${formatNumber(progress.total || 0)}` : "", tone: "" },
+    { text: `成功 ${formatNumber(progress.success_count || 0)}`, tone: "success" },
+    { text: `失败 ${formatNumber(progress.failed_count || 0)}`, tone: progress.failed_count ? "error" : "" },
+    { text: progress.works ? `${formatNumber(progress.works)} 条作品` : "", tone: "" },
+    { text: elapsedText, tone: "" },
+    { text: pushState === "success" && pushLastSuccessAt ? `已上传 ${pushLastSuccessAt}` : "", tone: "success" },
+    { text: pushState === "error" && pushMessage ? truncateMiddle(pushMessage, 56) : "", tone: "error" },
+  ].filter((item) => item.text);
 
   if (syncStatus?.state !== "running" && !progress.phase) {
     root.innerHTML = `
@@ -1968,6 +1985,25 @@ function renderSyncProgress(syncStatus) {
             ${scheduleProjectChips.map((text) => `<span class="sync-progress-chip">${text}</span>`).join("")}
           </div>
         </section>
+      </div>
+    `;
+    return;
+  }
+
+  if (syncStatus?.state !== "running") {
+    root.innerHTML = `
+      <div class="sync-progress-compact">
+        <div class="sync-progress-top">
+          <div>
+            <div class="sync-progress-title">看板同步</div>
+            <div class="sync-progress-subtitle">${detailText}</div>
+            ${pushDetailText ? `<div class="sync-progress-subtitle">${pushDetailText}</div>` : ""}
+          </div>
+          <div class="sync-progress-percent is-compact">${formatNumber(percent)}%</div>
+        </div>
+        <div class="sync-progress-meta">
+          ${finishedSummaryChips.map((item) => `<span class="sync-progress-chip ${item.tone ? `is-${item.tone}` : ""}">${item.text}</span>`).join("")}
+        </div>
       </div>
     `;
     return;

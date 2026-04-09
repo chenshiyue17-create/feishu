@@ -708,6 +708,11 @@ body {
   border: 1px solid rgba(255,255,255,0.07);
 }
 
+.sync-progress-compact {
+  display: grid;
+  gap: 8px;
+}
+
 .sync-progress-empty,
 .sync-progress-subtitle,
 .sync-progress-meta {
@@ -750,6 +755,10 @@ body {
   color: var(--accent-alt);
   font-size: 22px;
   font-weight: 800;
+}
+
+.sync-progress-percent.is-compact {
+  font-size: 16px;
 }
 
 .sync-progress-bar-shell {
