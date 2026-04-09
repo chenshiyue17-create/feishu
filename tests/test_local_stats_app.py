@@ -45,6 +45,8 @@ from xhs_feishu_monitor.local_stats_app.server import (
     export_single_account_rankings,
     extract_profile_user_id,
     get_server_view_auth_credentials,
+    is_server_desktop_hidden_path,
+    is_server_desktop_view_hidden,
     is_server_view_auth_enabled,
     is_server_view_auth_exempt_path,
     load_monitored_urls,
@@ -93,9 +95,23 @@ class LocalStatsAppTest(unittest.TestCase):
         self.assertTrue(is_server_view_auth_exempt_path("/api/health"))
         self.assertTrue(is_server_view_auth_exempt_path("/api/server-cache-upload"))
         self.assertTrue(is_server_view_auth_exempt_path("/api/mobile-rankings"))
+        self.assertTrue(is_server_view_auth_exempt_path("/api/image"))
         self.assertTrue(is_server_view_auth_exempt_path("/mobile/index.html"))
         self.assertFalse(is_server_view_auth_exempt_path("/"))
         self.assertFalse(is_server_view_auth_exempt_path("/api/dashboard"))
+
+    def test_server_desktop_hide_flag_and_paths(self) -> None:
+        disabled = Settings()
+        enabled = Settings(server_hide_desktop_view=True)
+        self.assertFalse(is_server_desktop_view_hidden(disabled))
+        self.assertTrue(is_server_desktop_view_hidden(enabled))
+        self.assertFalse(is_server_desktop_hidden_path("/mobile/index.html", enabled))
+        self.assertFalse(is_server_desktop_hidden_path("/api/mobile-rankings", enabled))
+        self.assertFalse(is_server_desktop_hidden_path("/api/server-cache-upload", enabled))
+        self.assertFalse(is_server_desktop_hidden_path("/api/image", enabled))
+        self.assertTrue(is_server_desktop_hidden_path("/", enabled))
+        self.assertTrue(is_server_desktop_hidden_path("/api/dashboard", enabled))
+        self.assertTrue(is_server_desktop_hidden_path("/api/system-config", enabled))
 
     def test_filter_dashboard_payload_by_monitored_entries_removes_stale_accounts(self) -> None:
         payload = {

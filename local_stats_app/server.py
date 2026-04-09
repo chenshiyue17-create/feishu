@@ -4042,9 +4042,20 @@ def is_server_view_auth_enabled(settings) -> bool:
 def is_server_view_auth_exempt_path(path: str) -> bool:
     normalized = str(path or "").split("?", 1)[0].strip() or "/"
     return (
-        normalized in {"/api/health", "/api/server-cache-upload", "/api/mobile-rankings", "/mobile"}
+        normalized in {"/api/health", "/api/server-cache-upload", "/api/mobile-rankings", "/api/image", "/mobile"}
         or normalized.startswith("/mobile/")
     )
+
+
+def is_server_desktop_view_hidden(settings) -> bool:
+    return bool(getattr(settings, "server_hide_desktop_view", False))
+
+
+def is_server_desktop_hidden_path(path: str, settings) -> bool:
+    if not is_server_desktop_view_hidden(settings):
+        return False
+    normalized = str(path or "").split("?", 1)[0].strip() or "/"
+    return not is_server_view_auth_exempt_path(normalized)
 
 
 def validate_server_view_auth_header(authorization_header: str, settings) -> bool:
@@ -4279,6 +4290,10 @@ def build_handler(
 
         def do_GET(self) -> None:  # noqa: N802
             path = self.path.split("?", 1)[0]
+            settings = load_settings(monitoring_store.env_file)
+            if is_server_desktop_hidden_path(path, settings):
+                self.send_json_response(HTTPStatus.NOT_FOUND, {"ok": False, "message": "页面不存在"})
+                return
             if not self.authorize_if_needed(path):
                 return
             if path == "/api/dashboard":
@@ -4358,6 +4373,10 @@ def build_handler(
 
         def do_POST(self) -> None:  # noqa: N802
             path = self.path.split("?", 1)[0]
+            settings = load_settings(monitoring_store.env_file)
+            if is_server_desktop_hidden_path(path, settings):
+                self.send_json_response(HTTPStatus.NOT_FOUND, {"ok": False, "message": "接口不存在"})
+                return
             if not self.authorize_if_needed(path):
                 return
             try:
@@ -4457,7 +4476,6 @@ def build_handler(
                     self.send_json_response(HTTPStatus.OK, result)
                     return
                 if path == "/api/server-cache-upload":
-                    settings = load_settings(monitoring_store.env_file)
                     expected_token = str(getattr(settings, "server_cache_upload_token", "") or "").strip()
                     provided_token = str(self.headers.get("X-Upload-Token") or "").strip()
                     if expected_token and provided_token != expected_token:

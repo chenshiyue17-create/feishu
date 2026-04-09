@@ -123,6 +123,7 @@ class Settings:
     server_cache_push_url: str = DEFAULT_SERVER_CACHE_PUSH_URL
     server_view_username: str = "xhs"
     server_view_password: str = ""
+    server_hide_desktop_view: bool = False
 
     def validate_for_sync(self) -> None:
         missing = []
@@ -240,6 +241,7 @@ def load_settings(env_file: Optional[str] = None) -> Settings:
         server_cache_push_url=normalize_server_cache_push_url(_env("SERVER_CACHE_PUSH_URL", env_values)),
         server_view_username=_env("SERVER_VIEW_USERNAME", env_values) or "xhs",
         server_view_password=_env("SERVER_VIEW_PASSWORD", env_values),
+        server_hide_desktop_view=_env_bool("SERVER_HIDE_DESKTOP_VIEW", env_values, default=False),
     )
     return settings
 
