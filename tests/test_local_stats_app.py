@@ -1554,6 +1554,53 @@ class LocalStatsAppTest(unittest.TestCase):
         self.assertIn("手动更新过于频繁", result["message"])
         self.assertTrue(result["sync_status"]["manual_sync_locked"])
 
+    def test_request_sync_skips_recently_successful_accounts(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = write_monitored_entries(
+                f"{temp_dir}/urls.txt",
+                [
+                    {"url": "https://www.xiaohongshu.com/user/profile/u1", "active": True, "project": "项目A"},
+                    {"url": "https://www.xiaohongshu.com/user/profile/u2", "active": True, "project": "项目A"},
+                ],
+            )
+            update_monitored_metadata(
+                str(path),
+                [
+                    {
+                        "url": "https://www.xiaohongshu.com/user/profile/u1",
+                        "last_sync_state": "success",
+                        "last_sync_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+                    }
+                ],
+            )
+            login_state_store = LoginStateStore(env_file=f"{temp_dir}/.env", urls_file=str(path), cache_seconds=0)
+            store = MonitoringSyncStore(
+                env_file=f"{temp_dir}/.env",
+                urls_file=str(path),
+                dashboard_store=DashboardStore(env_file=f"{temp_dir}/.env"),
+                login_state_store=login_state_store,
+                manual_sync_cooldown_seconds=0,
+            )
+            captured = {}
+
+            def fake_request_sync_locked(*, reason, urls=None, project="", mode="manual"):
+                captured["reason"] = reason
+                captured["urls"] = urls or []
+                captured["project"] = project
+                captured["mode"] = mode
+                return True
+
+            with patch.object(store, "_request_sync_locked", side_effect=fake_request_sync_locked), patch.object(
+                login_state_store,
+                "get_payload",
+                return_value={"state": "ok", "detail_ready": True, "comment_count_ready": 1},
+            ):
+                result = store.request_sync(project="项目A")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(captured["urls"], ["https://www.xiaohongshu.com/user/profile/u2"])
+        self.assertIn("跳过 1 个刚成功的账号", result["message"])
+
     def test_status_snapshot_exposes_upload_status(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             path = write_monitored_entries(

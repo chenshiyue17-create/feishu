@@ -123,6 +123,7 @@ AUTO_SERVER_CACHE_PUSH_DAILY_AT = "14:00"
 AUTO_SERVER_CACHE_PUSH_RETRY_SECONDS = 15 * 60
 AUTO_SERVER_CACHE_PUSH_POLL_SECONDS = 20
 AUTO_PROJECT_SYNC_RETRY_SECONDS = 10 * 60
+RECENT_SUCCESS_SYNC_SKIP_SECONDS = 10 * 60
 LEGACY_FEISHU_ERROR_MARKERS = (
     "缺少飞书配置",
     "飞书上传失败",
@@ -2337,6 +2338,22 @@ class MonitoringSyncStore:
         return snapshot
 
     @staticmethod
+    def _is_recent_successful_account(entry: Dict[str, Any], *, now: Optional[datetime] = None) -> bool:
+        if str(entry.get("last_sync_state") or "").strip() != "success":
+            return False
+        last_sync_at = str(entry.get("last_sync_at") or "").strip()
+        if not last_sync_at:
+            return False
+        try:
+            last_sync_dt = datetime.fromisoformat(last_sync_at)
+        except Exception:
+            return False
+        current = now or datetime.now().astimezone()
+        if last_sync_dt.tzinfo is None:
+            last_sync_dt = last_sync_dt.replace(tzinfo=current.tzinfo)
+        return (current - last_sync_dt).total_seconds() < RECENT_SUCCESS_SYNC_SKIP_SECONDS
+
+    @staticmethod
     def _daily_clock_datetime(now: datetime, daily_at: str) -> datetime:
         hour_text, minute_text = str(daily_at or AUTO_SERVER_CACHE_PUSH_DAILY_AT).split(":", 1)
         hour = max(0, min(23, int(hour_text)))
@@ -3049,11 +3066,12 @@ class MonitoringSyncStore:
         with self._lock:
             entries = parse_monitored_entries(self.urls_file)
             normalized_project = normalize_project_name(project) if str(project or "").strip() else ""
-            urls = [
-                entry["url"]
+            candidate_entries = [
+                entry
                 for entry in entries
                 if entry.get("active") and (not normalized_project or normalize_project_name(entry.get("project")) == normalized_project)
             ]
+            urls = [entry["url"] for entry in candidate_entries]
             if not urls:
                 return {
                     "ok": False,
@@ -3061,6 +3079,26 @@ class MonitoringSyncStore:
                         f"项目「{normalized_project}」当前没有可同步账号。"
                         if normalized_project
                         else "当前监测清单为空，先添加账号主页链接。"
+                    ),
+                    "sync_started": False,
+                    "sync_status": self._status_snapshot_locked(),
+                }
+            metadata_index = load_monitored_metadata(self.urls_file)
+            merged_entries = [{**entry, **(metadata_index.get(str(entry.get("url") or "").strip()) or {})} for entry in candidate_entries]
+            recent_success_entries = [entry for entry in merged_entries if self._is_recent_successful_account(entry)]
+            filtered_entries = [entry for entry in merged_entries if not self._is_recent_successful_account(entry)]
+            skipped_recent_count = len(recent_success_entries)
+            if filtered_entries:
+                urls = [str(entry.get("url") or "").strip() for entry in filtered_entries if str(entry.get("url") or "").strip()]
+            else:
+                urls = []
+            if not urls:
+                return {
+                    "ok": False,
+                    "message": (
+                        f"项目「{normalized_project}」账号刚成功采集过，{format_duration_text(RECENT_SUCCESS_SYNC_SKIP_SECONDS)} 内无需重复更新。"
+                        if normalized_project
+                        else f"当前监测账号刚成功采集过，{format_duration_text(RECENT_SUCCESS_SYNC_SKIP_SECONDS)} 内无需重复更新。"
                     ),
                     "sync_started": False,
                     "sync_status": self._status_snapshot_locked(),
@@ -3097,15 +3135,19 @@ class MonitoringSyncStore:
             started = self._request_sync_locked(reason=reason, urls=urls, project=normalized_project, mode="manual")
             if started:
                 self._manual_last_requested_at = time.time()
+            if normalized_project and started and skipped_recent_count > 0:
+                message = f"已开始同步项目「{normalized_project}」，跳过 {skipped_recent_count} 个刚成功的账号"
+            elif normalized_project and started:
+                message = f"已开始同步项目「{normalized_project}」"
+            elif started and skipped_recent_count > 0:
+                message = f"已开始同步当前监测清单，跳过 {skipped_recent_count} 个刚成功的账号"
+            elif started:
+                message = "已开始同步当前监测清单"
+            else:
+                message = "当前已有同步任务在跑，先等这一轮完成。"
             return {
                 "ok": True,
-                "message": (
-                    f"已开始同步项目「{normalized_project}」"
-                    if normalized_project and started
-                    else "已开始同步当前监测清单"
-                    if started
-                    else "当前已有同步任务在跑，先等这一轮完成。"
-                ),
+                "message": message,
                 "sync_started": started,
                 "sync_status": self._status_snapshot_locked(),
             }
