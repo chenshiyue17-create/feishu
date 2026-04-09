@@ -1116,7 +1116,7 @@ function renderProjectCalendar() {
   gridNode.querySelectorAll("[data-calendar-date]").forEach((button) => {
     button.addEventListener("click", () => {
       state.calendarSelectedDate = button.dataset.calendarDate || "";
-      renderProjectCalendar();
+      renderApp();
     });
   });
 
@@ -3092,7 +3092,7 @@ document.getElementById("calendarPrevMonth").addEventListener("click", () => {
   if (monthIndex > 0) {
     state.calendarMonth = calendarState.months[monthIndex - 1];
     state.calendarSelectedDate = "";
-    renderProjectCalendar();
+    renderApp();
   }
 });
 document.getElementById("calendarNextMonth").addEventListener("click", () => {
@@ -3103,7 +3103,7 @@ document.getElementById("calendarNextMonth").addEventListener("click", () => {
   if (monthIndex >= 0 && monthIndex < calendarState.months.length - 1) {
     state.calendarMonth = calendarState.months[monthIndex + 1];
     state.calendarSelectedDate = "";
-    renderProjectCalendar();
+    renderApp();
   }
 });
 const exportAccountRankingButton = document.getElementById("exportAccountRankingButton");
