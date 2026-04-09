@@ -113,6 +113,38 @@ class ProfileBatchToFeishuTest(unittest.TestCase):
                 self.assertEqual(len(reports), 1)
                 self.assertEqual(reports[0]["works"][0]["comment_count_basis"], "详情缺失")
 
+    def test_load_reports_for_sync_aborts_on_login_failure_even_with_partial_success(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings = SimpleNamespace(project_cache_dir=temp_dir)
+            with patch(
+                "xhs_feishu_monitor.profile_batch_to_feishu.collect_profile_reports_with_progress",
+                return_value=[
+                    {
+                        "status": "success",
+                        "requested_url": "https://www.xiaohongshu.com/user/profile/u1",
+                        "profile": {"profile_user_id": "u1", "nickname": "账号A"},
+                        "works": [{"title_copy": "作品A"}],
+                    },
+                    {
+                        "status": "failed",
+                        "requested_url": "https://www.xiaohongshu.com/user/profile/u2",
+                        "error": "命中登录页，当前登录态不可用",
+                    },
+                ],
+            ):
+                with self.assertRaisesRegex(RuntimeError, "检测到登录态异常"):
+                    load_reports_for_sync(
+                        settings=settings,
+                        explicit_urls=[
+                            "https://www.xiaohongshu.com/user/profile/u1",
+                            "https://www.xiaohongshu.com/user/profile/u2",
+                        ],
+                        raw_text="",
+                        urls_file=None,
+                        project="项目A",
+                        report_json=None,
+                    )
+
     def test_load_reports_for_sync_resumes_from_checkpoint(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             settings = SimpleNamespace(project_cache_dir=temp_dir)

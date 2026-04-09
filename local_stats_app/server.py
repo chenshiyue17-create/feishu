@@ -134,9 +134,26 @@ LEGACY_FEISHU_ERROR_MARKERS = (
     "feishu_table_id",
 )
 
+LOGIN_COLLECTION_ERROR_MARKERS = (
+    "检测到登录态异常",
+    "命中登录页",
+    "当前登录态不可用",
+    "登录跳转",
+    "登录页",
+    "/login",
+    "未登录",
+)
+
 
 def iso_now() -> str:
     return datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def is_login_collection_error(error_text: Any) -> bool:
+    text = str(error_text or "").strip().lower()
+    if not text:
+        return False
+    return any(marker.lower() in text for marker in LOGIN_COLLECTION_ERROR_MARKERS)
 
 
 def contains_legacy_feishu_error(*, message: str = "", error: str = "") -> bool:
@@ -3209,6 +3226,7 @@ class MonitoringSyncStore:
             finished_at = iso_now()
             auto_push_account_ids: List[str] = []
             auto_push_failed_accounts = 0
+            settings = None
             try:
                 settings = load_settings(self.env_file)
                 current_urls = list(self._current_sync_urls)
@@ -3329,9 +3347,41 @@ class MonitoringSyncStore:
                     "summary": dict(local_summary),
                 }
             except Exception as exc:
+                login_window_opened = False
+                error_message = str(exc)
+                if settings is not None and is_login_collection_error(error_message):
+                    try:
+                        login_window_opened = open_xiaohongshu_login_window(
+                            settings=settings,
+                            target_url=(current_urls[0] if current_urls else "https://www.xiaohongshu.com/"),
+                        )
+                    except Exception:
+                        login_window_opened = False
+                    waiting_message = (
+                        "采集中检测到登录态异常，已弹出网页登录窗口；本轮已中止，完成登录后请重新开始采集。"
+                        if login_window_opened
+                        else "采集中检测到登录态异常，本轮已中止；请先完成登录后再重新开始采集。"
+                    )
+                    login_payload = build_login_state_payload(
+                        state="error",
+                        message=waiting_message,
+                        checked_at=iso_now(),
+                        sample_url=current_urls[0] if current_urls else "",
+                        login_window_opened=login_window_opened,
+                        hints=[
+                            "这次已中止，不会写入本地缓存，也不会自动上传服务器。",
+                            "登录完成后再点一次“更新全部项目”或“更新当前项目”。",
+                        ],
+                    )
+                    self._publish_login_state(
+                        login_payload,
+                        running=False,
+                        sample_url=current_urls[0] if current_urls else "",
+                    )
+                    error_message = waiting_message
                 result = {
                     "state": "error",
-                    "message": str(exc),
+                    "message": error_message,
                     "started_at": "",
                     "finished_at": finished_at,
                     "last_success_at": self._status.get("last_success_at", ""),

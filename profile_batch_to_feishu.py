@@ -166,6 +166,15 @@ PROJECT_ACCOUNT_RANKING_FIELDS: List[Dict[str, Any]] = [
     {"field_name": "数据用途", "type": 1},
 ]
 
+LOGIN_ERROR_MARKERS = (
+    "命中登录页",
+    "当前登录态不可用",
+    "登录跳转",
+    "登录页",
+    "/login",
+    "未登录",
+)
+
 
 def is_feishu_forbidden_error(exc: Exception) -> bool:
     message = str(exc or "")
@@ -480,6 +489,9 @@ def load_reports_for_sync(
             settings=settings,
             progress_callback=_persist_resume_progress,
         )
+        login_error = _find_login_failure(items)
+        if login_error:
+            raise RuntimeError(login_error)
     elif progress_callback is not None:
         progress_callback(
             {
@@ -529,6 +541,18 @@ def load_reports_for_sync(
     if not reports:
         raise ValueError("批量抓取没有成功结果，无法同步到飞书")
     return reports
+
+
+def _find_login_failure(items: List[Dict[str, Any]]) -> str:
+    for item in items:
+        if str(item.get("status") or "").strip() == "success":
+            continue
+        error_text = str(item.get("error") or item.get("message") or "").strip()
+        lowered = error_text.lower()
+        if any(marker.lower() in lowered for marker in LOGIN_ERROR_MARKERS):
+            target = str(item.get("requested_url") or item.get("final_url") or "").strip()
+            return f"检测到登录态异常：{target or '当前采集账号'} {error_text}".strip()
+    return ""
 
 
 def _resolve_batch_resume_path(*, settings, project: str, urls_file: Optional[str], scheduled: bool) -> Path:
