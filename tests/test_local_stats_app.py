@@ -38,6 +38,7 @@ from xhs_feishu_monitor.local_stats_app.server import (
     build_login_state_payload,
     classify_monitored_fetch_state,
     build_sync_progress,
+    build_server_mobile_redirect_path,
     build_profile_name_index,
     load_monitored_metadata,
     enrich_monitored_entries,
@@ -112,6 +113,12 @@ class LocalStatsAppTest(unittest.TestCase):
         self.assertTrue(is_server_desktop_hidden_path("/", enabled))
         self.assertTrue(is_server_desktop_hidden_path("/api/dashboard", enabled))
         self.assertTrue(is_server_desktop_hidden_path("/api/system-config", enabled))
+
+    def test_server_mobile_redirect_path_defaults_to_default_project(self) -> None:
+        self.assertEqual(
+            build_server_mobile_redirect_path(),
+            "/mobile/index.html?project=%E9%BB%98%E8%AE%A4%E9%A1%B9%E7%9B%AE",
+        )
 
     def test_filter_dashboard_payload_by_monitored_entries_removes_stale_accounts(self) -> None:
         payload = {

@@ -4058,6 +4058,11 @@ def is_server_desktop_hidden_path(path: str, settings) -> bool:
     return not is_server_view_auth_exempt_path(normalized)
 
 
+def build_server_mobile_redirect_path(project: str = DEFAULT_PROJECT_NAME) -> str:
+    normalized_project = str(project or DEFAULT_PROJECT_NAME).strip() or DEFAULT_PROJECT_NAME
+    return f"/mobile/index.html?project={urllib.parse.quote(normalized_project)}"
+
+
 def validate_server_view_auth_header(authorization_header: str, settings) -> bool:
     username, password = get_server_view_auth_credentials(settings)
     if not password:
@@ -4291,6 +4296,11 @@ def build_handler(
         def do_GET(self) -> None:  # noqa: N802
             path = self.path.split("?", 1)[0]
             settings = load_settings(monitoring_store.env_file)
+            if is_server_desktop_view_hidden(settings) and path in {"/", "/index.html"}:
+                self.send_response(HTTPStatus.FOUND)
+                self.send_header("Location", build_server_mobile_redirect_path())
+                self.end_headers()
+                return
             if is_server_desktop_hidden_path(path, settings):
                 self.send_json_response(HTTPStatus.NOT_FOUND, {"ok": False, "message": "页面不存在"})
                 return
