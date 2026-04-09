@@ -4354,6 +4354,22 @@ def build_handler(
                 return
             return super().do_GET()
 
+        def do_HEAD(self) -> None:  # noqa: N802
+            path = self.path.split("?", 1)[0]
+            settings = load_settings(monitoring_store.env_file)
+            if is_server_desktop_view_hidden(settings) and path in {"/", "/index.html"}:
+                self.send_response(HTTPStatus.FOUND)
+                self.send_header("Location", build_server_mobile_redirect_path())
+                self.end_headers()
+                return
+            if is_server_desktop_hidden_path(path, settings):
+                self.send_response(HTTPStatus.NOT_FOUND)
+                self.end_headers()
+                return
+            if not self.authorize_if_needed(path):
+                return
+            return super().do_HEAD()
+
         def serve_remote_image(self) -> None:
             parsed = urllib.parse.urlparse(self.path)
             params = urllib.parse.parse_qs(parsed.query)
