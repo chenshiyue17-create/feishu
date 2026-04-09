@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from xhs_feishu_monitor.profile_batch_to_feishu import (
+    LoginFailureDuringSync,
     build_dense_rank_map,
     build_dry_run_summary,
     build_export_review_key,
@@ -113,7 +114,7 @@ class ProfileBatchToFeishuTest(unittest.TestCase):
                 self.assertEqual(len(reports), 1)
                 self.assertEqual(reports[0]["works"][0]["comment_count_basis"], "详情缺失")
 
-    def test_load_reports_for_sync_aborts_on_login_failure_even_with_partial_success(self) -> None:
+    def test_load_reports_for_sync_returns_partial_success_on_login_failure(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             settings = SimpleNamespace(project_cache_dir=temp_dir)
             with patch(
@@ -132,7 +133,7 @@ class ProfileBatchToFeishuTest(unittest.TestCase):
                     },
                 ],
             ):
-                with self.assertRaisesRegex(RuntimeError, "检测到登录态异常"):
+                with self.assertRaisesRegex(LoginFailureDuringSync, "检测到登录态异常") as ctx:
                     load_reports_for_sync(
                         settings=settings,
                         explicit_urls=[
@@ -144,6 +145,8 @@ class ProfileBatchToFeishuTest(unittest.TestCase):
                         project="项目A",
                         report_json=None,
                     )
+        self.assertEqual(len(ctx.exception.successful_reports), 1)
+        self.assertEqual(ctx.exception.successful_reports[0]["profile"]["profile_user_id"], "u1")
 
     def test_load_reports_for_sync_resumes_from_checkpoint(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

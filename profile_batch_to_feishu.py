@@ -176,6 +176,12 @@ LOGIN_ERROR_MARKERS = (
 )
 
 
+class LoginFailureDuringSync(RuntimeError):
+    def __init__(self, message: str, *, successful_reports: Optional[List[Dict[str, Any]]] = None) -> None:
+        super().__init__(message)
+        self.successful_reports = list(successful_reports or [])
+
+
 def is_feishu_forbidden_error(exc: Exception) -> bool:
     message = str(exc or "")
     return "403" in message and "Forbidden" in message
@@ -489,9 +495,14 @@ def load_reports_for_sync(
             settings=settings,
             progress_callback=_persist_resume_progress,
         )
+        partial_reports = _build_success_reports_from_items(
+            items,
+            project_by_url=project_by_url,
+            existing_reports=merged_resumed_reports,
+        )
         login_error = _find_login_failure(items)
         if login_error:
-            raise RuntimeError(login_error)
+            raise LoginFailureDuringSync(login_error, successful_reports=partial_reports)
     elif progress_callback is not None:
         progress_callback(
             {
@@ -505,29 +516,11 @@ def load_reports_for_sync(
                 "failed_count": 0,
             }
         )
-    reports: List[Dict[str, Any]] = []
-    reports.extend(merged_resumed_reports)
-    for item in items:
-        if item.get("status") != "success":
-            continue
-        report = normalize_batch_item_to_report(
-            item,
-            project=project_by_url.get(
-                normalize_profile_url(
-                    str(
-                        item.get("requested_url")
-                        or item.get("final_url")
-                        or (item.get("profile") or {}).get("profile_url")
-                        or ""
-                    )
-                ),
-                "",
-            ),
-        )
-        if not _report_matches_requested_profile(report):
-            continue
-        reports.append(report)
-    reports = _merge_batch_resume_reports(reports)
+    reports = _build_success_reports_from_items(
+        items,
+        project_by_url=project_by_url,
+        existing_reports=merged_resumed_reports,
+    )
     if reports and not force_full:
         _write_batch_resume_reports(
             path=resume_path,
@@ -553,6 +546,36 @@ def _find_login_failure(items: List[Dict[str, Any]]) -> str:
             target = str(item.get("requested_url") or item.get("final_url") or "").strip()
             return f"检测到登录态异常：{target or '当前采集账号'} {error_text}".strip()
     return ""
+
+
+def _build_success_reports_from_items(
+    items: List[Dict[str, Any]],
+    *,
+    project_by_url: Dict[str, str],
+    existing_reports: Optional[List[Dict[str, Any]]] = None,
+) -> List[Dict[str, Any]]:
+    reports: List[Dict[str, Any]] = list(existing_reports or [])
+    for item in items:
+        if item.get("status") != "success":
+            continue
+        report = normalize_batch_item_to_report(
+            item,
+            project=project_by_url.get(
+                normalize_profile_url(
+                    str(
+                        item.get("requested_url")
+                        or item.get("final_url")
+                        or (item.get("profile") or {}).get("profile_url")
+                        or ""
+                    )
+                ),
+                "",
+            ),
+        )
+        if not _report_matches_requested_profile(report):
+            continue
+        reports.append(report)
+    return _merge_batch_resume_reports(reports)
 
 
 def _resolve_batch_resume_path(*, settings, project: str, urls_file: Optional[str], scheduled: bool) -> Path:

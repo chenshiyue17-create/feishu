@@ -33,6 +33,7 @@ from ..local_daily_sync_status import load_local_daily_sync_status
 from ..profile_cache_push import push_local_cache_to_server
 from ..profile_batch_report import normalize_profile_url
 from ..profile_batch_to_feishu import (
+    LoginFailureDuringSync,
     load_reports_for_sync,
 )
 from ..profile_dashboard_to_feishu import (
@@ -3227,6 +3228,7 @@ class MonitoringSyncStore:
             auto_push_account_ids: List[str] = []
             auto_push_failed_accounts = 0
             settings = None
+            current_urls: List[str] = []
             try:
                 settings = load_settings(self.env_file)
                 current_urls = list(self._current_sync_urls)
@@ -3345,6 +3347,92 @@ class MonitoringSyncStore:
                         "eta_text": "",
                     },
                     "summary": dict(local_summary),
+                }
+            except LoginFailureDuringSync as exc:
+                login_window_opened = False
+                successful_reports = list(exc.successful_reports or [])
+                if settings is not None:
+                    try:
+                        login_window_opened = open_xiaohongshu_login_window(
+                            settings=settings,
+                            target_url=(current_urls[0] if current_urls else "https://www.xiaohongshu.com/"),
+                        )
+                    except Exception:
+                        login_window_opened = False
+                if successful_reports and settings is not None:
+                    try:
+                        write_project_cache_bundle(reports=successful_reports, settings=settings)
+                        cached_payload = load_cached_dashboard_payload(settings)
+                        self.dashboard_store.set_local_override(cached_payload)
+                    except Exception:
+                        pass
+                    if not self.dashboard_store.commit_local_override():
+                        self.dashboard_store.invalidate()
+                progress_snapshot = dict(self._status.get("progress") or {})
+                successful_accounts = len(
+                    [
+                        str((report.get("profile") or {}).get("profile_user_id") or "").strip()
+                        for report in successful_reports
+                        if str((report.get("profile") or {}).get("profile_user_id") or "").strip()
+                    ]
+                )
+                total_accounts = max(len(current_urls), successful_accounts)
+                failed_accounts = max(
+                    int(progress_snapshot.get("failed_count") or 0),
+                    total_accounts - successful_accounts,
+                )
+                partial_summary = {
+                    "total_accounts": total_accounts,
+                    "successful_accounts": successful_accounts,
+                    "failed_accounts": failed_accounts,
+                    "total_works": sum(len(report.get("works") or []) for report in successful_reports),
+                }
+                auto_push_account_ids = [
+                    str((report.get("profile") or {}).get("profile_user_id") or "").strip()
+                    for report in successful_reports
+                    if str((report.get("profile") or {}).get("profile_user_id") or "").strip()
+                ]
+                auto_push_failed_accounts = failed_accounts
+                waiting_message = (
+                    f"采集中检测到登录态异常，已弹出网页登录窗口；已成功保留 {successful_accounts} 个账号，失败 {failed_accounts} 个账号未写入，请登录后补采。"
+                    if login_window_opened and successful_accounts > 0
+                    else f"采集中检测到登录态异常；已成功保留 {successful_accounts} 个账号，失败 {failed_accounts} 个账号未写入，请登录后补采。"
+                    if successful_accounts > 0
+                    else "采集中检测到登录态异常，已弹出网页登录窗口；本轮没有可保留的新结果，请登录后重新开始采集。"
+                    if login_window_opened
+                    else "采集中检测到登录态异常，本轮没有可保留的新结果；请先完成登录后再重新开始采集。"
+                )
+                login_payload = build_login_state_payload(
+                    state="error",
+                    message=waiting_message,
+                    checked_at=iso_now(),
+                    sample_url=current_urls[0] if current_urls else "",
+                    login_window_opened=login_window_opened,
+                    hints=[
+                        "已成功的账号会保留到本地缓存并继续上传服务器。",
+                        "失败账号未写入，请登录后补采。",
+                    ]
+                    if successful_accounts > 0
+                    else [
+                        "这次没有可保留的新结果，不会写入本地缓存，也不会自动上传服务器。",
+                        "登录完成后再点一次“更新全部项目”或“更新当前项目”。",
+                    ],
+                )
+                self._publish_login_state(
+                    login_payload,
+                    running=False,
+                    sample_url=current_urls[0] if current_urls else "",
+                )
+                result = {
+                    "state": "success" if successful_accounts > 0 else "error",
+                    "message": waiting_message,
+                    "started_at": "",
+                    "finished_at": finished_at,
+                    "last_success_at": finished_at if successful_accounts > 0 else self._status.get("last_success_at", ""),
+                    "last_error": str(exc),
+                    "pending": False,
+                    "progress": dict(self._status.get("progress") or {}),
+                    "summary": partial_summary if successful_accounts > 0 else {},
                 }
             except Exception as exc:
                 login_window_opened = False

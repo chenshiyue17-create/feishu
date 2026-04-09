@@ -71,6 +71,7 @@ from xhs_feishu_monitor.local_stats_app.login_state import (
     login_state_requires_interactive_login,
 )
 from xhs_feishu_monitor.local_daily_sync_status import write_local_daily_sync_status
+from xhs_feishu_monitor.profile_batch_to_feishu import LoginFailureDuringSync
 from xhs_feishu_monitor.project_sync_status import update_project_sync_status
 
 
@@ -1906,11 +1907,14 @@ class LocalStatsAppTest(unittest.TestCase):
         self.assertEqual(store._server_push_status["state"], "waiting_sync")
         self.assertIn("失败 1 个账号不上传", store._server_push_status["message"])
 
-    def test_sync_loop_opens_login_window_and_skips_cache_write_on_login_failure(self) -> None:
+    def test_sync_loop_opens_login_window_and_preserves_partial_success_on_login_failure(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             path = write_monitored_entries(
                 f"{temp_dir}/urls.txt",
-                [{"url": "https://www.xiaohongshu.com/user/profile/u1", "active": True, "project": "项目A"}],
+                [
+                    {"url": "https://www.xiaohongshu.com/user/profile/u1", "active": True, "project": "项目A"},
+                    {"url": "https://www.xiaohongshu.com/user/profile/u2", "active": True, "project": "项目A"},
+                ],
             )
             dashboard_store = DashboardStore(env_file=f"{temp_dir}/.env")
             store = MonitoringSyncStore(
@@ -1919,7 +1923,10 @@ class LocalStatsAppTest(unittest.TestCase):
                 dashboard_store=dashboard_store,
             )
             store._running = True
-            store._current_sync_urls = ["https://www.xiaohongshu.com/user/profile/u1"]
+            store._current_sync_urls = [
+                "https://www.xiaohongshu.com/user/profile/u1",
+                "https://www.xiaohongshu.com/user/profile/u2",
+            ]
             store._current_sync_project = "项目A"
             store._current_sync_mode = "manual"
             store._status = {
@@ -1934,24 +1941,47 @@ class LocalStatsAppTest(unittest.TestCase):
                 "summary": {},
             }
             settings = SimpleNamespace(validate_for_sync=lambda: None)
+            reports = [
+                {
+                    "captured_at": "2026-03-23T18:05:00+08:00",
+                    "source_url": "https://www.xiaohongshu.com/user/profile/u1",
+                    "profile": {
+                        "profile_user_id": "u1",
+                        "nickname": "账号A",
+                        "profile_url": "https://www.xiaohongshu.com/user/profile/u1",
+                        "fans_count_text": "100",
+                        "interaction_count_text": "200",
+                    },
+                    "works": [{"title_copy": "作品A"}],
+                }
+            ]
             with (
                 patch("xhs_feishu_monitor.local_stats_app.server.load_settings", return_value=settings),
                 patch.object(store, "_ensure_login_ready_for_sync", return_value=None),
                 patch(
                     "xhs_feishu_monitor.local_stats_app.server.load_reports_for_sync",
-                    side_effect=RuntimeError("检测到登录态异常：https://www.xiaohongshu.com/user/profile/u1 命中登录页，当前登录态不可用"),
+                    side_effect=LoginFailureDuringSync(
+                        "检测到登录态异常：https://www.xiaohongshu.com/user/profile/u2 命中登录页，当前登录态不可用",
+                        successful_reports=reports,
+                    ),
                 ),
                 patch("xhs_feishu_monitor.local_stats_app.server.open_xiaohongshu_login_window", return_value=True) as open_mock,
                 patch("xhs_feishu_monitor.local_stats_app.server.write_project_cache_bundle") as write_cache_mock,
+                patch(
+                    "xhs_feishu_monitor.local_stats_app.server.load_cached_dashboard_payload",
+                    return_value={"generated_at": "2026-03-23T18:05:00+08:00", "latest_date": "2026-03-23"},
+                ),
                 patch.object(store, "push_server_cache") as push_mock,
             ):
                 store._sync_loop()
 
         open_mock.assert_called_once()
-        write_cache_mock.assert_not_called()
-        push_mock.assert_not_called()
-        self.assertEqual(store._status["state"], "error")
-        self.assertIn("已弹出网页登录窗口", store._status["message"])
+        write_cache_mock.assert_called_once()
+        push_mock.assert_called_once_with(auto=False, account_ids=["u1"])
+        self.assertEqual(store._status["state"], "success")
+        self.assertEqual(store._status["summary"]["successful_accounts"], 1)
+        self.assertEqual(store._status["summary"]["failed_accounts"], 1)
+        self.assertIn("已成功保留 1 个账号", store._status["message"])
 
     def test_sync_loop_auto_partial_success_uploads_only_successful_accounts(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
