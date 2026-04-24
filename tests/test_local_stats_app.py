@@ -452,6 +452,67 @@ class LocalStatsAppTest(unittest.TestCase):
             ranking_rows = payload["rankings"]["单条点赞排行"]
             self.assertTrue(any(str(item.get("account_id")) == "u2" for item in ranking_rows))
 
+    def test_save_uploaded_server_cache_replace_preserves_existing_history_rankings(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            env_path = Path(temp_dir) / ".env"
+            urls_path = Path(temp_dir) / "urls.txt"
+            cache_dir = Path(temp_dir) / "cache"
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            env_path.write_text(
+                f"PROJECT_CACHE_DIR={cache_dir}\nSTATE_FILE={Path(temp_dir) / '.state.json'}\n",
+                encoding="utf-8",
+            )
+            (cache_dir / "dashboard_all.json").write_text(
+                json.dumps(
+                    {
+                        "accounts": [{"account_id": "u1", "account": "账号A"}],
+                        "rankings": {},
+                        "account_series": {},
+                        "alerts": [],
+                        "history_rankings": {
+                            "默认项目": {
+                                "2026-04-20": {
+                                    "likes": [{"account_id": "u1", "title": "旧作品", "metric": 20, "rank": 1}],
+                                    "comments": [],
+                                    "growth": [],
+                                }
+                            }
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            save_uploaded_server_cache(
+                env_file=str(env_path),
+                urls_file=str(urls_path),
+                payload={
+                    "merge_mode": "replace",
+                    "dashboard_payload": {
+                        "accounts": [{"account_id": "u1", "account": "账号A"}],
+                        "rankings": {},
+                        "account_series": {},
+                        "alerts": [],
+                        "history_rankings": {
+                            "默认项目": {
+                                "2026-04-24": {
+                                    "likes": [{"account_id": "u1", "title": "新作品", "metric": 30, "rank": 1}],
+                                    "comments": [],
+                                    "growth": [],
+                                }
+                            }
+                        },
+                    },
+                    "monitored_entries": [],
+                    "monitored_metadata": {},
+                },
+            )
+
+            payload = json.loads((cache_dir / "dashboard_all.json").read_text(encoding="utf-8"))
+            self.assertIn("2026-04-20", payload["history_rankings"]["默认项目"])
+            self.assertIn("2026-04-24", payload["history_rankings"]["默认项目"])
+
     def test_push_current_cache_to_server_uses_configured_target(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             env_path = Path(temp_dir) / ".env"

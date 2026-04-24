@@ -4123,8 +4123,7 @@ def _merge_history_rankings(
     incoming_history: Dict[str, Any],
     account_ids: set[str],
 ) -> Dict[str, Any]:
-    if not account_ids:
-        return copy.deepcopy(incoming_history or existing_history or {})
+    merge_all = not account_ids
     merged = copy.deepcopy(existing_history or {})
     for project_name, raw_project_history in (incoming_history or {}).items():
         if not isinstance(raw_project_history, dict):
@@ -4138,7 +4137,7 @@ def _merge_history_rankings(
             for rank_key in ("likes", "comments", "growth"):
                 incoming_rows = [dict(item) for item in (snapshot.get(rank_key) or [])]
                 existing_rows = [dict(item) for item in (existing_snapshot.get(rank_key) or [])]
-                preserved = [
+                preserved = existing_rows if merge_all else [
                     item for item in existing_rows
                     if str(item.get("account_id") or "").strip() not in account_ids
                 ]
@@ -4153,11 +4152,17 @@ def _merge_history_rankings(
 
 def _merge_uploaded_dashboard_payload(*, settings, incoming_payload: Dict[str, Any], account_ids: set[str], merge_mode: str) -> Dict[str, Any]:
     normalized_mode = str(merge_mode or "replace").strip().lower()
-    if normalized_mode != "partial" or not account_ids:
-        return dict(incoming_payload)
     existing_payload = load_cached_dashboard_payload(settings)
     if not existing_payload:
         return dict(incoming_payload)
+    if normalized_mode != "partial" or not account_ids:
+        merged_payload = copy.deepcopy(incoming_payload)
+        merged_payload["history_rankings"] = _merge_history_rankings(
+            existing_history=existing_payload.get("history_rankings") or {},
+            incoming_history=incoming_payload.get("history_rankings") or {},
+            account_ids=set(),
+        )
+        return merged_payload
 
     existing_accounts = {
         str(item.get("account_id") or "").strip(): dict(item)
