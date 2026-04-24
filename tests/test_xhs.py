@@ -203,6 +203,13 @@ class NormalizeSnapshotTest(unittest.TestCase):
         )
         self.assertEqual(settings.xhs_proxy_cooldown_seconds, 120)
 
+    def test_load_settings_defaults_to_current_board_collection_scope(self) -> None:
+        settings = load_settings()
+        self.assertEqual(settings.xhs_signed_profile_max_pages, 3)
+        self.assertEqual(settings.xhs_batch_signed_profile_page_cap, 3)
+        self.assertEqual(settings.xhs_work_metric_limit, 30)
+        self.assertEqual(settings.xhs_batch_work_metric_limit, 30)
+
     def test_build_proxy_pool_status_reports_cooling_and_last_error(self) -> None:
         collector = XHSCollector(
             Settings(

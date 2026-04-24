@@ -69,8 +69,8 @@ class Settings:
     xhs_batch_pressure_consecutive_threshold: int = 4
     xhs_batch_pressure_cooldown_seconds: float = 12.0
     xhs_batch_slowdown_multiplier: float = 1.5
-    xhs_batch_signed_profile_page_cap: int = 40
-    xhs_batch_work_metric_limit: int = 0
+    xhs_batch_signed_profile_page_cap: int = 3
+    xhs_batch_work_metric_limit: int = 30
     xhs_spread_schedule_enabled: bool = False
     xhs_schedule_driver: str = DEFAULT_SCHEDULE_DRIVER
     xhs_batch_schedule_interval_minutes: int = 60
@@ -83,10 +83,10 @@ class Settings:
     xhs_manual_sync_cooldown_minutes: int = 0
     xhs_fetch_work_comment_counts: bool = True
     xhs_enable_signed_profile_pages: bool = True
-    xhs_signed_profile_max_pages: int = 40
+    xhs_signed_profile_max_pages: int = 3
     xhs_fetch_work_comment_preview: bool = True
     xhs_work_comment_preview_limit: int = 3
-    xhs_work_metric_limit: int = 0
+    xhs_work_metric_limit: int = 30
     xhs_chrome_cookie_profile: str = ""
     xhs_proxy_pool: List[str] = field(default_factory=list)
     xhs_proxy_cooldown_seconds: int = 300
@@ -184,8 +184,8 @@ def load_settings(env_file: Optional[str] = None) -> Settings:
         xhs_batch_pressure_consecutive_threshold=_env_int("XHS_BATCH_PRESSURE_CONSECUTIVE_THRESHOLD", env_values, default=4),
         xhs_batch_pressure_cooldown_seconds=_env_float("XHS_BATCH_PRESSURE_COOLDOWN_SECONDS", env_values, default=12.0),
         xhs_batch_slowdown_multiplier=_env_float("XHS_BATCH_SLOWDOWN_MULTIPLIER", env_values, default=1.5),
-        xhs_batch_signed_profile_page_cap=_env_int("XHS_BATCH_SIGNED_PROFILE_PAGE_CAP", env_values, default=40),
-        xhs_batch_work_metric_limit=_env_int("XHS_BATCH_WORK_METRIC_LIMIT", env_values, default=0),
+        xhs_batch_signed_profile_page_cap=_env_int("XHS_BATCH_SIGNED_PROFILE_PAGE_CAP", env_values, default=3),
+        xhs_batch_work_metric_limit=_env_int("XHS_BATCH_WORK_METRIC_LIMIT", env_values, default=30),
         xhs_spread_schedule_enabled=_env_bool("XHS_SPREAD_SCHEDULE_ENABLED", env_values, default=False),
         xhs_schedule_driver=(_env("XHS_SCHEDULE_DRIVER", env_values) or DEFAULT_SCHEDULE_DRIVER).strip().lower() or DEFAULT_SCHEDULE_DRIVER,
         xhs_batch_schedule_interval_minutes=_env_int("XHS_BATCH_SCHEDULE_INTERVAL_MINUTES", env_values, default=60),
@@ -201,10 +201,10 @@ def load_settings(env_file: Optional[str] = None) -> Settings:
         xhs_manual_sync_cooldown_minutes=_env_int("XHS_MANUAL_SYNC_COOLDOWN_MINUTES", env_values, default=0),
         xhs_fetch_work_comment_counts=_env_bool("XHS_FETCH_WORK_COMMENT_COUNTS", env_values, default=True),
         xhs_enable_signed_profile_pages=_env_bool("XHS_ENABLE_SIGNED_PROFILE_PAGES", env_values, default=True),
-        xhs_signed_profile_max_pages=_env_int("XHS_SIGNED_PROFILE_MAX_PAGES", env_values, default=40),
+        xhs_signed_profile_max_pages=_env_int("XHS_SIGNED_PROFILE_MAX_PAGES", env_values, default=3),
         xhs_fetch_work_comment_preview=_env_bool("XHS_FETCH_WORK_COMMENT_PREVIEW", env_values, default=True),
         xhs_work_comment_preview_limit=_env_int("XHS_WORK_COMMENT_PREVIEW_LIMIT", env_values, default=3),
-        xhs_work_metric_limit=_env_int("XHS_WORK_METRIC_LIMIT", env_values, default=0),
+        xhs_work_metric_limit=_env_int("XHS_WORK_METRIC_LIMIT", env_values, default=30),
         xhs_chrome_cookie_profile=_resolve_optional_path(_env("XHS_CHROME_COOKIE_PROFILE", env_values), base_dir),
         xhs_proxy_pool=_load_proxy_pool(proxy_pool_raw, proxy_pool_file, base_dir),
         xhs_proxy_cooldown_seconds=_env_int("XHS_PROXY_COOLDOWN_SECONDS", env_values, default=300),
