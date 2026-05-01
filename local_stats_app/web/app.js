@@ -1925,6 +1925,7 @@ function renderSyncProgress(syncStatus) {
   const root = document.getElementById("syncProgressCard");
   if (!root) return;
   const progress = syncStatus?.progress || {};
+  const clashStatus = syncStatus?.clash_status || {};
   const serverPushStatus = syncStatus?.server_cache_push_status || {};
   const percent = Math.max(0, Math.min(100, Number(progress.overall_percent || 0)));
   const phasePercent = Math.max(0, Math.min(100, Number(progress.phase_percent || 0)));
@@ -1939,6 +1940,12 @@ function renderSyncProgress(syncStatus) {
   const pushMessage = String(serverPushStatus?.message || "").trim();
   const pushDetailText = pushMessage
     ? `上传状态：${pushMessage}`
+    : "";
+  const clashNode = String(clashStatus?.node || "").trim();
+  const clashDelay = Number(clashStatus?.delay_ms || 0);
+  const clashUpdatedAt = clashStatus?.updated_at ? formatDateTime(clashStatus.updated_at) : "";
+  const clashChip = clashNode
+    ? `Clash ${truncateMiddle(clashNode, 30)}${clashDelay ? ` · ${formatNumber(clashDelay)}ms` : ""}`
     : "";
   const schedulePlan = syncStatus?.schedule_plan || {};
   const scheduleSummary = buildSchedulePlanSummary(schedulePlan);
@@ -1964,6 +1971,7 @@ function renderSyncProgress(syncStatus) {
     { text: elapsedText, tone: "" },
     { text: pushState === "success" && pushLastSuccessAt ? `已上传 ${pushLastSuccessAt}` : "", tone: "success" },
     { text: pushState === "error" && pushMessage ? truncateMiddle(pushMessage, 56) : "", tone: "error" },
+    { text: clashChip, tone: "success" },
   ].filter((item) => item.text);
 
   if (syncStatus?.state !== "running" && !progress.phase) {
@@ -1982,6 +1990,7 @@ function renderSyncProgress(syncStatus) {
             ${pushState === "success" && pushLastSuccessAt ? `<span class="sync-progress-chip is-success">上传 ${pushLastSuccessAt}</span>` : ""}
             ${pushState === "running" ? `<span class="sync-progress-chip">上传中</span>` : ""}
             ${pushState === "error" && pushMessage ? `<span class="sync-progress-chip is-error">${truncateMiddle(pushMessage, 72)}</span>` : ""}
+            ${clashChip ? `<span class="sync-progress-chip is-success">${clashChip}${clashUpdatedAt ? ` · ${clashUpdatedAt}` : ""}</span>` : ""}
             ${scheduleProjectChips.map((text) => `<span class="sync-progress-chip">${text}</span>`).join("")}
           </div>
         </section>
@@ -2019,6 +2028,7 @@ function renderSyncProgress(syncStatus) {
     { text: pushState === "running" ? "上传中" : "", tone: "" },
     { text: pushState === "success" && pushLastSuccessAt ? `已上传 ${pushLastSuccessAt}` : "", tone: "success" },
     { text: pushState === "error" && pushMessage ? truncateMiddle(pushMessage, 48) : "", tone: "error" },
+    { text: clashChip, tone: "success" },
   ].filter((item) => item.text);
 
   root.innerHTML = `

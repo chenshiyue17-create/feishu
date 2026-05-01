@@ -3658,6 +3658,18 @@ class MonitoringSyncStore:
         phase = str(payload.get("phase") or "").strip()
         if phase not in {"collect", "sync", "clash"}:
             return
+        if phase == "clash":
+            clash_status = {
+                "state": str(payload.get("status") or "").strip(),
+                "selector": str(payload.get("selector") or "").strip(),
+                "node": str(payload.get("node") or "").strip(),
+                "delay_ms": int(payload.get("delay_ms") or 0),
+                "proxy_url": str(payload.get("proxy_url") or "").strip(),
+                "message": str(payload.get("message") or payload.get("error") or "").strip(),
+                "updated_at": iso_now(),
+            }
+            with self._lock:
+                self._status["clash_status"] = clash_status
         if phase == "collect":
             status = str(payload.get("status") or "").strip()
             sync_scope = self._current_sync_scope_label()
