@@ -90,6 +90,15 @@ class Settings:
     xhs_chrome_cookie_profile: str = ""
     xhs_proxy_pool: List[str] = field(default_factory=list)
     xhs_proxy_cooldown_seconds: int = 300
+    xhs_clash_enabled: bool = False
+    xhs_clash_proxy_url: str = "http://127.0.0.1:7897"
+    xhs_clash_controller_url: str = ""
+    xhs_clash_unix_socket: str = "/tmp/verge/verge-mihomo.sock"
+    xhs_clash_secret: str = ""
+    xhs_clash_selector: str = ""
+    xhs_clash_switch_interval_accounts: int = 3
+    xhs_clash_max_delay_ms: int = 500
+    xhs_clash_delay_test_url: str = "http://cp.cloudflare.com/generate_204"
     xhs_extra_headers: Dict[str, str] = field(default_factory=dict)
     playwright_browser_mode: str = "launch"
     playwright_channel: str = ""
@@ -208,6 +217,18 @@ def load_settings(env_file: Optional[str] = None) -> Settings:
         xhs_chrome_cookie_profile=_resolve_optional_path(_env("XHS_CHROME_COOKIE_PROFILE", env_values), base_dir),
         xhs_proxy_pool=_load_proxy_pool(proxy_pool_raw, proxy_pool_file, base_dir),
         xhs_proxy_cooldown_seconds=_env_int("XHS_PROXY_COOLDOWN_SECONDS", env_values, default=300),
+        xhs_clash_enabled=_env_bool("XHS_CLASH_ENABLED", env_values, default=False),
+        xhs_clash_proxy_url=_normalize_proxy_url(_env("XHS_CLASH_PROXY_URL", env_values) or "http://127.0.0.1:7897"),
+        xhs_clash_controller_url=(_env("XHS_CLASH_CONTROLLER_URL", env_values) or "").strip(),
+        xhs_clash_unix_socket=_resolve_optional_path(
+            _env("XHS_CLASH_UNIX_SOCKET", env_values) or "/tmp/verge/verge-mihomo.sock",
+            base_dir,
+        ),
+        xhs_clash_secret=_env("XHS_CLASH_SECRET", env_values),
+        xhs_clash_selector=_env("XHS_CLASH_SELECTOR", env_values),
+        xhs_clash_switch_interval_accounts=_env_int("XHS_CLASH_SWITCH_INTERVAL_ACCOUNTS", env_values, default=3),
+        xhs_clash_max_delay_ms=_env_int("XHS_CLASH_MAX_DELAY_MS", env_values, default=500),
+        xhs_clash_delay_test_url=_env("XHS_CLASH_DELAY_TEST_URL", env_values) or "http://cp.cloudflare.com/generate_204",
         xhs_extra_headers=_load_json_object(extra_headers_raw, "XHS_EXTRA_HEADERS_JSON"),
         playwright_browser_mode=(_env("PLAYWRIGHT_BROWSER_MODE", env_values) or "launch").strip().lower(),
         playwright_channel=_env("PLAYWRIGHT_CHANNEL", env_values).strip(),

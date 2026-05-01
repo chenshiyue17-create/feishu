@@ -19,7 +19,7 @@ ERR_LOG="${LOGS_DIR}/${LAUNCHD_LABEL}.err.log"
 PID_FILE="${OUTPUT_DIR}/local_stats_app.pid"
 PYTHON_BIN="$(command -v python3)"
 SHELL_BIN="/bin/zsh"
-START_CMD="cd /Users/cc/Documents/New\\ project && exec ${PYTHON_BIN} -m xhs_feishu_monitor.local_stats_app --env-file /Users/cc/Documents/New\\ project/xhs_feishu_monitor/.env --urls-file /Users/cc/Documents/New\\ project/xhs_feishu_monitor/input/robam_multi_profile_urls.txt --host ${HOST} --port ${PORT}"
+START_CMD="cd /Users/cc/Documents/New\\ project && exec env PYTHONNOUSERSITE=1 ${PYTHON_BIN} -m xhs_feishu_monitor.local_stats_app --env-file /Users/cc/Documents/New\\ project/xhs_feishu_monitor/.env --urls-file /Users/cc/Documents/New\\ project/xhs_feishu_monitor/input/robam_multi_profile_urls.txt --host ${HOST} --port ${PORT}"
 
 mkdir -p "${OUTPUT_DIR}"
 mkdir -p "${LAUNCH_AGENTS_DIR}"
@@ -69,6 +69,7 @@ payload = {
     "StandardErrorPath": "${ERR_LOG}",
     "EnvironmentVariables": {
         "PYTHONUNBUFFERED": "1",
+        "PYTHONNOUSERSITE": "1",
         "PATH": "${PATH}",
         "HOME": "${HOME}",
     },

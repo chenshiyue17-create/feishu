@@ -32,6 +32,7 @@ from xhs_feishu_monitor.profile_batch_report import (
     resolve_batch_sampling_state_path,
     resolve_batch_concurrency,
     select_spread_batch_entries,
+    split_clash_account_batches,
 )
 
 
@@ -143,6 +144,23 @@ class ProfileBatchReportTest(unittest.TestCase):
         )
         self.assertEqual(resolve_batch_concurrency(settings), 3)
 
+    def test_resolve_batch_concurrency_keeps_clash_gateway_parallel(self) -> None:
+        settings = SimpleNamespace(
+            xhs_fetch_mode="requests",
+            xhs_batch_concurrency=6,
+            xhs_proxy_pool=["http://127.0.0.1:7897"],
+            xhs_clash_enabled=True,
+        )
+        self.assertEqual(resolve_batch_concurrency(settings), 6)
+
+    def test_split_clash_account_batches_uses_switch_interval(self) -> None:
+        entries = [{"url": f"https://www.xiaohongshu.com/user/profile/{index}", "project": ""} for index in range(7)]
+        chunks = split_clash_account_batches(
+            entries,
+            SimpleNamespace(xhs_clash_enabled=True, xhs_clash_switch_interval_accounts=3),
+        )
+        self.assertEqual([len(chunk) for chunk in chunks], [3, 3, 1])
+
     def test_build_batch_throttle_waits_between_requests(self) -> None:
         throttle = build_batch_throttle(
             SimpleNamespace(
@@ -205,6 +223,7 @@ class ProfileBatchReportTest(unittest.TestCase):
             xhs_fetch_work_comment_preview=True,
             xhs_work_comment_preview_limit=3,
             xhs_enable_signed_profile_pages=True,
+            xhs_clash_enabled=False,
         )
         runtime = build_batch_runtime_settings(settings=settings, total_accounts=10)
         self.assertEqual(runtime.xhs_signed_profile_max_pages, 1)
@@ -215,6 +234,20 @@ class ProfileBatchReportTest(unittest.TestCase):
         self.assertTrue(runtime.xhs_fetch_work_comment_preview)
         self.assertEqual(runtime.xhs_work_comment_preview_limit, 3)
         self.assertTrue(runtime.xhs_enable_signed_profile_pages)
+
+    def test_build_batch_runtime_settings_routes_requests_through_clash_gateway(self) -> None:
+        settings = SimpleNamespace(
+            xhs_signed_profile_max_pages=3,
+            xhs_batch_signed_profile_page_cap=3,
+            xhs_work_metric_limit=30,
+            xhs_batch_work_metric_limit=30,
+            xhs_timeout_seconds=12,
+            xhs_retry_attempts=2,
+            xhs_clash_enabled=True,
+            xhs_clash_proxy_url="http://127.0.0.1:7897",
+        )
+        runtime = build_batch_runtime_settings(settings=settings, total_accounts=3)
+        self.assertEqual(runtime.xhs_proxy_pool, ["http://127.0.0.1:7897"])
 
     def test_build_batch_pressure_controller_reads_threshold_and_multiplier(self) -> None:
         controller = build_batch_pressure_controller(

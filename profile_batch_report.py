@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .config import load_settings
+from .clash_verge import ClashNodeRotator, ClashSwitchError
 from .launchd import (
     build_launch_environment,
     build_launch_agent_plist,
@@ -397,6 +398,7 @@ def collect_profile_reports_with_progress(
     max_workers = resolve_batch_concurrency(runtime_settings)
     throttle = build_batch_throttle(runtime_settings)
     pressure_controller = build_batch_pressure_controller(runtime_settings)
+    clash_rotator = ClashNodeRotator(runtime_settings)
     retry_failed_once = bool(getattr(runtime_settings, "xhs_batch_retry_failed_once", True))
     retry_delay_seconds = max(0.0, float(getattr(runtime_settings, "xhs_batch_retry_delay_seconds", 35.0) or 0.0))
     risk_retry_delay_seconds = max(0.0, float(getattr(runtime_settings, "xhs_batch_risk_retry_delay_seconds", 90.0) or 0.0))
@@ -413,46 +415,56 @@ def collect_profile_reports_with_progress(
         url_to_index = {item["url"]: index for index, item in enumerate(normalized_entries)}
         project_batches = [normalized_entries] if project_cooldown_seconds <= 0 else build_project_batches(normalized_entries)
         for group_index, group in enumerate(project_batches):
-            for entry in group:
-                url = entry["url"]
-                _emit_collect_started(
-                    progress_callback=progress_callback,
-                    current=current + 1,
-                    total=total,
-                    url=url,
-                    project=str(entry.get("project") or "").strip(),
-                    success_count=success_count,
-                    failed_count=failed_count,
-                )
-                item = _attach_project_to_item(
-                    _collect_single_profile_report_with_throttle(url=url, settings=runtime_settings, throttle=throttle),
-                    project=str(entry.get("project") or "").strip(),
-                )
-                index = url_to_index[url]
-                indexed_results[index] = item
-                _emit_batch_pressure_event(
-                    progress_callback=progress_callback,
-                    event=pressure_controller.observe(item=item, throttle=throttle),
-                )
-                if retry_failed_once and item.get("status") != "success" and is_retryable_batch_error(item.get("error")):
-                    if is_slow_tail_retry_error(item.get("error")):
-                        slow_retry_indexes.append(index)
-                    else:
-                        normal_retry_indexes.append(index)
-                    continue
-                current += 1
-                if item.get("status") == "success":
-                    success_count += 1
-                else:
-                    failed_count += 1
-                _emit_collect_progress(
+            chunk_groups = split_clash_account_batches(group, runtime_settings)
+            for chunk in chunk_groups:
+                _switch_clash_node_for_batch(
+                    rotator=clash_rotator,
                     progress_callback=progress_callback,
                     current=current,
                     total=total,
-                    item=item,
                     success_count=success_count,
                     failed_count=failed_count,
                 )
+                for entry in chunk:
+                    url = entry["url"]
+                    _emit_collect_started(
+                        progress_callback=progress_callback,
+                        current=current + 1,
+                        total=total,
+                        url=url,
+                        project=str(entry.get("project") or "").strip(),
+                        success_count=success_count,
+                        failed_count=failed_count,
+                    )
+                    item = _attach_project_to_item(
+                        _collect_single_profile_report_with_throttle(url=url, settings=runtime_settings, throttle=throttle),
+                        project=str(entry.get("project") or "").strip(),
+                    )
+                    index = url_to_index[url]
+                    indexed_results[index] = item
+                    _emit_batch_pressure_event(
+                        progress_callback=progress_callback,
+                        event=pressure_controller.observe(item=item, throttle=throttle),
+                    )
+                    if retry_failed_once and item.get("status") != "success" and is_retryable_batch_error(item.get("error")):
+                        if is_slow_tail_retry_error(item.get("error")):
+                            slow_retry_indexes.append(index)
+                        else:
+                            normal_retry_indexes.append(index)
+                        continue
+                    current += 1
+                    if item.get("status") == "success":
+                        success_count += 1
+                    else:
+                        failed_count += 1
+                    _emit_collect_progress(
+                        progress_callback=progress_callback,
+                        current=current,
+                        total=total,
+                        item=item,
+                        success_count=success_count,
+                        failed_count=failed_count,
+                    )
             if group_index < len(project_batches) - 1:
                 _sleep_between_project_batches(project_cooldown_seconds=project_cooldown_seconds)
         for retry_indexes in (sorted(normal_retry_indexes), sorted(slow_retry_indexes)):
@@ -508,44 +520,53 @@ def collect_profile_reports_with_progress(
     url_to_index = {item["url"]: index for index, item in enumerate(normalized_entries)}
     project_batches = [normalized_entries] if project_cooldown_seconds <= 0 else build_project_batches(normalized_entries)
     for group_index, group in enumerate(project_batches):
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            future_map = {
-                executor.submit(
-                    _collect_single_profile_report_with_throttle,
-                    url=item["url"],
-                    settings=runtime_settings,
-                    throttle=throttle,
-                ): {"url": item["url"], "project": str(item.get("project") or "").strip()}
-                for item in group
-            }
-            for future in as_completed(future_map):
-                future_entry = future_map[future]
-                item = _attach_project_to_item(future.result(), project=future_entry["project"])
-                index = url_to_index[future_entry["url"]]
-                indexed_results[index] = item
-                _emit_batch_pressure_event(
-                    progress_callback=progress_callback,
-                    event=pressure_controller.observe(item=item, throttle=throttle),
-                )
-                if retry_failed_once and item.get("status") != "success" and is_retryable_batch_error(item.get("error")):
-                    if is_slow_tail_retry_error(item.get("error")):
-                        slow_retry_indexes.append(index)
+        for chunk in split_clash_account_batches(group, runtime_settings):
+            _switch_clash_node_for_batch(
+                rotator=clash_rotator,
+                progress_callback=progress_callback,
+                current=completed,
+                total=total,
+                success_count=success_count,
+                failed_count=failed_count,
+            )
+            with ThreadPoolExecutor(max_workers=min(max_workers, len(chunk))) as executor:
+                future_map = {
+                    executor.submit(
+                        _collect_single_profile_report_with_throttle,
+                        url=item["url"],
+                        settings=runtime_settings,
+                        throttle=throttle,
+                    ): {"url": item["url"], "project": str(item.get("project") or "").strip()}
+                    for item in chunk
+                }
+                for future in as_completed(future_map):
+                    future_entry = future_map[future]
+                    item = _attach_project_to_item(future.result(), project=future_entry["project"])
+                    index = url_to_index[future_entry["url"]]
+                    indexed_results[index] = item
+                    _emit_batch_pressure_event(
+                        progress_callback=progress_callback,
+                        event=pressure_controller.observe(item=item, throttle=throttle),
+                    )
+                    if retry_failed_once and item.get("status") != "success" and is_retryable_batch_error(item.get("error")):
+                        if is_slow_tail_retry_error(item.get("error")):
+                            slow_retry_indexes.append(index)
+                        else:
+                            normal_retry_indexes.append(index)
+                        continue
+                    completed += 1
+                    if item.get("status") == "success":
+                        success_count += 1
                     else:
-                        normal_retry_indexes.append(index)
-                    continue
-                completed += 1
-                if item.get("status") == "success":
-                    success_count += 1
-                else:
-                    failed_count += 1
-                _emit_collect_progress(
-                    progress_callback=progress_callback,
-                    current=completed,
-                    total=total,
-                    item=item,
-                    success_count=success_count,
-                    failed_count=failed_count,
-                )
+                        failed_count += 1
+                    _emit_collect_progress(
+                        progress_callback=progress_callback,
+                        current=completed,
+                        total=total,
+                        item=item,
+                        success_count=success_count,
+                        failed_count=failed_count,
+                    )
         if group_index < len(project_batches) - 1:
             _sleep_between_project_batches(project_cooldown_seconds=project_cooldown_seconds)
     for retry_indexes in (sorted(normal_retry_indexes), sorted(slow_retry_indexes)):
@@ -695,6 +716,13 @@ def build_project_batches(url_entries: List[Dict[str, str]]) -> List[List[Dict[s
             order.append(project)
         grouped[project].append(item)
     return [grouped[project] for project in order]
+
+
+def split_clash_account_batches(url_entries: List[Dict[str, str]], settings) -> List[List[Dict[str, str]]]:
+    if not bool(getattr(settings, "xhs_clash_enabled", False)):
+        return [url_entries]
+    interval = max(1, int(getattr(settings, "xhs_clash_switch_interval_accounts", 3) or 3))
+    return [url_entries[index : index + interval] for index in range(0, len(url_entries), interval)]
 
 
 def is_spread_collection_active(*, settings, now: Optional[datetime] = None) -> bool:
@@ -862,13 +890,52 @@ def _emit_batch_pressure_event(
     progress_callback(event)
 
 
+def _switch_clash_node_for_batch(
+    *,
+    rotator: ClashNodeRotator,
+    progress_callback: Optional[Callable[[Dict[str, Any]], None]],
+    current: int,
+    total: int,
+    success_count: int,
+    failed_count: int,
+) -> None:
+    if not rotator.enabled:
+        return
+    try:
+        result = rotator.switch_next()
+    except ClashSwitchError as exc:
+        if progress_callback is not None:
+            progress_callback(
+                {
+                    "phase": "clash",
+                    "status": "failed",
+                    "current": current,
+                    "total": total,
+                    "error": str(exc),
+                    "success_count": max(0, int(success_count or 0)),
+                    "failed_count": max(0, int(failed_count or 0)),
+                }
+            )
+        raise
+    if result is not None and progress_callback is not None:
+        event = result.to_progress_event()
+        event.update(
+            {
+                "current": current,
+                "total": total,
+                "success_count": max(0, int(success_count or 0)),
+                "failed_count": max(0, int(failed_count or 0)),
+            }
+        )
+        progress_callback(event)
+
+
 def build_batch_runtime_settings(*, settings, total_accounts: int):
-    if total_accounts <= 1:
-        return settings
     runtime_settings = copy(settings)
-    setattr(runtime_settings, "xhs_retry_attempts", 1)
-    setattr(runtime_settings, "xhs_retry_delay_seconds", 0)
-    setattr(runtime_settings, "xhs_timeout_seconds", min(12, max(5, int(getattr(runtime_settings, "xhs_timeout_seconds", 12) or 12))))
+    if total_accounts > 1:
+        setattr(runtime_settings, "xhs_retry_attempts", 1)
+        setattr(runtime_settings, "xhs_retry_delay_seconds", 0)
+        setattr(runtime_settings, "xhs_timeout_seconds", min(12, max(5, int(getattr(runtime_settings, "xhs_timeout_seconds", 12) or 12))))
     page_cap = max(0, int(getattr(settings, "xhs_batch_signed_profile_page_cap", 0) or 0))
     current_page_cap = max(1, int(getattr(runtime_settings, "xhs_signed_profile_max_pages", 40) or 40))
     if page_cap > 0:
@@ -878,6 +945,10 @@ def build_batch_runtime_settings(*, settings, total_accounts: int):
     if work_metric_limit > 0:
         next_metric_limit = work_metric_limit if current_metric_limit <= 0 else min(current_metric_limit, work_metric_limit)
         setattr(runtime_settings, "xhs_work_metric_limit", next_metric_limit)
+    if bool(getattr(runtime_settings, "xhs_clash_enabled", False)):
+        proxy_url = str(getattr(runtime_settings, "xhs_clash_proxy_url", "") or "").strip()
+        if proxy_url:
+            setattr(runtime_settings, "xhs_proxy_pool", [proxy_url])
     return runtime_settings
 
 
@@ -895,6 +966,8 @@ def resolve_batch_concurrency(settings) -> int:
     if fetch_mode in {"playwright", "local_browser"}:
         return 1
     proxy_pool = list(getattr(settings, "xhs_proxy_pool", []) or [])
+    if bool(getattr(settings, "xhs_clash_enabled", False)):
+        return max(1, min(configured, 10))
     if proxy_pool:
         return max(1, min(configured, len(proxy_pool)))
     return max(1, min(configured, 10))

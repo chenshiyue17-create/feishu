@@ -2033,6 +2033,11 @@ def build_sync_progress(
             phase_percent = round((safe_current / safe_total) * 100)
             overall_percent = round((safe_current / safe_total) * 50)
             detail_text = f"正在抓取账号 {safe_current}/{safe_total}"
+    elif phase == "clash":
+        phase_label = "切换 Clash 节点"
+        phase_percent = round((safe_current / safe_total) * 100)
+        overall_percent = round((safe_current / safe_total) * 50)
+        detail_text = status or "正在切换 Clash 节点"
     elif phase == "sync":
         phase_label = "推送服务器缓存"
         phase_percent = round((safe_current / safe_total) * 100)
@@ -2049,7 +2054,7 @@ def build_sync_progress(
         detail_text += f" · {status}"
 
     completed_units = 0
-    if phase == "collect":
+    if phase in {"collect", "clash"}:
         completed_units = max(0, int(success_count or 0) + int(failed_count or 0))
     elif phase == "sync":
         completed_units = safe_current
@@ -3651,7 +3656,7 @@ class MonitoringSyncStore:
 
     def _handle_progress_update(self, payload: Dict[str, Any]) -> None:
         phase = str(payload.get("phase") or "").strip()
-        if phase not in {"collect", "sync"}:
+        if phase not in {"collect", "sync", "clash"}:
             return
         if phase == "collect":
             status = str(payload.get("status") or "").strip()
@@ -3723,7 +3728,7 @@ class MonitoringSyncStore:
             total=int(payload.get("total") or 0),
             account=str(payload.get("account") or payload.get("url") or ""),
             works=int(payload.get("works") or 0),
-            status=str(payload.get("status") or ""),
+            status=str(payload.get("message") or payload.get("error") or payload.get("status") or "") if phase == "clash" else str(payload.get("status") or ""),
             success_count=int(payload.get("success_count") or 0),
             failed_count=int(payload.get("failed_count") or 0),
             started_at=str(self._status.get("started_at") or ""),
