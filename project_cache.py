@@ -34,6 +34,7 @@ TRACKED_WORKS_CACHE_FILE = "tracked_works.json"
 TRACKED_WORK_HISTORY_CACHE_FILE = "tracked_work_history.json"
 DEFAULT_EXPORT_CACHE_DIR = "账号榜单导出"
 DEFAULT_PROJECT_COVER_DIR = "covers"
+SERVER_CLOUD_BACKUP_DIR_NAME = "server_cloud_backups"
 
 
 def resolve_project_cache_dir(settings) -> Path:
@@ -55,7 +56,11 @@ def rebuild_dashboard_cache_from_project_dirs(settings) -> Dict[str, Any]:
     combined_project_ranking_rows: List[Dict[str, Any]] = []
     combined_alert_rows: List[Dict[str, Any]] = []
 
-    for project_dir in sorted(path for path in cache_dir.iterdir() if path.is_dir() and path.name != DEFAULT_EXPORT_CACHE_DIR):
+    for project_dir in sorted(
+        path
+        for path in cache_dir.iterdir()
+        if path.is_dir() and path.name not in {DEFAULT_EXPORT_CACHE_DIR, SERVER_CLOUD_BACKUP_DIR_NAME}
+    ):
         project_calendar_rows = _read_json(project_dir / "calendar_rows.json", [])
         combined_calendar_rows_source.extend(project_calendar_rows)
         project_ranking_rows = _rebuild_project_ranking_rows_from_tracked_cache(

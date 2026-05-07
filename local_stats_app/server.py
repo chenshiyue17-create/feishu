@@ -105,6 +105,8 @@ ALERT_TABLE_NAME = "小红书评论预警"
 WEB_DIR = Path(__file__).resolve().parent / "web"
 DEFAULT_URLS_FILE = "xhs_feishu_monitor/input/robam_multi_profile_urls.txt"
 DEFAULT_ACCOUNT_RANKING_EXPORT_DIR = "/Users/cc/Downloads/飞书缓存/账号榜单导出"
+SERVER_CLOUD_BACKUP_DIR_NAME = "server_cloud_backups"
+SERVER_CLOUD_BACKUP_KEEP_FILES = 240
 SYSTEM_CONFIG_KEYS = ("XHS_COOKIE", "PROJECT_CACHE_DIR", "STATE_FILE", "SERVER_CACHE_PUSH_URL", "SERVER_CACHE_UPLOAD_TOKEN")
 SYSTEM_CONFIG_HELPER_KEYS: tuple[str, ...] = ()
 LEGACY_SYSTEM_CONFIG_PREFIXES = ("FEISHU_",)
@@ -3904,6 +3906,7 @@ def _filter_dashboard_payload_by_monitored_entries(
 
 def _load_dashboard_payload_local_only(env_file: str) -> Dict[str, Any]:
     settings = load_settings(env_file)
+    _restore_server_cache_from_latest_backup(resolve_project_cache_dir(settings))
     cached_payload = load_cached_dashboard_payload(settings)
     monitored_entries = parse_monitored_entries(DEFAULT_URLS_FILE)
     metadata_path = resolve_text_path(DEFAULT_URLS_FILE + ".meta.json")
@@ -3952,6 +3955,93 @@ def _load_dashboard_payload_local_only(env_file: str) -> Dict[str, Any]:
     return build_empty_dashboard_payload(load_error="本地暂无可用缓存")
 
 
+def _server_dashboard_backup_dir(cache_dir: Path) -> Path:
+    return cache_dir / SERVER_CLOUD_BACKUP_DIR_NAME
+
+
+def _server_dashboard_backup_timestamp() -> str:
+    return datetime.now().astimezone().strftime("%Y%m%dT%H%M%S%f%z")
+
+
+def _write_server_dashboard_backup(*, cache_dir: Path, payload: Dict[str, Any], kind: str) -> Path:
+    backup_dir = _server_dashboard_backup_dir(cache_dir)
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    safe_kind = re.sub(r"[^0-9A-Za-z_-]+", "-", str(kind or "snapshot")).strip("-") or "snapshot"
+    backup_path = backup_dir / f"{_server_dashboard_backup_timestamp()}-{safe_kind}.dashboard_all.json"
+    backup_path.write_text(json.dumps(payload or {}, ensure_ascii=False, indent=2), encoding="utf-8")
+    _prune_server_dashboard_backups(backup_dir)
+    return backup_path
+
+
+def _backup_existing_server_dashboard(dashboard_path: Path) -> Path:
+    if not dashboard_path.exists() or not dashboard_path.is_file():
+        return Path("")
+    try:
+        payload = json.loads(dashboard_path.read_text(encoding="utf-8"))
+    except Exception:
+        payload = {"_backup_read_error": True, "raw_text": dashboard_path.read_text(encoding="utf-8", errors="replace")}
+    if not isinstance(payload, dict):
+        payload = {"_backup_non_object_payload": payload}
+    return _write_server_dashboard_backup(
+        cache_dir=dashboard_path.parent,
+        payload=payload,
+        kind="pre-upload",
+    )
+
+
+def _list_server_dashboard_backups(cache_dir: Path) -> List[Path]:
+    backup_dir = _server_dashboard_backup_dir(cache_dir)
+    if not backup_dir.exists():
+        return []
+    return sorted(
+        [path for path in backup_dir.glob("*.dashboard_all.json") if path.is_file()],
+        key=lambda path: path.name,
+    )
+
+
+def _prune_server_dashboard_backups(backup_dir: Path) -> None:
+    backups = sorted(
+        [path for path in backup_dir.glob("*.dashboard_all.json") if path.is_file()],
+        key=lambda path: path.name,
+    )
+    overflow = len(backups) - SERVER_CLOUD_BACKUP_KEEP_FILES
+    if overflow <= 0:
+        return
+    for path in backups[:overflow]:
+        try:
+            path.unlink()
+        except Exception:
+            pass
+
+
+def _restore_server_cache_from_latest_backup(cache_dir: Path) -> bool:
+    dashboard_path = cache_dir / "dashboard_all.json"
+    if dashboard_path.exists():
+        return False
+    backups = _list_server_dashboard_backups(cache_dir)
+    if not backups:
+        return False
+    for backup_path in reversed(backups):
+        try:
+            payload = json.loads(backup_path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if not isinstance(payload, dict) or not payload:
+            continue
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        restored_payload = copy.deepcopy(payload)
+        restored_payload["server_restored_from_backup"] = str(backup_path)
+        restored_payload["server_restored_at"] = iso_now()
+        dashboard_path.write_text(json.dumps(restored_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        _write_server_dashboard_backup(
+            cache_dir=cache_dir,
+            payload=restored_payload,
+            kind="restore",
+        )
+        return True
+    return False
+
+
 def save_uploaded_server_cache(*, env_file: str, urls_file: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     dashboard_payload = dict(payload.get("dashboard_payload") or {})
     monitored_entries = payload.get("monitored_entries") or []
@@ -3972,6 +4062,9 @@ def save_uploaded_server_cache(*, env_file: str, urls_file: str, payload: Dict[s
     settings = load_settings(env_file)
     cache_dir = resolve_project_cache_dir(settings)
     cache_dir.mkdir(parents=True, exist_ok=True)
+    _restore_server_cache_from_latest_backup(cache_dir)
+    dashboard_path = cache_dir / "dashboard_all.json"
+    pre_backup_path = _backup_existing_server_dashboard(dashboard_path)
     dashboard_payload = _merge_uploaded_dashboard_payload(
         settings=settings,
         incoming_payload=dashboard_payload,
@@ -3979,8 +4072,12 @@ def save_uploaded_server_cache(*, env_file: str, urls_file: str, payload: Dict[s
         merge_mode=merge_mode,
     )
     dashboard_payload["server_received_at"] = iso_now()
-    dashboard_path = cache_dir / "dashboard_all.json"
     dashboard_path.write_text(json.dumps(dashboard_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    post_backup_path = _write_server_dashboard_backup(
+        cache_dir=cache_dir,
+        payload=dashboard_payload,
+        kind="post-upload",
+    )
 
     if monitored_entries:
         if merge_mode == "partial" and partial_account_ids:
@@ -4026,6 +4123,8 @@ def save_uploaded_server_cache(*, env_file: str, urls_file: str, payload: Dict[s
         "account_count": len(dashboard_payload.get("accounts") or []),
         "project_count": len({str(item.get("project") or "").strip() for item in monitored_entries if isinstance(item, dict)}),
         "updated_at": iso_now(),
+        "backup_path": str(post_backup_path),
+        "previous_backup_path": str(pre_backup_path),
     }
 
 
