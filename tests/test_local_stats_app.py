@@ -156,7 +156,8 @@ class LocalStatsAppTest(unittest.TestCase):
             urls_path = root / "input" / "urls.txt"
             env_path.write_text(f"PROJECT_CACHE_DIR={cache_dir}\n", encoding="utf-8")
 
-            ensure_monitored_urls_file_from_cache(env_file=str(env_path), urls_file=str(urls_path))
+            with patch("xhs_feishu_monitor.local_stats_app.server.restore_local_cache_from_server_records", return_value=False):
+                ensure_monitored_urls_file_from_cache(env_file=str(env_path), urls_file=str(urls_path))
 
             entries = parse_monitored_entries(str(urls_path))
             self.assertEqual(len(entries), 2)
@@ -1719,6 +1720,45 @@ class LocalStatsAppTest(unittest.TestCase):
                     {"url": "https://www.xiaohongshu.com/user/profile/u2", "active": True, "project": "项目B"},
                 ],
             )
+
+    def test_add_accounts_only_syncs_added_urls(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = write_monitored_entries(
+                f"{temp_dir}/urls.txt",
+                [
+                    {"url": "https://www.xiaohongshu.com/user/profile/u1", "active": True, "project": "项目A"},
+                    {"url": "https://www.xiaohongshu.com/user/profile/u2", "active": True, "project": "项目A"},
+                ],
+            )
+            store = MonitoringSyncStore(
+                env_file=f"{temp_dir}/.env",
+                urls_file=str(path),
+                dashboard_store=DashboardStore(env_file=f"{temp_dir}/.env"),
+            )
+            captured = {}
+
+            def fake_request_sync_locked(*, reason, urls=None, project="", mode="manual"):
+                captured["reason"] = reason
+                captured["urls"] = urls or []
+                captured["project"] = project
+                captured["mode"] = mode
+                return True
+
+            with patch.object(store, "_request_sync_locked", side_effect=fake_request_sync_locked), patch.object(
+                store,
+                "_warm_monitored_metadata",
+                return_value=None,
+            ):
+                result = store.add_accounts(
+                    raw_text="https://www.xiaohongshu.com/user/profile/u3",
+                    project="项目A",
+                )
+
+            self.assertTrue(result["ok"])
+            self.assertEqual(captured["urls"], ["https://www.xiaohongshu.com/user/profile/u3"])
+            self.assertEqual(captured["project"], "")
+            self.assertIn("只同步新增/恢复账号", captured["reason"])
+            self.assertEqual(result["active_count"], 3)
 
     def test_request_sync_can_scope_to_project(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

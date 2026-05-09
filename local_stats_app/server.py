@@ -2936,7 +2936,10 @@ class MonitoringSyncStore:
                     ],
                 )
                 threading.Thread(target=self._warm_monitored_metadata, args=(warmup_urls,), daemon=True).start()
-            started = self._request_sync_locked(reason="，".join(summary_parts) + "，开始同步")
+            started = self._request_sync_locked(
+                reason="，".join(summary_parts) + "，只同步新增/恢复账号",
+                urls=warmup_urls,
+            )
             return {
                 "ok": True,
                 "message": "，".join(summary_parts) + "到监测清单",
