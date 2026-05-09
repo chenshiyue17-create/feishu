@@ -39,7 +39,9 @@ from xhs_feishu_monitor.local_stats_app.server import (
     classify_monitored_fetch_state,
     build_sync_progress,
     build_server_mobile_redirect_path,
+    build_server_cache_download_payload,
     ensure_monitored_urls_file_from_cache,
+    restore_local_cache_from_server_records,
     build_profile_name_index,
     load_monitored_metadata,
     enrich_monitored_entries,
@@ -96,6 +98,7 @@ class LocalStatsAppTest(unittest.TestCase):
     def test_server_view_auth_exempt_paths(self) -> None:
         self.assertTrue(is_server_view_auth_exempt_path("/api/health"))
         self.assertTrue(is_server_view_auth_exempt_path("/api/server-cache-upload"))
+        self.assertTrue(is_server_view_auth_exempt_path("/api/server-cache-download"))
         self.assertTrue(is_server_view_auth_exempt_path("/api/mobile-rankings"))
         self.assertTrue(is_server_view_auth_exempt_path("/api/image"))
         self.assertTrue(is_server_view_auth_exempt_path("/mobile/index.html"))
@@ -163,6 +166,53 @@ class LocalStatsAppTest(unittest.TestCase):
                     "https://www.xiaohongshu.com/user/profile/u2": "东莞",
                 },
             )
+
+    def test_server_cache_download_payload_exports_dashboard_and_entries(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            cache_dir = root / "cache"
+            cache_dir.mkdir(parents=True)
+            env_path = root / ".env"
+            urls_path = root / "urls.txt"
+            env_path.write_text(f"PROJECT_CACHE_DIR={cache_dir}\n", encoding="utf-8")
+            (cache_dir / "dashboard_all.json").write_text(
+                json.dumps({"accounts": [{"account_id": "u1"}], "updated_at": "2026-05-09T10:00:00+08:00"}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            write_monitored_entries(
+                str(urls_path),
+                [{"project": "默认项目", "url": "https://www.xiaohongshu.com/user/profile/u1", "active": True}],
+            )
+
+            payload = build_server_cache_download_payload(env_file=str(env_path), urls_file=str(urls_path))
+
+            self.assertTrue(payload["ok"])
+            self.assertEqual(payload["account_count"], 1)
+            self.assertEqual(payload["dashboard_payload"]["accounts"][0]["account_id"], "u1")
+            self.assertEqual(payload["monitored_entries"][0]["project"], "默认项目")
+
+    def test_restore_local_cache_from_server_records_writes_dashboard_and_list(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            cache_dir = root / "cache"
+            env_path = root / ".env"
+            urls_path = root / "input" / "urls.txt"
+            env_path.write_text(f"PROJECT_CACHE_DIR={cache_dir}\nSERVER_CACHE_PUSH_URL=http://server.test\n", encoding="utf-8")
+            server_payload = {
+                "ok": True,
+                "dashboard_payload": {"accounts": [{"account_id": "u1"}], "updated_at": "2026-05-09T10:00:00+08:00"},
+                "monitored_entries": [
+                    {"project": "默认项目", "url": "https://www.xiaohongshu.com/user/profile/u1", "active": True}
+                ],
+                "monitored_metadata": {"https://www.xiaohongshu.com/user/profile/u1": {"account_id": "u1", "account": "账号1"}},
+            }
+            with patch("xhs_feishu_monitor.local_stats_app.server.fetch_server_cache_records", return_value=server_payload):
+                restored = restore_local_cache_from_server_records(env_file=str(env_path), urls_file=str(urls_path))
+
+            self.assertTrue(restored)
+            self.assertTrue((cache_dir / "dashboard_all.json").exists())
+            self.assertEqual(parse_monitored_entries(str(urls_path))[0]["project"], "默认项目")
+            self.assertEqual(load_monitored_metadata(str(urls_path))["https://www.xiaohongshu.com/user/profile/u1"]["account_id"], "u1")
 
     def test_filter_dashboard_payload_by_monitored_entries_removes_stale_accounts(self) -> None:
         payload = {

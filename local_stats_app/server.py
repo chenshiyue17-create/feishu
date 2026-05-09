@@ -145,6 +145,8 @@ def ensure_monitored_urls_file_from_cache(*, env_file: str, urls_file: str) -> N
     try:
         if urls_path.exists() and parse_monitored_entries(str(urls_path)):
             return
+        if restore_local_cache_from_server_records(env_file=env_file, urls_file=urls_file):
+            return
         settings = load_settings(env_file)
         cache_dir = resolve_project_cache_dir(settings)
         if not cache_dir.exists():
@@ -3963,6 +3965,8 @@ def _load_dashboard_payload_local_only(env_file: str) -> Dict[str, Any]:
     settings = load_settings(env_file)
     _restore_server_cache_from_latest_backup(resolve_project_cache_dir(settings))
     cached_payload = load_cached_dashboard_payload(settings)
+    if not cached_payload and restore_local_cache_from_server_records(env_file=env_file, urls_file=DEFAULT_URLS_FILE):
+        cached_payload = load_cached_dashboard_payload(settings)
     monitored_entries = parse_monitored_entries(DEFAULT_URLS_FILE)
     metadata_path = resolve_text_path(DEFAULT_URLS_FILE + ".meta.json")
     monitored_metadata: Dict[str, Any] = {}
@@ -4097,6 +4101,75 @@ def _restore_server_cache_from_latest_backup(cache_dir: Path) -> bool:
     return False
 
 
+def build_server_cache_download_payload(*, env_file: str, urls_file: str) -> Dict[str, Any]:
+    settings = load_settings(env_file)
+    cache_dir = resolve_project_cache_dir(settings)
+    _restore_server_cache_from_latest_backup(cache_dir)
+    dashboard_payload = load_cached_dashboard_payload(settings)
+    if not dashboard_payload:
+        raise ValueError("服务器暂无可下载缓存")
+    metadata = load_monitored_metadata(urls_file)
+    return {
+        "ok": True,
+        "dashboard_payload": dashboard_payload,
+        "monitored_entries": parse_monitored_entries(urls_file),
+        "monitored_metadata": metadata,
+        "account_count": len(dashboard_payload.get("accounts") or []),
+        "updated_at": str(dashboard_payload.get("updated_at") or dashboard_payload.get("generated_at") or ""),
+        "server_time": iso_now(),
+    }
+
+
+def fetch_server_cache_records(*, env_file: str) -> Dict[str, Any]:
+    settings = load_settings(env_file)
+    server_url = normalize_server_cache_push_url(str(getattr(settings, "server_cache_push_url", "") or ""))
+    if not server_url or not re.match(r"^https?://", server_url):
+        return {}
+    token = str(getattr(settings, "server_cache_upload_token", "") or "").strip()
+    request = urllib.request.Request(
+        f"{server_url.rstrip('/')}/api/server-cache-download",
+        headers={
+            "Accept": "application/json",
+            **({"X-Upload-Token": token} if token else {}),
+        },
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=45) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except Exception:
+        return {}
+    if not isinstance(payload, dict) or not payload.get("ok"):
+        return {}
+    return payload
+
+
+def restore_local_cache_from_server_records(*, env_file: str, urls_file: str) -> bool:
+    payload = fetch_server_cache_records(env_file=env_file)
+    dashboard_payload = payload.get("dashboard_payload") if isinstance(payload, dict) else None
+    if not isinstance(dashboard_payload, dict) or not dashboard_payload:
+        return False
+    try:
+        settings = load_settings(env_file)
+        cache_dir = resolve_project_cache_dir(settings)
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        dashboard_path = cache_dir / "dashboard_all.json"
+        if dashboard_path.exists():
+            _backup_existing_server_dashboard(dashboard_path)
+        restored_payload = copy.deepcopy(dashboard_payload)
+        restored_payload["local_restored_from_server_at"] = iso_now()
+        dashboard_path.write_text(json.dumps(restored_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        monitored_entries = payload.get("monitored_entries") or []
+        if isinstance(monitored_entries, list) and monitored_entries:
+            write_monitored_entries(urls_file, monitored_entries)
+        monitored_metadata = payload.get("monitored_metadata") or {}
+        if isinstance(monitored_metadata, dict) and monitored_metadata:
+            write_monitored_metadata(urls_file, monitored_metadata)
+        return True
+    except Exception:
+        return False
+
+
 def save_uploaded_server_cache(*, env_file: str, urls_file: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     dashboard_payload = dict(payload.get("dashboard_payload") or {})
     monitored_entries = payload.get("monitored_entries") or []
@@ -4213,7 +4286,14 @@ def is_server_view_auth_enabled(settings) -> bool:
 def is_server_view_auth_exempt_path(path: str) -> bool:
     normalized = str(path or "").split("?", 1)[0].strip() or "/"
     return (
-        normalized in {"/api/health", "/api/server-cache-upload", "/api/mobile-rankings", "/api/image", "/mobile"}
+        normalized in {
+            "/api/health",
+            "/api/server-cache-upload",
+            "/api/server-cache-download",
+            "/api/mobile-rankings",
+            "/api/image",
+            "/mobile",
+        }
         or normalized.startswith("/mobile/")
     )
 
@@ -4496,6 +4576,18 @@ def build_handler(
                     monitored_entries=monitoring_store.get_payload().get("entries") or [],
                     project=project,
                     settings=load_settings(monitoring_store.env_file),
+                )
+                self.send_json_response(HTTPStatus.OK, payload)
+                return
+            if path == "/api/server-cache-download":
+                expected_token = str(getattr(settings, "server_cache_upload_token", "") or "").strip()
+                provided_token = str(self.headers.get("X-Upload-Token") or "").strip()
+                if expected_token and provided_token != expected_token:
+                    self.send_json_response(HTTPStatus.FORBIDDEN, {"ok": False, "message": "下载令牌无效"})
+                    return
+                payload = build_server_cache_download_payload(
+                    env_file=monitoring_store.env_file,
+                    urls_file=monitoring_store.urls_file,
                 )
                 self.send_json_response(HTTPStatus.OK, payload)
                 return
