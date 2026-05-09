@@ -138,6 +138,61 @@ LEGACY_FEISHU_ERROR_MARKERS = (
     "feishu_table_id",
 )
 
+
+def ensure_monitored_urls_file_from_cache(*, env_file: str, urls_file: str) -> None:
+    """Recover the local project/account list from cache after a clean install."""
+    urls_path = resolve_text_path(urls_file)
+    try:
+        if urls_path.exists() and parse_monitored_entries(str(urls_path)):
+            return
+        settings = load_settings(env_file)
+        cache_dir = resolve_project_cache_dir(settings)
+        if not cache_dir.exists():
+            return
+        project_dirs = [
+            path
+            for path in sorted(cache_dir.iterdir(), key=lambda item: item.name)
+            if path.is_dir() and not path.name.startswith(".")
+        ]
+        entries_by_url: Dict[str, Dict[str, Any]] = {}
+        default_project_entries: List[Dict[str, Any]] = []
+        non_default_urls: set[str] = set()
+        for project_dir in project_dirs:
+            dashboard_path = project_dir / "dashboard.json"
+            if not dashboard_path.exists():
+                continue
+            try:
+                dashboard = json.loads(dashboard_path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            project_name = normalize_project_name(project_dir.name)
+            accounts = [item for item in (dashboard.get("accounts") or []) if isinstance(item, dict)]
+            recovered_entries: List[Dict[str, Any]] = []
+            for account in accounts:
+                profile_url = normalize_profile_url(str(account.get("profile_url") or ""))
+                if not profile_url:
+                    account_id = str(account.get("account_id") or "").strip()
+                    if account_id:
+                        profile_url = normalize_profile_url(f"https://www.xiaohongshu.com/user/profile/{account_id}")
+                if not profile_url:
+                    continue
+                recovered_entries.append({"project": project_name, "url": profile_url, "active": True})
+            if project_name == DEFAULT_PROJECT_NAME:
+                default_project_entries = recovered_entries
+            else:
+                for entry in recovered_entries:
+                    non_default_urls.add(str(entry.get("url") or ""))
+                    entries_by_url[str(entry.get("url") or "")] = entry
+        for entry in default_project_entries:
+            profile_url = str(entry.get("url") or "")
+            if profile_url and profile_url not in entries_by_url and profile_url not in non_default_urls:
+                entries_by_url[profile_url] = entry
+        if entries_by_url:
+            write_monitored_entries(str(urls_path), list(entries_by_url.values()))
+    except Exception:
+        # The app can still start without a recovered list; the UI will show the explicit empty state.
+        return
+
 LOGIN_COLLECTION_ERROR_MARKERS = (
     "检测到登录态异常",
     "命中登录页",
@@ -4670,6 +4725,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--open-browser", action="store_true")
     args = parser.parse_args(argv)
 
+    ensure_monitored_urls_file_from_cache(env_file=args.env_file, urls_file=args.urls_file)
     settings = load_settings(args.env_file)
     dashboard_store = DashboardStore(env_file=args.env_file, cache_seconds=args.cache_seconds)
     login_state_store = LoginStateStore(env_file=args.env_file, urls_file=args.urls_file)

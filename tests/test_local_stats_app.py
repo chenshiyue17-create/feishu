@@ -39,6 +39,7 @@ from xhs_feishu_monitor.local_stats_app.server import (
     classify_monitored_fetch_state,
     build_sync_progress,
     build_server_mobile_redirect_path,
+    ensure_monitored_urls_file_from_cache,
     build_profile_name_index,
     load_monitored_metadata,
     enrich_monitored_entries,
@@ -119,6 +120,49 @@ class LocalStatsAppTest(unittest.TestCase):
             build_server_mobile_redirect_path(),
             "/mobile/index.html?project=%E9%BB%98%E8%AE%A4%E9%A1%B9%E7%9B%AE",
         )
+
+    def test_ensure_monitored_urls_file_recovers_accounts_from_cache_projects(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            cache_dir = root / "cache"
+            default_dir = cache_dir / "默认项目"
+            dongguan_dir = cache_dir / "东莞"
+            default_dir.mkdir(parents=True)
+            dongguan_dir.mkdir(parents=True)
+            (default_dir / "dashboard.json").write_text(
+                json.dumps(
+                    {
+                        "accounts": [
+                            {"account_id": "u1", "profile_url": "https://www.xiaohongshu.com/user/profile/u1"},
+                            {"account_id": "u2", "profile_url": "https://www.xiaohongshu.com/user/profile/u2"},
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            (dongguan_dir / "dashboard.json").write_text(
+                json.dumps(
+                    {"accounts": [{"account_id": "u2", "profile_url": "https://www.xiaohongshu.com/user/profile/u2"}]},
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            env_path = root / ".env"
+            urls_path = root / "input" / "urls.txt"
+            env_path.write_text(f"PROJECT_CACHE_DIR={cache_dir}\n", encoding="utf-8")
+
+            ensure_monitored_urls_file_from_cache(env_file=str(env_path), urls_file=str(urls_path))
+
+            entries = parse_monitored_entries(str(urls_path))
+            self.assertEqual(len(entries), 2)
+            self.assertEqual(
+                {entry["url"]: entry["project"] for entry in entries},
+                {
+                    "https://www.xiaohongshu.com/user/profile/u1": "默认项目",
+                    "https://www.xiaohongshu.com/user/profile/u2": "东莞",
+                },
+            )
 
     def test_filter_dashboard_payload_by_monitored_entries_removes_stale_accounts(self) -> None:
         payload = {
