@@ -488,12 +488,14 @@ def _build_upload_payload(*, env_file: str, urls_file: str, account_ids: Optiona
     if not history_payload:
         history_payload = load_project_snapshot_history()
     dashboard_payload["history_rankings"] = _filter_history_rankings(history_payload, normalized_account_ids)
+    server_base_revision = str(dashboard_payload.get("server_cache_revision") or "").strip()
     return {
         "dashboard_payload": dashboard_payload,
         "monitored_entries": monitored_entries,
         "monitored_metadata": monitored_metadata,
         "merge_mode": "partial" if normalized_account_ids else "replace",
         "account_ids": sorted(normalized_account_ids),
+        "server_base_revision": server_base_revision,
     }
 
 

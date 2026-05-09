@@ -5,6 +5,7 @@ import base64
 import csv
 import copy
 import gzip
+import hashlib
 import hmac
 import json
 import os
@@ -107,6 +108,13 @@ DEFAULT_URLS_FILE = "xhs_feishu_monitor/input/robam_multi_profile_urls.txt"
 DEFAULT_ACCOUNT_RANKING_EXPORT_DIR = "/Users/cc/Downloads/飞书缓存/账号榜单导出"
 SERVER_CLOUD_BACKUP_DIR_NAME = "server_cloud_backups"
 SERVER_CLOUD_BACKUP_KEEP_FILES = 240
+SERVER_CACHE_REVISION_IGNORED_KEYS = {
+    "server_cache_revision",
+    "server_received_at",
+    "server_restored_at",
+    "server_restored_from_backup",
+    "local_restored_from_server_at",
+}
 SYSTEM_CONFIG_KEYS = ("XHS_COOKIE", "PROJECT_CACHE_DIR", "STATE_FILE", "SERVER_CACHE_PUSH_URL", "SERVER_CACHE_UPLOAD_TOKEN")
 SYSTEM_CONFIG_HELPER_KEYS: tuple[str, ...] = ()
 LEGACY_SYSTEM_CONFIG_PREFIXES = ("FEISHU_",)
@@ -4101,6 +4109,65 @@ def _restore_server_cache_from_latest_backup(cache_dir: Path) -> bool:
     return False
 
 
+def _dashboard_revision_payload(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            str(key): _dashboard_revision_payload(item)
+            for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
+            if str(key) not in SERVER_CACHE_REVISION_IGNORED_KEYS
+        }
+    if isinstance(value, list):
+        return [_dashboard_revision_payload(item) for item in value]
+    return value
+
+
+def compute_server_cache_revision(payload: Dict[str, Any]) -> str:
+    body = json.dumps(
+        _dashboard_revision_payload(payload or {}),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(body).hexdigest()
+
+
+def _dashboard_sortable_updated_at(payload: Dict[str, Any]) -> str:
+    return str(payload.get("updated_at") or payload.get("generated_at") or payload.get("server_received_at") or "").strip()
+
+
+def _validate_server_cache_upload_revision(
+    *,
+    existing_payload: Dict[str, Any],
+    incoming_payload: Dict[str, Any],
+    upload_payload: Dict[str, Any],
+    merge_mode: str,
+    account_ids: set[str],
+) -> None:
+    normalized_mode = str(merge_mode or "replace").strip().lower()
+    if normalized_mode == "partial" and account_ids:
+        return
+    if not existing_payload:
+        return
+    existing_revision = str(existing_payload.get("server_cache_revision") or "").strip() or compute_server_cache_revision(existing_payload)
+    incoming_base_revision = str(
+        upload_payload.get("server_base_revision")
+        or upload_payload.get("base_revision")
+        or incoming_payload.get("server_cache_revision")
+        or ""
+    ).strip()
+    if not incoming_base_revision:
+        return
+    if incoming_base_revision and incoming_base_revision == existing_revision:
+        return
+    incoming_updated_at = _dashboard_sortable_updated_at(incoming_payload)
+    existing_updated_at = _dashboard_sortable_updated_at(existing_payload)
+    if incoming_updated_at and existing_updated_at and incoming_updated_at > existing_updated_at:
+        return
+    raise ValueError(
+        "服务器缓存已被另一端更新，本次全量上传已拒绝，避免旧数据覆盖新数据；请先刷新/拉取服务器缓存后再上传。"
+    )
+
+
 def build_server_cache_download_payload(*, env_file: str, urls_file: str) -> Dict[str, Any]:
     settings = load_settings(env_file)
     cache_dir = resolve_project_cache_dir(settings)
@@ -4108,12 +4175,17 @@ def build_server_cache_download_payload(*, env_file: str, urls_file: str) -> Dic
     dashboard_payload = load_cached_dashboard_payload(settings)
     if not dashboard_payload:
         raise ValueError("服务器暂无可下载缓存")
+    dashboard_payload = copy.deepcopy(dashboard_payload)
+    dashboard_payload["server_cache_revision"] = str(
+        dashboard_payload.get("server_cache_revision") or compute_server_cache_revision(dashboard_payload)
+    )
     metadata = load_monitored_metadata(urls_file)
     return {
         "ok": True,
         "dashboard_payload": dashboard_payload,
         "monitored_entries": parse_monitored_entries(urls_file),
         "monitored_metadata": metadata,
+        "server_cache_revision": dashboard_payload["server_cache_revision"],
         "account_count": len(dashboard_payload.get("accounts") or []),
         "updated_at": str(dashboard_payload.get("updated_at") or dashboard_payload.get("generated_at") or ""),
         "server_time": iso_now(),
@@ -4192,6 +4264,14 @@ def save_uploaded_server_cache(*, env_file: str, urls_file: str, payload: Dict[s
     cache_dir.mkdir(parents=True, exist_ok=True)
     _restore_server_cache_from_latest_backup(cache_dir)
     dashboard_path = cache_dir / "dashboard_all.json"
+    existing_payload = load_cached_dashboard_payload(settings)
+    _validate_server_cache_upload_revision(
+        existing_payload=existing_payload,
+        incoming_payload=dashboard_payload,
+        upload_payload=payload,
+        merge_mode=merge_mode,
+        account_ids=partial_account_ids,
+    )
     pre_backup_path = _backup_existing_server_dashboard(dashboard_path)
     dashboard_payload = _merge_uploaded_dashboard_payload(
         settings=settings,
@@ -4200,6 +4280,7 @@ def save_uploaded_server_cache(*, env_file: str, urls_file: str, payload: Dict[s
         merge_mode=merge_mode,
     )
     dashboard_payload["server_received_at"] = iso_now()
+    dashboard_payload["server_cache_revision"] = compute_server_cache_revision(dashboard_payload)
     dashboard_path.write_text(json.dumps(dashboard_payload, ensure_ascii=False, indent=2), encoding="utf-8")
     post_backup_path = _write_server_dashboard_backup(
         cache_dir=cache_dir,
@@ -4250,6 +4331,8 @@ def save_uploaded_server_cache(*, env_file: str, urls_file: str, payload: Dict[s
         "metadata_path": str(resolve_metadata_cache_path(urls_file)),
         "account_count": len(dashboard_payload.get("accounts") or []),
         "project_count": len({str(item.get("project") or "").strip() for item in monitored_entries if isinstance(item, dict)}),
+        "server_cache_revision": dashboard_payload["server_cache_revision"],
+        "conflict_checked": True,
         "updated_at": iso_now(),
         "backup_path": str(post_backup_path),
         "previous_backup_path": str(pre_backup_path),

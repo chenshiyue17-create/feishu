@@ -40,6 +40,7 @@ from xhs_feishu_monitor.local_stats_app.server import (
     build_sync_progress,
     build_server_mobile_redirect_path,
     build_server_cache_download_payload,
+    compute_server_cache_revision,
     ensure_monitored_urls_file_from_cache,
     restore_local_cache_from_server_records,
     build_profile_name_index,
@@ -473,6 +474,8 @@ class LocalStatsAppTest(unittest.TestCase):
             self.assertIn("默认项目", urls_path.read_text(encoding="utf-8"))
             self.assertTrue(Path(result["metadata_path"]).exists())
             self.assertEqual(result["account_count"], 1)
+            self.assertTrue(result["server_cache_revision"])
+            self.assertTrue(result["conflict_checked"])
             self.assertTrue(Path(result["backup_path"]).exists())
             self.assertEqual(Path(result["backup_path"]).parent.name, "server_cloud_backups")
 
@@ -547,6 +550,97 @@ class LocalStatsAppTest(unittest.TestCase):
             self.assertEqual(accounts["u2"]["likes"], 20)
             ranking_rows = payload["rankings"]["单条点赞排行"]
             self.assertTrue(any(str(item.get("account_id")) == "u2" for item in ranking_rows))
+
+    def test_save_uploaded_server_cache_rejects_stale_full_replace(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            env_path = Path(temp_dir) / ".env"
+            urls_path = Path(temp_dir) / "urls.txt"
+            cache_dir = Path(temp_dir) / "cache"
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            env_path.write_text(
+                f"PROJECT_CACHE_DIR={cache_dir}\nSTATE_FILE={Path(temp_dir) / '.state.json'}\n",
+                encoding="utf-8",
+            )
+            existing_payload = {
+                "accounts": [{"account_id": "u1", "account": "新"}],
+                "rankings": {},
+                "account_series": {},
+                "updated_at": "2026-05-09T12:00:00+08:00",
+            }
+            existing_payload["server_cache_revision"] = compute_server_cache_revision(existing_payload)
+            (cache_dir / "dashboard_all.json").write_text(json.dumps(existing_payload, ensure_ascii=False), encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "服务器缓存已被另一端更新"):
+                save_uploaded_server_cache(
+                    env_file=str(env_path),
+                    urls_file=str(urls_path),
+                    payload={
+                        "merge_mode": "replace",
+                        "server_base_revision": "old-revision",
+                        "dashboard_payload": {
+                            "accounts": [{"account_id": "u1", "account": "旧"}],
+                            "rankings": {},
+                            "account_series": {},
+                            "updated_at": "2026-05-09T11:00:00+08:00",
+                        },
+                        "monitored_entries": [],
+                        "monitored_metadata": {},
+                    },
+                )
+
+            payload = json.loads((cache_dir / "dashboard_all.json").read_text(encoding="utf-8"))
+            self.assertEqual(payload["accounts"][0]["account"], "新")
+
+    def test_save_uploaded_server_cache_allows_partial_upload_when_server_changed(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            env_path = Path(temp_dir) / ".env"
+            urls_path = Path(temp_dir) / "urls.txt"
+            cache_dir = Path(temp_dir) / "cache"
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            env_path.write_text(
+                f"PROJECT_CACHE_DIR={cache_dir}\nSTATE_FILE={Path(temp_dir) / '.state.json'}\n",
+                encoding="utf-8",
+            )
+            (cache_dir / "dashboard_all.json").write_text(
+                json.dumps(
+                    {
+                        "accounts": [
+                            {"account_id": "u1", "account": "账号A", "likes": 1},
+                            {"account_id": "u2", "account": "账号B", "likes": 2},
+                        ],
+                        "rankings": {},
+                        "account_series": {},
+                        "updated_at": "2026-05-09T12:00:00+08:00",
+                        "server_cache_revision": "server-new",
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            save_uploaded_server_cache(
+                env_file=str(env_path),
+                urls_file=str(urls_path),
+                payload={
+                    "merge_mode": "partial",
+                    "account_ids": ["u1"],
+                    "server_base_revision": "old-revision",
+                    "dashboard_payload": {
+                        "accounts": [{"account_id": "u1", "account": "账号A", "likes": 99}],
+                        "rankings": {},
+                        "account_series": {},
+                        "updated_at": "2026-05-09T11:00:00+08:00",
+                    },
+                    "monitored_entries": [],
+                    "monitored_metadata": {},
+                },
+            )
+
+            payload = json.loads((cache_dir / "dashboard_all.json").read_text(encoding="utf-8"))
+            accounts = {item["account_id"]: item for item in payload["accounts"]}
+            self.assertEqual(accounts["u1"]["likes"], 99)
+            self.assertEqual(accounts["u2"]["likes"], 2)
+            self.assertTrue(payload.get("server_cache_revision"))
 
     def test_save_uploaded_server_cache_replace_preserves_existing_history_rankings(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
