@@ -2234,8 +2234,10 @@ class MonitoringSyncStore:
         self._current_sync_urls: List[str] = []
         self._current_sync_project = ""
         self._pending_sync_urls: List[str] = []
+        self._pending_sync_require_comment_data = False
         self._manual_last_requested_at = 0.0
         self._current_sync_mode = ""
+        self._current_sync_require_comment_data = False
         self._auto_project_success_dates: Dict[str, str] = {}
         self._auto_project_last_attempt_at: Dict[str, float] = {}
         self._profile_lookup_cache_rows: List[Dict[str, Any]] = []
@@ -2939,6 +2941,7 @@ class MonitoringSyncStore:
             started = self._request_sync_locked(
                 reason="，".join(summary_parts) + "，只同步新增/恢复账号",
                 urls=warmup_urls,
+                require_comment_data=True,
             )
             return {
                 "ok": True,
@@ -3227,10 +3230,19 @@ class MonitoringSyncStore:
                 "sync_status": self._status_snapshot_locked(),
             }
 
-    def _request_sync_locked(self, *, reason: str, urls: Optional[List[str]] = None, project: str = "", mode: str = "manual") -> bool:
+    def _request_sync_locked(
+        self,
+        *,
+        reason: str,
+        urls: Optional[List[str]] = None,
+        project: str = "",
+        mode: str = "manual",
+        require_comment_data: bool = False,
+    ) -> bool:
         if self._running:
             self._pending_resync = True
             self._pending_sync_urls = list(urls or [])
+            self._pending_sync_require_comment_data = bool(require_comment_data)
             self._status["pending"] = True
             self._status["message"] = f"{reason}，当前任务完成后自动重跑"
             return False
@@ -3239,7 +3251,9 @@ class MonitoringSyncStore:
         self._current_sync_urls = list(urls or [])
         self._current_sync_project = str(project or "").strip()
         self._current_sync_mode = str(mode or "manual").strip() or "manual"
+        self._current_sync_require_comment_data = bool(require_comment_data)
         self._pending_sync_urls = []
+        self._pending_sync_require_comment_data = False
         started_at = iso_now()
         if self._current_sync_project:
             update_project_sync_status(
@@ -3373,6 +3387,34 @@ class MonitoringSyncStore:
                     force_full=not self._current_sync_project and self._current_sync_mode == "manual",
                     progress_callback=self._handle_progress_update,
                 )
+                missing_comment_reports: List[Dict[str, Any]] = []
+                if self._current_sync_require_comment_data:
+                    complete_reports = []
+                    for report in reports:
+                        if report_has_comment_data(report):
+                            complete_reports.append(report)
+                        else:
+                            missing_comment_reports.append(report)
+                    reports = complete_reports
+                    if missing_comment_reports:
+                        update_monitored_metadata(
+                            self.urls_file,
+                            [
+                                {
+                                    "url": report.get("source_url") or (report.get("profile") or {}).get("profile_url") or "",
+                                    "profile_url": (report.get("profile") or {}).get("profile_url") or "",
+                                    "account": (report.get("profile") or {}).get("nickname") or "",
+                                    "account_id": (report.get("profile") or {}).get("profile_user_id") or "",
+                                    "fetch_state": "error",
+                                    "fetch_message": "评论数据缺失，未写入本地缓存；请确认登录态后补采",
+                                    "fetch_checked_at": iso_now(),
+                                    "last_sync_state": "error",
+                                    "last_sync_error": "评论数据缺失，未写入本地缓存",
+                                    "last_sync_at": iso_now(),
+                                }
+                                for report in missing_comment_reports
+                            ],
+                        )
                 update_monitored_metadata(
                     self.urls_file,
                     [
@@ -3396,21 +3438,27 @@ class MonitoringSyncStore:
                         for report in reports
                     ],
                 )
-                try:
-                    write_project_cache_bundle(reports=reports, settings=settings)
-                    cached_payload = load_cached_dashboard_payload(settings)
-                    self.dashboard_store.set_local_override(cached_payload)
-                except Exception:
-                    pass
-                if not self.dashboard_store.commit_local_override():
-                    self.dashboard_store.invalidate()
+                if reports:
+                    try:
+                        write_project_cache_bundle(reports=reports, settings=settings)
+                        cached_payload = load_cached_dashboard_payload(settings)
+                        self.dashboard_store.set_local_override(cached_payload)
+                    except Exception:
+                        pass
+                    if not self.dashboard_store.commit_local_override():
+                        self.dashboard_store.invalidate()
                 progress_snapshot = dict(self._status.get("progress") or {})
-                successful_accounts = max(int(progress_snapshot.get("success_count") or 0), len(reports))
-                total_accounts = max(len(current_urls), successful_accounts, len(reports))
+                successful_accounts = (
+                    len(reports)
+                    if self._current_sync_require_comment_data
+                    else max(int(progress_snapshot.get("success_count") or 0), len(reports))
+                )
+                total_accounts = max(len(current_urls), successful_accounts, len(reports) + len(missing_comment_reports))
                 failed_accounts = max(
                     0,
                     int(progress_snapshot.get("failed_count") or 0),
                     total_accounts - successful_accounts,
+                    len(missing_comment_reports),
                 )
                 local_summary = {
                     "total_accounts": total_accounts,
@@ -3429,12 +3477,15 @@ class MonitoringSyncStore:
                     overall_percent=100,
                 )
                 summary_message = (
+                    f"新增账号评论数据缺失，本轮未写入；失败 {failed_accounts} 个账号，请确认登录态后补采"
+                    if self._current_sync_require_comment_data and successful_accounts <= 0 and failed_accounts > 0
+                    else
                     f"本地缓存已更新，成功 {local_summary.get('successful_accounts', 0)} 个账号，失败 {local_summary.get('failed_accounts', 0)} 个，作品 {local_summary.get('total_works', 0)} 条"
                     if local_summary.get("failed_accounts", 0)
                     else f"本地缓存已更新，账号 {local_summary.get('total_accounts', 0)} 个，作品 {local_summary.get('total_works', 0)} 条"
                 )
                 result = {
-                    "state": "success",
+                    "state": "error" if self._current_sync_require_comment_data and successful_accounts <= 0 and failed_accounts > 0 else "success",
                     "message": summary_message,
                     "started_at": "",
                     "finished_at": finished_at,
@@ -3601,6 +3652,8 @@ class MonitoringSyncStore:
                     self._pending_resync = False
                     self._current_sync_urls = list(self._pending_sync_urls)
                     self._pending_sync_urls = []
+                    self._current_sync_require_comment_data = self._pending_sync_require_comment_data
+                    self._pending_sync_require_comment_data = False
                     started_at = iso_now()
                     if self._current_sync_project:
                         update_project_sync_status(
@@ -3635,7 +3688,9 @@ class MonitoringSyncStore:
                 self._current_sync_urls = []
                 self._current_sync_project = ""
                 self._current_sync_mode = ""
+                self._current_sync_require_comment_data = False
                 self._pending_sync_urls = []
+                self._pending_sync_require_comment_data = False
                 self._status = result
                 if current_mode != "auto":
                     summary = result.get("summary") or {}

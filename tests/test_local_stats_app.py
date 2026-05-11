@@ -1737,11 +1737,12 @@ class LocalStatsAppTest(unittest.TestCase):
             )
             captured = {}
 
-            def fake_request_sync_locked(*, reason, urls=None, project="", mode="manual"):
+            def fake_request_sync_locked(*, reason, urls=None, project="", mode="manual", require_comment_data=False):
                 captured["reason"] = reason
                 captured["urls"] = urls or []
                 captured["project"] = project
                 captured["mode"] = mode
+                captured["require_comment_data"] = require_comment_data
                 return True
 
             with patch.object(store, "_request_sync_locked", side_effect=fake_request_sync_locked), patch.object(
@@ -1757,6 +1758,7 @@ class LocalStatsAppTest(unittest.TestCase):
             self.assertTrue(result["ok"])
             self.assertEqual(captured["urls"], ["https://www.xiaohongshu.com/user/profile/u3"])
             self.assertEqual(captured["project"], "")
+            self.assertTrue(captured["require_comment_data"])
             self.assertIn("只同步新增/恢复账号", captured["reason"])
             self.assertEqual(result["active_count"], 3)
 
@@ -2330,6 +2332,123 @@ class LocalStatsAppTest(unittest.TestCase):
         push_mock.assert_called_once_with(auto=False, account_ids=["u1"])
         self.assertEqual(store._server_push_status["state"], "waiting_sync")
         self.assertIn("失败 1 个账号不上传", store._server_push_status["message"])
+
+    def test_sync_loop_new_account_without_comments_does_not_write_or_upload(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = write_monitored_entries(
+                f"{temp_dir}/urls.txt",
+                [{"url": "https://www.xiaohongshu.com/user/profile/u1", "active": True, "project": "项目A"}],
+            )
+            dashboard_store = DashboardStore(env_file=f"{temp_dir}/.env")
+            store = MonitoringSyncStore(
+                env_file=f"{temp_dir}/.env",
+                urls_file=str(path),
+                dashboard_store=dashboard_store,
+            )
+            store._running = True
+            store._current_sync_urls = ["https://www.xiaohongshu.com/user/profile/u1"]
+            store._current_sync_mode = "manual"
+            store._current_sync_require_comment_data = True
+            store._status = {
+                "state": "running",
+                "message": "新增 1 个账号，只同步新增/恢复账号",
+                "started_at": "2026-03-23T18:00:00+08:00",
+                "finished_at": "",
+                "last_success_at": "",
+                "last_error": "",
+                "pending": False,
+                "progress": {"success_count": 1, "failed_count": 0},
+                "summary": {},
+            }
+            reports = [
+                {
+                    "captured_at": "2026-03-23T18:05:00+08:00",
+                    "source_url": "https://www.xiaohongshu.com/user/profile/u1",
+                    "profile": {
+                        "profile_user_id": "u1",
+                        "nickname": "账号A",
+                        "profile_url": "https://www.xiaohongshu.com/user/profile/u1",
+                        "fans_count_text": "100",
+                        "interaction_count_text": "200",
+                    },
+                    "works": [{"title_copy": "作品A", "comment_count": None, "comment_count_basis": "详情缺失"}],
+                }
+            ]
+            settings = SimpleNamespace(validate_for_sync=lambda: None)
+            with (
+                patch("xhs_feishu_monitor.local_stats_app.server.load_settings", return_value=settings),
+                patch.object(store, "_ensure_login_ready_for_sync", return_value=None),
+                patch("xhs_feishu_monitor.local_stats_app.server.load_reports_for_sync", return_value=reports),
+                patch("xhs_feishu_monitor.local_stats_app.server.write_project_cache_bundle") as write_cache_mock,
+                patch.object(store, "push_server_cache", return_value={"ok": True}) as push_mock,
+            ):
+                store._sync_loop()
+
+            metadata = load_monitored_metadata(str(path))
+            self.assertEqual(store._status["state"], "error")
+            self.assertEqual(store._status["summary"]["successful_accounts"], 0)
+            self.assertEqual(store._status["summary"]["failed_accounts"], 1)
+            self.assertIn("评论数据缺失", store._status["message"])
+            self.assertEqual(metadata["https://www.xiaohongshu.com/user/profile/u1"]["fetch_state"], "error")
+            write_cache_mock.assert_not_called()
+            push_mock.assert_not_called()
+
+    def test_sync_loop_new_account_with_comments_writes_and_uploads(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = write_monitored_entries(
+                f"{temp_dir}/urls.txt",
+                [{"url": "https://www.xiaohongshu.com/user/profile/u1", "active": True, "project": "项目A"}],
+            )
+            dashboard_store = DashboardStore(env_file=f"{temp_dir}/.env")
+            store = MonitoringSyncStore(
+                env_file=f"{temp_dir}/.env",
+                urls_file=str(path),
+                dashboard_store=dashboard_store,
+            )
+            store._running = True
+            store._current_sync_urls = ["https://www.xiaohongshu.com/user/profile/u1"]
+            store._current_sync_mode = "manual"
+            store._current_sync_require_comment_data = True
+            store._status = {
+                "state": "running",
+                "message": "新增 1 个账号，只同步新增/恢复账号",
+                "started_at": "2026-03-23T18:00:00+08:00",
+                "finished_at": "",
+                "last_success_at": "",
+                "last_error": "",
+                "pending": False,
+                "progress": {"success_count": 1, "failed_count": 0},
+                "summary": {},
+            }
+            reports = [
+                {
+                    "captured_at": "2026-03-23T18:05:00+08:00",
+                    "source_url": "https://www.xiaohongshu.com/user/profile/u1",
+                    "profile": {
+                        "profile_user_id": "u1",
+                        "nickname": "账号A",
+                        "profile_url": "https://www.xiaohongshu.com/user/profile/u1",
+                        "fans_count_text": "100",
+                        "interaction_count_text": "200",
+                    },
+                    "works": [{"title_copy": "作品A", "comment_count": 3, "comment_count_basis": "精确值"}],
+                }
+            ]
+            settings = SimpleNamespace(validate_for_sync=lambda: None)
+            with (
+                patch("xhs_feishu_monitor.local_stats_app.server.load_settings", return_value=settings),
+                patch.object(store, "_ensure_login_ready_for_sync", return_value=None),
+                patch("xhs_feishu_monitor.local_stats_app.server.load_reports_for_sync", return_value=reports),
+                patch("xhs_feishu_monitor.local_stats_app.server.write_project_cache_bundle", return_value=None) as write_cache_mock,
+                patch("xhs_feishu_monitor.local_stats_app.server.load_cached_dashboard_payload", return_value={}),
+                patch.object(store, "push_server_cache", return_value={"ok": True}) as push_mock,
+            ):
+                store._sync_loop()
+
+            self.assertEqual(store._status["state"], "success")
+            self.assertEqual(store._status["summary"]["successful_accounts"], 1)
+            write_cache_mock.assert_called_once()
+            push_mock.assert_called_once_with(auto=False, account_ids=["u1"])
 
     def test_sync_loop_opens_login_window_and_preserves_partial_success_on_login_failure(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
