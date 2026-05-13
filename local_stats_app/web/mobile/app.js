@@ -4,6 +4,16 @@ let selectedProject = (params.get("project") || "默认项目").trim();
 let selectedAccountId = (params.get("account_id") || "all").trim() || "all";
 let selectedHistoryDate = "";
 let serverClockTimer = null;
+let hasRenderedCachedPayload = false;
+
+function buildPayloadCacheKey() {
+  return [
+    "xhs-mobile-rankings",
+    apiBase || "local",
+    selectedProject || "default",
+    selectedAccountId || "all",
+  ].join(":");
+}
 
 function buildDashboardUrl() {
   const query = new URLSearchParams();
@@ -104,6 +114,53 @@ function applyVersion(payload) {
   if (version) {
     const node = document.getElementById("versionChip");
     if (node) node.textContent = version;
+  }
+}
+
+function rankingDetailHasRows(detail) {
+  if (!detail || typeof detail !== "object") return false;
+  return ["likes", "comments", "growth"].some((key) => Array.isArray(detail[key]) && detail[key].length > 0);
+}
+
+function pickBestHistoryDate(payload, calendarRows) {
+  const history = payload.history_rankings || {};
+  const dates = (calendarRows || [])
+    .map((item) => String(item?.date || "").trim())
+    .filter(Boolean)
+    .reverse();
+  const preferredDate = String(payload.latest_date || "").trim();
+  if (preferredDate && rankingDetailHasRows(history[preferredDate])) {
+    return preferredDate;
+  }
+  for (const dateText of dates) {
+    if (rankingDetailHasRows(history[dateText])) {
+      return dateText;
+    }
+  }
+  for (const dateText of Object.keys(history).sort().reverse()) {
+    if (rankingDetailHasRows(history[dateText])) {
+      return dateText;
+    }
+  }
+  return preferredDate || dates[0] || "";
+}
+
+function readCachedPayload() {
+  try {
+    const raw = window.localStorage.getItem(buildPayloadCacheKey());
+    if (!raw) return null;
+    const payload = JSON.parse(raw);
+    return payload && typeof payload === "object" ? payload : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeCachedPayload(payload) {
+  try {
+    window.localStorage.setItem(buildPayloadCacheKey(), JSON.stringify(payload));
+  } catch {
+    // Ignore storage quota/private browsing failures; network payload still renders.
   }
 }
 
@@ -291,9 +348,11 @@ function renderCalendar(rows) {
     return;
   }
   select.disabled = false;
-  const preferredDate = String((window.__mobilePayload || {}).latest_date || "").trim();
+  const preferredDate = pickBestHistoryDate(window.__mobilePayload || {}, rows || []);
   if (!selectedHistoryDate || !data.some((item) => item.date === selectedHistoryDate)) {
     selectedHistoryDate = data.some((item) => item.date === preferredDate) ? preferredDate : (data[0].date || "");
+  } else if (!rankingDetailHasRows((window.__mobilePayload?.history_rankings || {})[selectedHistoryDate])) {
+    selectedHistoryDate = data.some((item) => item.date === preferredDate) ? preferredDate : selectedHistoryDate;
   }
   select.innerHTML = data
     .map((item) => `<option value="${item.date || ""}">${item.date || "未知日期"}</option>`)
@@ -330,6 +389,24 @@ function renderHistoryDetails(payload) {
   renderList("historyCommentsList", "historyCommentsCount", commentsRows, "评论", { reindexRank: Boolean(activeAccount) });
   renderList("historyGrowthList", "historyGrowthCount", growthRows, "增长", { reindexRank: Boolean(activeAccount) });
   renderAlerts(alertsRows);
+}
+
+function renderDashboardPayload(payload, { fromCache = false } = {}) {
+  window.__mobilePayload = payload;
+  applyVersion(payload);
+  renderProjectOptions(payload.projects || []);
+  renderAccountOptions(payload.accounts || []);
+  selectedProject = payload.project || selectedProject;
+  updateUrlProject(selectedProject);
+  document.getElementById("pageTitle").textContent = `${selectedProject} 排行榜`;
+  document.getElementById("pageSummary").textContent =
+    `${buildMobileStatusSummary(payload) || `缓存更新 ${formatDateTime(payload.updated_at || payload.generated_at)}`}`;
+  renderCalendar(payload.calendar || []);
+  renderHistoryDetails(payload);
+  const statusCard = document.getElementById("statusCard");
+  statusCard.textContent = fromCache
+    ? "已先显示上次成功加载的数据，正在后台刷新服务器最新数据..."
+    : "仅查看服务器缓存，不采集、不上传。点击榜单卡片可直接跳转到小红书作品或账号主页。";
 }
 
 function renderProjectOptions(projects) {
@@ -436,25 +513,24 @@ async function loadHtml2Canvas() {
 
 async function loadDashboard() {
   const statusCard = document.getElementById("statusCard");
-  statusCard.textContent = "正在加载榜单...";
+  const cachedPayload = readCachedPayload();
+  if (cachedPayload && !hasRenderedCachedPayload) {
+    hasRenderedCachedPayload = true;
+    renderDashboardPayload(cachedPayload, { fromCache: true });
+  } else {
+    statusCard.textContent = "正在加载榜单...";
+  }
   try {
     const response = await fetch(buildDashboardUrl(), { credentials: "omit" });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const payload = await response.json();
-    window.__mobilePayload = payload;
-    applyVersion(payload);
-    renderProjectOptions(payload.projects || []);
-    renderAccountOptions(payload.accounts || []);
-    selectedProject = payload.project || selectedProject;
-    updateUrlProject(selectedProject);
-    document.getElementById("pageTitle").textContent = `${selectedProject} 排行榜`;
-    document.getElementById("pageSummary").textContent =
-      `${buildMobileStatusSummary(payload) || `缓存更新 ${formatDateTime(payload.updated_at || payload.generated_at)}`}`;
-    statusCard.textContent =
-      `仅查看服务器缓存，不采集、不上传。点击榜单卡片可直接跳转到小红书作品或账号主页。`;
-    renderCalendar(payload.calendar || []);
-    renderHistoryDetails(payload);
+    writeCachedPayload(payload);
+    renderDashboardPayload(payload);
   } catch (error) {
+    if (cachedPayload) {
+      statusCard.textContent = `服务器刷新失败，继续显示上次成功数据：${error.message}`;
+      return;
+    }
     statusCard.textContent = `加载失败：${error.message}`;
     ["historyLikesList", "historyCommentsList", "historyGrowthList", "historyAlertsList"].forEach((id) => {
       document.getElementById(id).innerHTML = '<div class="empty-state">加载失败</div>';
@@ -471,10 +547,14 @@ document.getElementById("calendarDateSelect").addEventListener("change", (event)
 document.getElementById("projectSelect").addEventListener("change", (event) => {
   selectedProject = String(event.target.value || "").trim() || selectedProject;
   selectedAccountId = "all";
+  selectedHistoryDate = "";
+  hasRenderedCachedPayload = false;
   loadDashboard();
 });
 document.getElementById("accountSelect").addEventListener("change", (event) => {
   selectedAccountId = String(event.target.value || "").trim() || "all";
+  selectedHistoryDate = "";
+  hasRenderedCachedPayload = false;
   updateUrlProject(selectedProject);
   loadDashboard();
 });
