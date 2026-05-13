@@ -6,7 +6,12 @@ let selectedHistoryDate = "";
 let serverClockTimer = null;
 
 function buildDashboardUrl() {
-  return `${apiBase}/api/mobile-rankings?project=${encodeURIComponent(selectedProject)}`;
+  const query = new URLSearchParams();
+  query.set("project", selectedProject);
+  if (selectedAccountId && selectedAccountId !== "all") {
+    query.set("account_id", selectedAccountId);
+  }
+  return `${apiBase}/api/mobile-rankings?${query.toString()}`;
 }
 
 function updateUrlProject(project) {
@@ -363,7 +368,7 @@ async function exportLongImage() {
   button.disabled = true;
   button.textContent = "导出中...";
   try {
-    const html2canvas = window.html2canvas;
+    const html2canvas = await loadHtml2Canvas();
     if (document.fonts && typeof document.fonts.ready?.then === "function") {
       await document.fonts.ready;
     }
@@ -402,6 +407,31 @@ async function exportLongImage() {
     button.disabled = false;
     button.textContent = originalText;
   }
+}
+
+async function loadHtml2Canvas() {
+  if (window.html2canvas && typeof window.html2canvas === "function") {
+    return window.html2canvas;
+  }
+  await new Promise((resolve, reject) => {
+    const existing = document.querySelector('script[data-mobile-export="html2canvas"]');
+    if (existing) {
+      existing.addEventListener("load", resolve, { once: true });
+      existing.addEventListener("error", () => reject(new Error("长图组件加载失败")), { once: true });
+      return;
+    }
+    const script = document.createElement("script");
+    script.src = "https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js";
+    script.async = true;
+    script.dataset.mobileExport = "html2canvas";
+    script.onload = resolve;
+    script.onerror = () => reject(new Error("长图组件加载失败"));
+    document.head.appendChild(script);
+  });
+  if (!window.html2canvas || typeof window.html2canvas !== "function") {
+    throw new Error("长图组件未加载完成");
+  }
+  return window.html2canvas;
 }
 
 async function loadDashboard() {
@@ -446,6 +476,6 @@ document.getElementById("projectSelect").addEventListener("change", (event) => {
 document.getElementById("accountSelect").addEventListener("change", (event) => {
   selectedAccountId = String(event.target.value || "").trim() || "all";
   updateUrlProject(selectedProject);
-  renderHistoryDetails(window.__mobilePayload || {});
+  loadDashboard();
 });
 loadDashboard();

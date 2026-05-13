@@ -904,6 +904,53 @@ class LocalStatsAppTest(unittest.TestCase):
         self.assertIn("2026-03-30", payload["history_rankings"])
         self.assertEqual(payload["history_rankings"]["2026-03-30"]["likes"][0]["metric"], 30)
 
+    def test_build_mobile_rankings_payload_limits_history_rows_and_filters_account(self) -> None:
+        rows = [
+            {
+                "rank": index,
+                "account_id": "u1" if index <= 40 else "u2",
+                "account": "账号A" if index <= 40 else "账号B",
+                "title": f"作品{index}",
+                "metric": 100 - index,
+                "summary": "手机端不需要的大字段" * 20,
+                "cover_url": "https://example.com/large.jpg",
+                "note_url": f"https://example.com/note/{index}",
+            }
+            for index in range(1, 81)
+        ]
+        payload = build_mobile_rankings_payload(
+            dashboard_payload={
+                "rankings": {},
+                "account_series": {
+                    "u1": [{"date": "2026-03-30", "fans": 10, "interaction": 20, "likes": 3, "comments": 1, "works": 5}],
+                    "u2": [{"date": "2026-03-30", "fans": 11, "interaction": 21, "likes": 4, "comments": 2, "works": 6}],
+                },
+                "history_rankings": {
+                    "默认项目": {
+                        "2026-03-30": {
+                            "date": "2026-03-30",
+                            "snapshot_time": "2026-03-30 18:01:18",
+                            "account_count": 2,
+                            "likes": rows,
+                            "comments": rows,
+                            "growth": rows,
+                        }
+                    }
+                },
+            },
+            monitored_entries=[
+                {"account_id": "u1", "project": "默认项目"},
+                {"account_id": "u2", "project": "默认项目"},
+            ],
+            project="默认项目",
+            account_id="u2",
+        )
+        likes = payload["history_rankings"]["2026-03-30"]["likes"]
+        self.assertEqual(len(likes), 30)
+        self.assertTrue(all(item["account_id"] == "u2" for item in likes))
+        self.assertNotIn("summary", likes[0])
+        self.assertNotIn("cover_url", likes[0])
+
     def test_build_mobile_rankings_payload_includes_project_alerts(self) -> None:
         payload = build_mobile_rankings_payload(
             dashboard_payload={

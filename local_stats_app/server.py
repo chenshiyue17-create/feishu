@@ -106,6 +106,7 @@ ALERT_TABLE_NAME = "小红书评论预警"
 WEB_DIR = Path(__file__).resolve().parent / "web"
 DEFAULT_URLS_FILE = "xhs_feishu_monitor/input/robam_multi_profile_urls.txt"
 DEFAULT_ACCOUNT_RANKING_EXPORT_DIR = "/Users/cc/Downloads/飞书缓存/账号榜单导出"
+MOBILE_RANKING_ROW_LIMIT = 30
 SERVER_CLOUD_BACKUP_DIR_NAME = "server_cloud_backups"
 SERVER_CLOUD_BACKUP_KEEP_FILES = 240
 SERVER_CACHE_REVISION_IGNORED_KEYS = {
@@ -1670,6 +1671,7 @@ def build_mobile_rankings_payload(
     dashboard_payload: Dict[str, Any],
     monitored_entries: List[Dict[str, Any]],
     project: str = "",
+    account_id: str = "",
     settings=None,
 ) -> Dict[str, Any]:
     normalized_projects = sorted(
@@ -1697,6 +1699,14 @@ def build_mobile_rankings_payload(
             for item in (monitored_entries or [])
             if str(item.get("account_id") or extract_profile_user_id(str(item.get("url") or "")) or "").strip()
         }
+    normalized_account_id = str(account_id or "").strip()
+    if normalized_account_id and normalized_account_id != "all":
+        if not project_account_ids or normalized_account_id in project_account_ids:
+            row_account_ids = {normalized_account_id}
+        else:
+            row_account_ids = set()
+    else:
+        row_account_ids = set(project_account_ids)
     project_accounts: List[Dict[str, Any]] = []
     for item in dashboard_payload.get("accounts") or []:
         if not isinstance(item, dict):
@@ -1732,13 +1742,103 @@ def build_mobile_rankings_payload(
             )
     project_accounts.sort(key=lambda item: str(item.get("account") or ""))
 
+    def slim_ranking_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        slim_rows: List[Dict[str, Any]] = []
+        for index, raw_item in enumerate((rows or [])[:MOBILE_RANKING_ROW_LIMIT], start=1):
+            if not isinstance(raw_item, dict):
+                continue
+            item = dict(raw_item)
+            slim_rows.append(
+                {
+                    "rank": item.get("rank") or index,
+                    "account_id": str(item.get("account_id") or "").strip(),
+                    "account": str(item.get("account") or "").strip(),
+                    "title": str(item.get("title") or item.get("title_copy") or "").strip(),
+                    "metric": item.get("metric") or 0,
+                    "comment_basis": str(item.get("comment_basis") or "").strip(),
+                    "profile_url": str(item.get("profile_url") or "").strip(),
+                    "note_url": str(item.get("note_url") or "").strip(),
+                }
+            )
+        return slim_rows
+
     def filter_rows(rank_type: str) -> List[Dict[str, Any]]:
         rows = rankings.get(rank_type) or []
-        if not normalized_project:
-            return _dedupe_mobile_ranking_rows([dict(item) for item in rows if isinstance(item, dict)])
-        return _dedupe_mobile_ranking_rows(
-            [dict(item) for item in rows if isinstance(item, dict) and str(item.get("account_id") or "").strip() in project_account_ids]
-        )
+        filtered_rows = [
+            dict(item)
+            for item in rows
+            if isinstance(item, dict)
+            and (not row_account_ids or str(item.get("account_id") or "").strip() in row_account_ids)
+            and (not normalized_project or str(item.get("account_id") or "").strip() in project_account_ids)
+        ]
+        return slim_ranking_rows(_dedupe_mobile_ranking_rows(filtered_rows))
+
+    def filter_history_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        filtered_rows = [
+            dict(item)
+            for item in rows
+            if isinstance(item, dict)
+            and (not row_account_ids or str(item.get("account_id") or "").strip() in row_account_ids)
+        ]
+        return slim_ranking_rows(_dedupe_mobile_ranking_rows(filtered_rows))
+
+    def slim_alerts(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        slim_rows: List[Dict[str, Any]] = []
+        for raw_item in (rows or [])[:MOBILE_RANKING_ROW_LIMIT]:
+            if not isinstance(raw_item, dict):
+                continue
+            item = dict(raw_item)
+            slim_rows.append(
+                {
+                    "date": str(item.get("date") or "").strip(),
+                    "account_id": str(item.get("account_id") or "").strip(),
+                    "account": str(item.get("account") or "").strip(),
+                    "title": str(item.get("title") or "").strip(),
+                    "alert_type": str(item.get("alert_type") or "重点关注").strip(),
+                    "delta": item.get("delta") or 0,
+                    "like_delta": item.get("like_delta") or 0,
+                    "comment_delta": item.get("comment_delta") or 0,
+                    "profile_url": str(item.get("profile_url") or "").strip(),
+                    "note_url": str(item.get("note_url") or "").strip(),
+                }
+            )
+        return slim_rows
+
+    def slim_history_detail(item: Dict[str, Any], date_text: str) -> Dict[str, Any]:
+        return {
+            "date": str(item.get("date") or date_text).strip(),
+            "snapshot_time": str(item.get("snapshot_time") or "").strip(),
+            "snapshot_slug": str(item.get("snapshot_slug") or "").strip(),
+            "account_count": item.get("account_count") or len(row_account_ids or project_account_ids),
+            "likes": filter_history_rows(item.get("likes") or []),
+            "comments": filter_history_rows(item.get("comments") or []),
+            "growth": filter_history_rows(item.get("growth") or []),
+        }
+
+    def filter_alerts_for_project() -> List[Dict[str, Any]]:
+        rows = dashboard_payload.get("alerts") or []
+        filtered = []
+        for item in filter_alerts():
+            account_id = str(item.get("account_id") or "").strip()
+            if row_account_ids and account_id not in row_account_ids:
+                continue
+            filtered.append(item)
+        return slim_alerts(filtered)
+
+    def limit_calendar_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        return [
+            {
+                "date": str(item.get("date") or "").strip(),
+                "fans": item.get("fans") or 0,
+                "interaction": item.get("interaction") or 0,
+                "likes": item.get("likes") or 0,
+                "comments": item.get("comments") or 0,
+                "works": item.get("works") or 0,
+                "accounts": item.get("accounts") or 0,
+            }
+            for item in rows[-45:]
+            if isinstance(item, dict)
+        ]
 
     def filter_alerts() -> List[Dict[str, Any]]:
         rows = dashboard_payload.get("alerts") or []
@@ -1749,13 +1849,13 @@ def build_mobile_rankings_payload(
         for raw_item in rows:
             if not isinstance(raw_item, dict):
                 continue
-            account_id = str(raw_item.get("account_id") or "").strip()
-            if account_id and account_id not in project_account_ids:
+            row_account_id = str(raw_item.get("account_id") or "").strip()
+            if row_account_id and row_account_id not in project_account_ids:
                 continue
             item = dict(raw_item)
             dedupe_key = (
                 str(item.get("date") or "").strip(),
-                account_id,
+                row_account_id,
                 str(item.get("title") or "").strip(),
                 str(item.get("note_url") or item.get("profile_url") or "").strip(),
             )
@@ -1764,6 +1864,35 @@ def build_mobile_rankings_payload(
             seen.add(dedupe_key)
             filtered.append(item)
         return filtered
+
+    def build_latest_history_detail(latest_date_text: str) -> Dict[str, Any]:
+        return {
+            "date": latest_date_text,
+            "snapshot_time": str(dashboard_payload.get("updated_at") or dashboard_payload.get("generated_at") or "").strip(),
+            "snapshot_slug": "latest-cache",
+            "account_count": len(row_account_ids or project_account_ids),
+            "likes": filter_rows("单条点赞排行"),
+            "comments": filter_rows("单条评论排行"),
+            "growth": filter_rows("单条第二天增长排行"),
+        }
+
+    def should_keep_history_detail(item: Dict[str, Any]) -> bool:
+        if not row_account_ids:
+            return True
+        for rank_key in ("likes", "comments", "growth"):
+            if item.get(rank_key):
+                return True
+        return False
+
+    def filter_history_rankings(raw_project_history: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+        result: Dict[str, Dict[str, Any]] = {}
+        for date_text, raw_item in raw_project_history.items():
+            if not isinstance(raw_item, dict):
+                continue
+            slim_item = slim_history_detail(raw_item, str(date_text))
+            if should_keep_history_detail(slim_item):
+                result[str(date_text)] = slim_item
+        return result
 
     daily_history: List[Dict[str, Any]] = []
     account_series = dashboard_payload.get("account_series") or {}
@@ -1796,33 +1925,18 @@ def build_mobile_rankings_payload(
     if normalized_project:
         raw_project_history = all_history_rankings.get(normalized_project) or {}
         if isinstance(raw_project_history, dict):
-            project_history_rankings = {
-                str(date_text): {
-                    **dict(item),
-                    "likes": _dedupe_mobile_ranking_rows([dict(row) for row in (item.get("likes") or []) if isinstance(row, dict)]),
-                    "comments": _dedupe_mobile_ranking_rows([dict(row) for row in (item.get("comments") or []) if isinstance(row, dict)]),
-                    "growth": _dedupe_mobile_ranking_rows([dict(row) for row in (item.get("growth") or []) if isinstance(row, dict)]),
-                }
-                for date_text, item in raw_project_history.items()
-                if isinstance(item, dict)
-            }
+            project_history_rankings = filter_history_rankings(raw_project_history)
         if not project_history_rankings:
-            project_history_rankings = _build_project_history_rankings_from_cache(
-                settings=settings,
-                project_name=normalized_project,
-                account_ids=project_account_ids,
+            project_history_rankings = filter_history_rankings(
+                _build_project_history_rankings_from_cache(
+                    settings=settings,
+                    project_name=normalized_project,
+                    account_ids=project_account_ids,
+                )
             )
     latest_date = str(dashboard_payload.get("latest_date") or "").strip()
     if latest_date and latest_date not in project_history_rankings:
-        project_history_rankings[latest_date] = {
-            "date": latest_date,
-            "snapshot_time": str(dashboard_payload.get("updated_at") or dashboard_payload.get("generated_at") or "").strip(),
-            "snapshot_slug": "latest-cache",
-            "account_count": len(project_account_ids),
-            "likes": filter_rows("单条点赞排行"),
-            "comments": filter_rows("单条评论排行"),
-            "growth": filter_rows("单条第二天增长排行"),
-        }
+        project_history_rankings[latest_date] = build_latest_history_detail(latest_date)
 
     return {
         "ok": True,
@@ -1842,8 +1956,8 @@ def build_mobile_rankings_payload(
             "comments": filter_rows("单条评论排行"),
             "growth": filter_rows("单条第二天增长排行"),
         },
-        "alerts": filter_alerts(),
-        "calendar": daily_history,
+        "alerts": filter_alerts_for_project(),
+        "calendar": limit_calendar_rows(daily_history),
         "history_rankings": project_history_rankings,
     }
 
@@ -4659,15 +4773,27 @@ def build_handler(
             return False
 
         def end_headers(self) -> None:
-            self.send_header("Cache-Control", "no-store, max-age=0")
-            self.send_header("Pragma", "no-cache")
-            self.send_header("Expires", "0")
+            path = self.path.split("?", 1)[0]
+            if path.startswith("/mobile/") and path.rsplit(".", 1)[-1] in {"js", "css"}:
+                self.send_header("Cache-Control", "public, max-age=3600")
+            else:
+                self.send_header("Cache-Control", "no-store, max-age=0")
+                self.send_header("Pragma", "no-cache")
+                self.send_header("Expires", "0")
             super().end_headers()
 
         def send_json_response(self, status_code: int, payload: Dict[str, Any]) -> None:
             body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+            if len(body) > 1024 and "gzip" in str(self.headers.get("Accept-Encoding") or "").lower():
+                body = gzip.compress(body)
+                content_encoding = "gzip"
+            else:
+                content_encoding = ""
             self.send_response(status_code)
             self.send_header("Content-Type", "application/json; charset=utf-8")
+            if content_encoding:
+                self.send_header("Content-Encoding", content_encoding)
+                self.send_header("Vary", "Accept-Encoding")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -4712,10 +4838,12 @@ def build_handler(
                 parsed = urllib.parse.urlparse(self.path)
                 params = urllib.parse.parse_qs(parsed.query)
                 project = str((params.get("project") or [""])[0]).strip()
+                account_id = str((params.get("account_id") or [""])[0]).strip()
                 payload = build_mobile_rankings_payload(
                     dashboard_payload=_load_dashboard_payload_local_only(monitoring_store.env_file),
                     monitored_entries=monitoring_store.get_payload().get("entries") or [],
                     project=project,
+                    account_id=account_id,
                     settings=load_settings(monitoring_store.env_file),
                 )
                 self.send_json_response(HTTPStatus.OK, payload)
