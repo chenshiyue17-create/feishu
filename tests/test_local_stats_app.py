@@ -2084,8 +2084,11 @@ class LocalStatsAppTest(unittest.TestCase):
             )
             payload = store.get_payload()
         push_status = payload["sync_status"]["server_cache_push_status"]
-        self.assertEqual(push_status["daily_at"], "14:00")
-        self.assertTrue(push_status["next_auto_run_at"])
+        self.assertEqual(payload["sync_status"]["schedule_driver"], "disabled")
+        self.assertEqual(push_status["mode"], "disabled")
+        self.assertEqual(push_status["daily_at"], "")
+        self.assertEqual(push_status["next_auto_run_at"], "")
+        self.assertIn("已关闭每日自动采集", push_status["message"])
 
     def test_status_snapshot_exposes_launchd_runtime_status(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -2156,14 +2159,16 @@ class LocalStatsAppTest(unittest.TestCase):
 
     def test_compute_next_auto_server_push_retries_after_failure(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
+            env_path = Path(temp_dir) / ".env"
+            env_path.write_text("XHS_SCHEDULE_DRIVER=app\n", encoding="utf-8")
             path = write_monitored_entries(
                 f"{temp_dir}/urls.txt",
                 [{"url": "https://www.xiaohongshu.com/user/profile/u1", "active": True, "project": "项目A"}],
             )
             store = MonitoringSyncStore(
-                env_file=f"{temp_dir}/.env",
+                env_file=str(env_path),
                 urls_file=str(path),
-                dashboard_store=DashboardStore(env_file=f"{temp_dir}/.env"),
+                dashboard_store=DashboardStore(env_file=str(env_path)),
             )
             now = datetime.fromisoformat("2026-03-31T14:05:00+08:00")
             store._auto_project_last_attempt_at["项目A"] = datetime.fromisoformat("2026-03-31T14:02:00+08:00").timestamp()

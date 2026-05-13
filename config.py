@@ -33,7 +33,7 @@ DEFAULT_FIELD_MAP = {
 
 APP_VERSION = "XHS-26.5.13-V1"
 DEFAULT_SERVER_CACHE_PUSH_URL = "http://47.87.68.74"
-DEFAULT_SCHEDULE_DRIVER = "app"
+DEFAULT_SCHEDULE_DRIVER = "disabled"
 
 
 def normalize_server_cache_push_url(value: str) -> str:

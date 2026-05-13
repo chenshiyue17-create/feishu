@@ -2373,12 +2373,12 @@ class MonitoringSyncStore:
         self._last_auto_server_push_attempt_at = 0.0
         self._server_push_status: Dict[str, Any] = {
             "state": "idle",
-            "message": "每天 14:00-15:00 自动全量采集，成功后自动上传服务器",
+            "message": "已关闭每日自动采集；可手动更新并上传服务器",
             "started_at": "",
             "finished_at": "",
             "last_success_at": "",
             "last_error": "",
-            "mode": "",
+            "mode": "disabled",
             "daily_at": AUTO_SERVER_CACHE_PUSH_DAILY_AT,
             "next_auto_run_at": "",
         }
@@ -2420,8 +2420,22 @@ class MonitoringSyncStore:
                     export_dir="",
                 )
             sync_status = self._status_snapshot_locked()
-            schedule_driver = str(getattr(settings, "xhs_schedule_driver", "app") or "app").strip().lower() or "app"
+            schedule_driver = str(getattr(settings, "xhs_schedule_driver", "disabled") or "disabled").strip().lower() or "disabled"
             sync_status["schedule_driver"] = schedule_driver
+            if schedule_driver in {"disabled", "off", "none", "manual"}:
+                current_push_status = sync_status.get("server_cache_push_status") or {}
+                current_push_state = str(current_push_status.get("state") or "idle")
+                sync_status["server_cache_push_status"] = {
+                    **current_push_status,
+                    "daily_at": "",
+                    "next_auto_run_at": "",
+                    "message": (
+                        "已关闭每日自动采集；可手动更新并上传服务器"
+                        if current_push_state == "idle"
+                        else current_push_status.get("message", "")
+                    ),
+                    "mode": "disabled" if current_push_state == "idle" else current_push_status.get("mode", ""),
+                }
             if schedule_driver == "launchd":
                 current = datetime.now().astimezone()
                 next_run = self._daily_clock_datetime(current, str(getattr(settings, "xhs_batch_window_start", "14:00") or "14:00"))
@@ -2551,6 +2565,9 @@ class MonitoringSyncStore:
     def _compute_next_auto_server_push_locked(self, now: Optional[datetime] = None) -> datetime:
         current = now or datetime.now().astimezone()
         settings = load_settings(self.env_file)
+        schedule_driver = str(getattr(settings, "xhs_schedule_driver", "disabled") or "disabled").strip().lower()
+        if schedule_driver in {"disabled", "off", "none", "manual"}:
+            return current
         entries = parse_monitored_entries(self.urls_file)
         plan = self._build_auto_project_plan(settings=settings, entries=entries, now=current)
         if not plan:
@@ -2581,6 +2598,16 @@ class MonitoringSyncStore:
         return current
 
     def _update_server_push_schedule_locked(self, now: Optional[datetime] = None) -> None:
+        settings = load_settings(self.env_file)
+        schedule_driver = str(getattr(settings, "xhs_schedule_driver", "disabled") or "disabled").strip().lower()
+        if schedule_driver in {"disabled", "off", "none", "manual"}:
+            self._server_push_status["daily_at"] = ""
+            self._server_push_status["next_auto_run_at"] = ""
+            if self._server_push_status.get("state") == "idle":
+                self._server_push_status["state"] = "idle"
+                self._server_push_status["mode"] = "disabled"
+                self._server_push_status["message"] = "已关闭每日自动采集；可手动更新并上传服务器"
+            return
         next_run = self._compute_next_auto_server_push_locked(now)
         self._server_push_status["daily_at"] = AUTO_SERVER_CACHE_PUSH_DAILY_AT
         self._server_push_status["next_auto_run_at"] = next_run.isoformat(timespec="seconds")
@@ -2722,7 +2749,20 @@ class MonitoringSyncStore:
             time.sleep(AUTO_SERVER_CACHE_PUSH_POLL_SECONDS)
             try:
                 settings = load_settings(self.env_file)
-                if str(getattr(settings, "xhs_schedule_driver", "app") or "app").strip().lower() == "launchd":
+                schedule_driver = str(getattr(settings, "xhs_schedule_driver", "disabled") or "disabled").strip().lower()
+                if schedule_driver in {"disabled", "off", "none", "manual"}:
+                    with self._lock:
+                        self._server_push_status.update(
+                            {
+                                "state": "idle",
+                                "message": "已关闭每日自动采集；可手动更新并上传服务器",
+                                "mode": "disabled",
+                                "last_error": "",
+                            }
+                        )
+                        self._update_server_push_schedule_locked(datetime.now().astimezone())
+                    continue
+                if schedule_driver == "launchd":
                     with self._lock:
                         self._server_push_status.update(
                             {

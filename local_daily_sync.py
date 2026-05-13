@@ -172,7 +172,7 @@ def uninstall_local_daily_sync_launchd(
     resolved_plist_path = str(Path(plist_path or defaults["plist_path"]).expanduser().resolve())
     unload_launch_agent(plist_path=resolved_plist_path)
     if set_schedule_driver:
-        _upsert_env_value(env_file=env_file, key="XHS_SCHEDULE_DRIVER", value="app")
+        _upsert_env_value(env_file=env_file, key="XHS_SCHEDULE_DRIVER", value="disabled")
     return resolved_plist_path
 
 
@@ -560,7 +560,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         )
         print(f"[OK] 已卸载 launchd 任务: {args.launchd_label}")
         print(f"[OK] plist 路径: {plist_path}")
-        print("[OK] 已把 XHS_SCHEDULE_DRIVER 切回 app")
+        print("[OK] 已把 XHS_SCHEDULE_DRIVER 切回 disabled")
         return 0
 
     if args.cleanup_legacy_launchd:
