@@ -193,7 +193,8 @@ function renderSystemConfig() {
   const autoPushStatus = state.monitoring?.sync_status?.server_cache_push_status || {};
   const launchdStatus = state.monitoring?.sync_status?.launchd_status || {};
   const schedulePlan = state.monitoring?.sync_status?.schedule_plan || {};
-  const scheduleDriver = String(state.monitoring?.sync_status?.schedule_driver || "app").trim().toLowerCase() || "app";
+  const scheduleDriver = String(state.monitoring?.sync_status?.schedule_driver || "disabled").trim().toLowerCase() || "disabled";
+  const scheduleDisabled = ["disabled", "off", "none", "manual"].includes(scheduleDriver);
   const cacheStateNode = document.getElementById("systemConfigCacheStatus");
   document.getElementById("configXhsCookie").value = config.XHS_COOKIE || "";
   document.getElementById("configProjectCacheDir").value = config.PROJECT_CACHE_DIR || "";
@@ -213,14 +214,18 @@ function renderSystemConfig() {
       : lastPush?.pushed_at
         ? `本机发起 ${formatDateTime(lastPush.pushed_at)}`
         : "还没有成功推送记录";
-    const autoPushText = scheduleDriver === "launchd"
+    const autoPushText = scheduleDisabled
+      ? "自动采集已关闭"
+      : scheduleDriver === "launchd"
       ? buildLaunchdDisplayState(launchdStatus, schedulePlan, lastPush).value
       : autoPushStatus?.last_success_at
         ? `上次自动上传 ${formatDateTime(autoPushStatus.last_success_at)}`
         : autoPushStatus?.next_auto_run_at
           ? `下次自动上传 ${formatDateTime(autoPushStatus.next_auto_run_at)}`
           : "每天 14:00 自动上传到服务器";
-    const autoPushCopy = scheduleDriver === "launchd"
+    const autoPushCopy = scheduleDisabled
+      ? "不会每天定时采集，也不会自动上传；需要时请手动更新本地看板并推送服务器。"
+      : scheduleDriver === "launchd"
       ? buildLaunchdDisplayState(launchdStatus, schedulePlan, lastPush).copy || "launchd 会在 14:00 后一次采集全部项目，成功后再自动上传服务器"
       : autoPushStatus?.state === "error"
         ? `自动上传失败：${autoPushStatus.last_error || autoPushStatus.message || "未知错误"}`
@@ -250,7 +255,7 @@ function renderSystemConfig() {
         </div>
       </article>
       <article class="system-config-status-card">
-        <div class="system-config-status-label">${scheduleDriver === "launchd" ? "自动任务" : "自动上传"}</div>
+        <div class="system-config-status-label">${scheduleDisabled ? "自动任务" : scheduleDriver === "launchd" ? "自动任务" : "自动上传"}</div>
         <div class="system-config-status-value">${autoPushText}</div>
         <div class="system-config-status-copy">${autoPushCopy}</div>
       </article>
@@ -686,6 +691,8 @@ function renderOperationsHub() {
   const selectedProject = (state.monitoring?.projects || []).find((item) => item.name === projectName) || null;
   const syncStatus = state.monitoring?.sync_status || {};
   const serverPushStatus = syncStatus.server_cache_push_status || {};
+  const scheduleDriver = String(syncStatus.schedule_driver || "disabled").trim().toLowerCase() || "disabled";
+  const scheduleDisabled = ["disabled", "off", "none", "manual"].includes(scheduleDriver);
   const loginState = state.monitoring?.login_state || {};
   const projectSync = selectedProject?.sync_status || {};
   const manualState = getManualUpdateState(syncStatus);
@@ -702,7 +709,9 @@ function renderOperationsHub() {
             ? "登录态异常"
             : "等待自检";
   const uploadLabel =
-    serverPushStatus.state === "running"
+    scheduleDisabled
+      ? (serverPushStatus.last_success_at ? `最近上传 ${formatDateTime(serverPushStatus.last_success_at)}` : "自动采集已关闭")
+      : serverPushStatus.state === "running"
       ? "正在推送服务器"
       : serverPushStatus.state === "waiting_sync"
         ? "采集成功后自动推送"
@@ -761,7 +770,7 @@ function renderOperationsHub() {
       <div class="operations-card-copy">${loginState.message || "优先用自检判断是否需要重新登录。"}</div>
       <div class="operations-chip-row">
         ${loginState.checked_at ? `<span class="operations-chip">上次自检 ${formatDateTime(loginState.checked_at)}</span>` : ""}
-        ${serverPushStatus.next_auto_run_at ? `<span class="operations-chip">下次计划 ${formatDateTime(serverPushStatus.next_auto_run_at)}</span>` : ""}
+        ${!scheduleDisabled && serverPushStatus.next_auto_run_at ? `<span class="operations-chip">下次计划 ${formatDateTime(serverPushStatus.next_auto_run_at)}</span>` : ""}
       </div>
     </article>
   `;
